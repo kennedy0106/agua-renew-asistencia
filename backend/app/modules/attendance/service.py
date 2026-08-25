@@ -9,7 +9,7 @@
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -19,6 +19,7 @@ from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.repository import WorkScheduleRepository
+from app.modules.schedules.service import ScheduleService
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -130,3 +131,59 @@ class AttendanceService:
         break_minutes = schedule.break_minutes if schedule else 0
         worked = compute_worked_minutes(record.check_in_at, now, break_minutes)
         return self.repo.check_out(record, check_out_at=now, worked_minutes=worked)
+
+    # --- Panel administrativo (Fase 7) ---
+
+    def list_records(
+        self,
+        *,
+        employee_id: uuid.UUID | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        status_filter: str | None = None,
+    ) -> list[dict]:
+        """Registros para el panel, con minutos esperados (jornada) y diferencia."""
+        records = self.repo.list_records(
+            employee_id=employee_id, date_from=date_from, date_to=date_to, status=status_filter
+        )
+        schedules = ScheduleService(self.db)
+        result = []
+        for record in records:
+            expected = schedules.expected_minutes(record.employee_id, record.work_date)
+            result.append(
+                {
+                    "id": record.id,
+                    "employee_id": record.employee_id,
+                    "employee_name": (
+                        f"{record.employee.first_name} {record.employee.last_name}"
+                        if record.employee
+                        else None
+                    ),
+                    "job_role_name": (
+                        record.employee.job_role.name if record.employee and record.employee.job_role else None
+                    ),
+                    "work_date": record.work_date,
+                    "check_in_at": record.check_in_at,
+                    "check_out_at": record.check_out_at,
+                    "worked_minutes": record.worked_minutes,
+                    "expected_minutes": expected,
+                    "difference_minutes": (
+                        record.worked_minutes - expected if record.worked_minutes is not None else None
+                    ),
+                    "status": record.status,
+                    "notes": record.notes,
+                }
+            )
+        return result
+
+    def summary(self, today: date) -> dict:
+        """Indicadores simples del dashboard (MVP §29)."""
+        active = self.repo.count_active_employees()
+        present = self.repo.count_distinct_employees_on(today)
+        return {
+            "employees_active": active,
+            "present_today": present,
+            "no_entry_today": max(0, active - present),
+            "open_entries": self.repo.count_open(),
+            "checked_out_today": self.repo.count_complete_on(today),
+        }

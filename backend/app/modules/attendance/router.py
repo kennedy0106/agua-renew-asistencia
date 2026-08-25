@@ -1,16 +1,25 @@
-"""Rutas públicas de marcación: /api/v1/attendance/*
+"""Rutas de asistencia.
 
-NO requieren autenticación: el trabajador se identifica con DNI o código.
-La validación de empleado activo ocurre en el servicio. Solo exponen la
-información mínima del empleado (nunca datos salariales).
+Marcación pública (sin auth):
+- POST /identify, /check-in, /check-out
+
+Panel administrativo (autenticado; cualquier rol puede consultar):
+- GET / (lista con filtros) y GET /summary (indicadores del día)
 """
+
+import uuid
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
+from app.core.permissions import get_current_user
+from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
+    AttendanceListItem,
     AttendanceRecordOut,
+    AttendanceSummary,
     CheckInRequest,
     CheckOutRequest,
     IdentifyRequest,
@@ -34,3 +43,25 @@ def check_in(payload: CheckInRequest, db: Session = Depends(get_db)) -> Attendan
 @router.post("/check-out", response_model=AttendanceRecordOut)
 def check_out(payload: CheckOutRequest, db: Session = Depends(get_db)) -> AttendanceRecordOut:
     return AttendanceService(db).check_out(payload.employee_id)
+
+
+# --- Panel administrativo (Fase 7) ---
+
+@router.get("", response_model=list[AttendanceListItem])
+def list_attendance(
+    employee_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+    _: object = Depends(get_current_user),
+) -> list[AttendanceListItem]:
+    return AttendanceService(db).list_records(
+        employee_id=employee_id, date_from=date_from, date_to=date_to, status_filter=status
+    )
+
+
+@router.get("/summary", response_model=AttendanceSummary)
+def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> AttendanceSummary:
+    today = datetime.now(lima_tz()).date()
+    return AttendanceService(db).summary(today)

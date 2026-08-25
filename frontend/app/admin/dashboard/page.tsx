@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { authApi, UserOut } from "@/lib/api";
+import { attendanceAdminApi, AttendanceSummary, authApi, UserOut } from "@/lib/api";
 
 export default function AdminDashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<UserOut | null>(null);
+  const [summary, setSummary] = useState<AttendanceSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -15,6 +16,10 @@ export default function AdminDashboardPage() {
       .me()
       .then((me) => {
         if (active) setUser(me);
+        return attendanceAdminApi.summary();
+      })
+      .then((s) => {
+        if (active) setSummary(s);
       })
       .catch(() => {
         if (active) router.replace("/admin/login");
@@ -66,6 +71,54 @@ export default function AdminDashboardPage() {
           </p>
         </div>
 
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+            Resumen de hoy
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Empleados activos
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-zinc-900">
+                {summary?.employees_active ?? "—"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Presentes hoy
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-emerald-600">
+                {summary?.present_today ?? "—"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Sin entrada
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-amber-600">
+                {summary?.no_entry_today ?? "—"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Entradas abiertas
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-sky-600">
+                {summary?.open_entries ?? "—"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Con salida hoy
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-zinc-900">
+                {summary?.checked_out_today ?? "—"}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="rounded-2xl border border-zinc-200 bg-white p-5">
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Rol</p>
@@ -98,10 +151,13 @@ export default function AdminDashboardPage() {
             <p className="text-sm font-semibold text-zinc-900">Empleados</p>
             <p className="mt-1 text-xs text-zinc-500">DNI, código, cargo y estado</p>
           </a>
-          <div className="rounded-2xl border border-dashed border-zinc-200 p-5 text-zinc-300">
-            <p className="text-sm font-semibold">Asistencia</p>
-            <p className="mt-1 text-xs">Llega en la Fase 6</p>
-          </div>
+          <a
+            href="/admin/attendance"
+            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
+          >
+            <p className="text-sm font-semibold text-zinc-900">Asistencia</p>
+            <p className="mt-1 text-xs text-zinc-500">Marcaciones, esperado y diferencia</p>
+          </a>
         </div>
 
         <p className="mt-6 text-sm text-zinc-400">

@@ -38,3 +38,26 @@ class IdentifyResponse(BaseModel):
     state: dict
     server_time: str
     server_time_label: str
+
+
+class AttendanceListItem(BaseModel):
+    id: uuid.UUID
+    employee_id: uuid.UUID
+    employee_name: str | None
+    job_role_name: str | None
+    work_date: date
+    check_in_at: datetime
+    check_out_at: datetime | None
+    worked_minutes: int | None
+    expected_minutes: int
+    difference_minutes: int | None
+    status: str
+    notes: str | None
+
+
+class AttendanceSummary(BaseModel):
+    employees_active: int
+    present_today: int
+    no_entry_today: int
+    open_entries: int
+    checked_out_today: int

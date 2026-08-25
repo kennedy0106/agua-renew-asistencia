@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 7 (panel de asistencia para jefes)
+
+- [x] `GET /api/v1/attendance` (autenticado) con filtros: employee_id, date_from, date_to, status
+- [x] Cada fila incluye minutos trabajados, **esperados (jornada vigente en la fecha)** y **diferencia**
+- [x] `GET /api/v1/attendance/summary`: empleados activos, presentes hoy, sin entrada, entradas abiertas, con salida hoy
+- [x] Frontend `/admin/attendance`: tabla con filtros (empleado/fechas/estado), esperado/diferencia coloreada
+- [x] Dashboard con "Resumen de hoy" (5 indicadores) + tarjeta de acceso a Asistencia
+- [x] Tests: 102 en verde (6 nuevos del panel: permisos, filtros, esperado/diferencia, summary)
+- [x] Smoke test real contra Neon: lista con esperado 480 y diferencia, summary correcto
+
 ## Estado — Fase 6 (marcación de asistencia)
 
 - [x] Modelo `attendance_records` (check_in/out UTC, work_date en America/Lima, worked_minutes, status) + migración `143700847e10` en Neon

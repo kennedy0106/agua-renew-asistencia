@@ -3,10 +3,11 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.employees.models import Employee
 
 
 class AttendanceRepository:
@@ -53,3 +54,51 @@ class AttendanceRepository:
         self.db.commit()
         self.db.refresh(record)
         return record
+
+    # --- Panel administrativo (Fase 7) ---
+
+    def list_records(
+        self,
+        *,
+        employee_id: uuid.UUID | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        status: str | None = None,
+    ) -> list[AttendanceRecord]:
+        query = select(AttendanceRecord).options(joinedload(AttendanceRecord.employee))
+        if employee_id is not None:
+            query = query.where(AttendanceRecord.employee_id == employee_id)
+        if date_from is not None:
+            query = query.where(AttendanceRecord.work_date >= date_from)
+        if date_to is not None:
+            query = query.where(AttendanceRecord.work_date <= date_to)
+        if status is not None:
+            query = query.where(AttendanceRecord.status == status)
+        query = query.order_by(AttendanceRecord.work_date.desc(), AttendanceRecord.check_in_at.desc())
+        return list(self.db.scalars(query))
+
+    def count_active_employees(self) -> int:
+        return self.db.scalar(
+            select(func.count()).select_from(Employee).where(Employee.active.is_(True))
+        )
+
+    def count_distinct_employees_on(self, day: date) -> int:
+        return self.db.scalar(
+            select(func.count(func.distinct(AttendanceRecord.employee_id))).where(
+                AttendanceRecord.work_date == day
+            )
+        )
+
+    def count_open(self) -> int:
+        return self.db.scalar(
+            select(func.count())
+            .select_from(AttendanceRecord)
+            .where(AttendanceRecord.status == "OPEN")
+        )
+
+    def count_complete_on(self, day: date) -> int:
+        return self.db.scalar(
+            select(func.count())
+            .select_from(AttendanceRecord)
+            .where(AttendanceRecord.status == "COMPLETE", AttendanceRecord.work_date == day)
+        )

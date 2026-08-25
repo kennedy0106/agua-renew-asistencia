@@ -257,3 +257,35 @@ export const attendanceApi = {
       body: JSON.stringify({ employee_id: employeeId }),
     }),
 };
+
+// --- Panel de asistencia (autenticado) ---
+
+export type AttendanceListItem = {
+  id: string;
+  employee_id: string;
+  employee_name: string | null;
+  job_role_name: string | null;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  worked_minutes: number | null;
+  expected_minutes: number;
+  difference_minutes: number | null;
+  status: string;
+  notes: string | null;
+};
+
+export type AttendanceSummary = {
+  employees_active: number;
+  present_today: number;
+  no_entry_today: number;
+  open_entries: number;
+  checked_out_today: number;
+};
+
+export const attendanceAdminApi = {
+  list: (
+    params: { employee_id?: string; date_from?: string; date_to?: string; status?: string } = {},
+  ) => apiFetch<AttendanceListItem[]>(`/api/v1/attendance${toQueryString(params)}`),
+  summary: () => apiFetch<AttendanceSummary>("/api/v1/attendance/summary"),
+};
