@@ -29,6 +29,15 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 16 (frontend en Vercel + dominio)
+
+- [x] **Producción en vivo: `https://agua-renew-erp-frontend.vercel.app`**
+- [x] Proyecto Vercel `agua-renew-erp-frontend` (cuenta kennedyrojas0106-8210); 14 páginas, build limpio
+- [x] `NEXT_PUBLIC_API_URL=https://backend-api-production-fe69.up.railway.app` (env de producción en Vercel)
+- [x] `FRONTEND_URL` en Railway → dominio Vercel (CORS)
+- [x] **Verificado cross-site**: login 200 con Origin Vercel + cookie `SameSite=none; Secure`, `/me` 200 (admin/ADMIN), CORS `allow-origin` correcto
+- [x] Sin dominio personalizado aún (queda como mejora: añadir dominio propio en Vercel y ajustar FRONTEND_URL)
+
 ## Estado — Fase 15 (deploy del backend en Railway)
 
 - [x] **Producción en vivo: `https://backend-api-production-fe69.up.railway.app`**
