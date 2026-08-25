@@ -327,3 +327,61 @@ export const auditApi = {
       })}`,
     ),
 };
+
+// --- Ajustes de horas y saldo (Fase 9) ---
+
+export type HourAdjustment = {
+  id: string;
+  employee_id: string;
+  adjustment_date: string;
+  minutes: number;
+  adjustment_type: "PERMISO" | "RECUPERACION" | "OTRO";
+  reason: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  approved_by: string | null;
+  approved_by_username: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Balance = {
+  date_from: string;
+  date_to: string;
+  worked_minutes: number;
+  expected_minutes: number;
+  adjustment_minutes: number;
+  balance_minutes: number;
+};
+
+export const adjustmentsApi = {
+  list: (employeeId: string) =>
+    apiFetch<HourAdjustment[]>(`/api/v1/employees/${employeeId}/adjustments`),
+  create: (
+    employeeId: string,
+    payload: {
+      adjustment_date: string;
+      minutes: number;
+      adjustment_type: HourAdjustment["adjustment_type"];
+      reason: string;
+    },
+  ) =>
+    apiFetch<HourAdjustment>(`/api/v1/employees/${employeeId}/adjustments`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  approve: (id: string) =>
+    apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/approve`, { method: "PATCH" }),
+  reject: (id: string, reason: string) =>
+    apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason }),
+    }),
+  balance: (employeeId: string, dateFrom?: string, dateTo?: string) =>
+    apiFetch<Balance>(
+      `/api/v1/employees/${employeeId}/balance${toQueryString({
+        date_from: dateFrom,
+        date_to: dateTo,
+      })}`,
+    ),
+};

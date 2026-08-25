@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
+  adjustmentsApi,
   ApiError,
   authApi,
+  Balance,
   employeesApi,
   Employee,
+  HourAdjustment,
   salaryApi,
   SalaryPayload,
   SalarySetting,
@@ -85,6 +88,19 @@ export default function EmployeeDetailPage() {
   });
   const [savingSalary, setSavingSalary] = useState(false);
 
+  const [balance, setBalance] = useState<Balance | null>(null);
+  const [adjustments, setAdjustments] = useState<HourAdjustment[]>([]);
+  const [showAdjForm, setShowAdjForm] = useState(false);
+  const [adjForm, setAdjForm] = useState({
+    adjustment_date: new Date().toISOString().slice(0, 10),
+    minutes: 0,
+    adjustment_type: "RECUPERACION" as HourAdjustment["adjustment_type"],
+    reason: "",
+  });
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [savingAdj, setSavingAdj] = useState(false);
+
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
   const load = useCallback(async () => {
@@ -111,6 +127,14 @@ export default function EmployeeDetailPage() {
         }
         setSalaryHistory(await salaryApi.history(employeeId));
       }
+
+      // Ajustes y saldo: visibles para cualquier rol autenticado.
+      const [bal, adj] = await Promise.all([
+        adjustmentsApi.balance(employeeId),
+        adjustmentsApi.list(employeeId),
+      ]);
+      setBalance(bal);
+      setAdjustments(adj);
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -178,6 +202,85 @@ export default function EmployeeDetailPage() {
     if (s.overtime_method === "FIXED_RATE") return `S/ ${s.overtime_fixed_rate} / hora`;
     return "Monto manual (en periodo)";
   };
+
+  async function handleCreateAdjustment(event: React.FormEvent) {
+    event.preventDefault();
+    setSavingAdj(true);
+    setError(null);
+    try {
+      await adjustmentsApi.create(employeeId, adjForm);
+      setShowAdjForm(false);
+      setAdjForm({
+        adjustment_date: new Date().toISOString().slice(0, 10),
+        minutes: 0,
+        adjustment_type: "RECUPERACION",
+        reason: "",
+      });
+      const [bal, adj] = await Promise.all([
+        adjustmentsApi.balance(employeeId),
+        adjustmentsApi.list(employeeId),
+      ]);
+      setBalance(bal);
+      setAdjustments(adj);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo crear el ajuste");
+    } finally {
+      setSavingAdj(false);
+    }
+  }
+
+  async function handleApproveAdjustment(id: string) {
+    setError(null);
+    try {
+      await adjustmentsApi.approve(id);
+      const [bal, adj] = await Promise.all([
+        adjustmentsApi.balance(employeeId),
+        adjustmentsApi.list(employeeId),
+      ]);
+      setBalance(bal);
+      setAdjustments(adj);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo aprobar el ajuste");
+    }
+  }
+
+  async function handleRejectAdjustment(id: string) {
+    if (rejectReason.trim().length < 3) return;
+    setError(null);
+    try {
+      await adjustmentsApi.reject(id, rejectReason.trim());
+      setRejectingId(null);
+      setRejectReason("");
+      const [bal, adj] = await Promise.all([
+        adjustmentsApi.balance(employeeId),
+        adjustmentsApi.list(employeeId),
+      ]);
+      setBalance(bal);
+      setAdjustments(adj);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo rechazar el ajuste");
+    }
+  }
+
+  function signedMinutes(minutes: number): string {
+    const h = Math.floor(Math.abs(minutes) / 60);
+    const m = Math.abs(minutes) % 60;
+    const text = h === 0 ? `${m} min` : `${h} h ${m.toString().padStart(2, "0")}`;
+    return minutes > 0 ? `+${text}` : minutes < 0 ? `−${text}` : "0 min";
+  }
+
+  const typeLabel: Record<string, string> = {
+    PERMISO: "Permiso",
+    RECUPERACION: "Recuperación",
+    OTRO: "Otro",
+  };
+
+  const statusBadge = (status: string) =>
+    status === "APPROVED"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "REJECTED"
+        ? "bg-red-50 text-red-600"
+        : "bg-amber-50 text-amber-700";
 
   if (loading) {
     return (
@@ -535,6 +638,219 @@ export default function EmployeeDetailPage() {
             )}
           </div>
         )}
+
+        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-900">Ajustes de horas y saldo</h2>
+              <p className="text-sm text-zinc-500">
+                Saldo = trabajado − esperado + ajustes aprobados. Nada se descuenta solo.
+              </p>
+            </div>
+            {canManage && (
+              <button
+                onClick={() => setShowAdjForm((v) => !v)}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
+              >
+                {showAdjForm ? "Cancelar" : "+ Nuevo ajuste"}
+              </button>
+            )}
+          </div>
+
+          {balance && (
+            <div className="mb-5 grid gap-3 sm:grid-cols-4">
+              <div className="rounded-xl border border-zinc-100 p-3">
+                <p className="text-xs text-zinc-400">Trabajado</p>
+                <p className="text-lg font-semibold text-zinc-900">
+                  {signedMinutes(balance.worked_minutes)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-zinc-100 p-3">
+                <p className="text-xs text-zinc-400">Esperado</p>
+                <p className="text-lg font-semibold text-zinc-900">
+                  {signedMinutes(balance.expected_minutes)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-zinc-100 p-3">
+                <p className="text-xs text-zinc-400">Ajustes aprobados</p>
+                <p className="text-lg font-semibold text-zinc-900">
+                  {signedMinutes(balance.adjustment_minutes)}
+                </p>
+              </div>
+              <div
+                className={`rounded-xl border p-3 ${
+                  balance.balance_minutes < 0
+                    ? "border-amber-200 bg-amber-50"
+                    : "border-emerald-200 bg-emerald-50"
+                }`}
+              >
+                <p className="text-xs text-zinc-500">Saldo del mes</p>
+                <p
+                  className={`text-lg font-semibold ${
+                    balance.balance_minutes < 0 ? "text-amber-700" : "text-emerald-700"
+                  }`}
+                >
+                  {signedMinutes(balance.balance_minutes)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {canManage && showAdjForm && (
+            <form
+              onSubmit={handleCreateAdjustment}
+              className="mb-5 grid gap-3 rounded-xl bg-zinc-50 p-4 sm:grid-cols-2 lg:grid-cols-4"
+            >
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Fecha
+                <input
+                  type="date"
+                  value={adjForm.adjustment_date}
+                  onChange={(e) => setAdjForm({ ...adjForm, adjustment_date: e.target.value })}
+                  required
+                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Minutos (±)
+                <input
+                  type="number"
+                  min={-1440}
+                  max={1440}
+                  value={adjForm.minutes}
+                  onChange={(e) => setAdjForm({ ...adjForm, minutes: Number(e.target.value) })}
+                  required
+                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Tipo
+                <select
+                  value={adjForm.adjustment_type}
+                  onChange={(e) =>
+                    setAdjForm({
+                      ...adjForm,
+                      adjustment_type: e.target.value as HourAdjustment["adjustment_type"],
+                    })
+                  }
+                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                >
+                  <option value="RECUPERACION">Recuperación</option>
+                  <option value="PERMISO">Permiso</option>
+                  <option value="OTRO">Otro</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700 sm:col-span-2 lg:col-span-4">
+                Motivo
+                <input
+                  type="text"
+                  value={adjForm.reason}
+                  onChange={(e) => setAdjForm({ ...adjForm, reason: e.target.value })}
+                  required
+                  minLength={3}
+                  placeholder="Ej. recuperó las horas del sábado 22"
+                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <div className="sm:col-span-2 lg:col-span-4">
+                <button
+                  type="submit"
+                  disabled={savingAdj || adjForm.reason.trim().length < 3}
+                  className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
+                >
+                  {savingAdj ? "Guardando…" : "Crear ajuste (pendiente)"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {adjustments.length === 0 ? (
+            <p className="text-sm text-zinc-400">Sin ajustes registrados.</p>
+          ) : (
+            <ul className="space-y-2">
+              {adjustments.map((adj) => (
+                <li key={adj.id} className="rounded-xl border border-zinc-100 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium text-zinc-900">
+                        {typeLabel[adj.adjustment_type] ?? adj.adjustment_type} ·{" "}
+                        <span
+                          className={
+                            adj.minutes < 0 ? "text-amber-600" : "text-emerald-600"
+                          }
+                        >
+                          {signedMinutes(adj.minutes)}
+                        </span>
+                        <span className="ml-2 text-xs font-normal text-zinc-400">
+                          {adj.adjustment_date}
+                        </span>
+                      </p>
+                      <p className="text-xs text-zinc-500">{adj.reason}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadge(adj.status)}`}
+                      >
+                        {adj.status === "APPROVED"
+                          ? `Aprobado por ${adj.approved_by_username ?? "—"}`
+                          : adj.status === "REJECTED"
+                            ? "Rechazado"
+                            : "Pendiente"}
+                      </span>
+                      {canManage && adj.status === "PENDING" && (
+                        <>
+                          <button
+                            onClick={() => handleApproveAdjustment(adj.id)}
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Aprobar
+                          </button>
+                          {rejectingId === adj.id ? (
+                            <span className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={rejectReason}
+                                onChange={(e) => setRejectReason(e.target.value)}
+                                placeholder="Motivo del rechazo…"
+                                className="w-40 rounded-lg border border-zinc-300 px-2 py-1.5 text-xs text-zinc-900 outline-none focus:border-red-400"
+                              />
+                              <button
+                                onClick={() => handleRejectAdjustment(adj.id)}
+                                disabled={rejectReason.trim().length < 3}
+                                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                              >
+                                Confirmar
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setRejectingId(null);
+                                  setRejectReason("");
+                                }}
+                                className="text-xs text-zinc-400"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setRejectingId(adj.id);
+                                setRejectReason("");
+                              }}
+                              className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                            >
+                              Rechazar
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </main>
     </div>
   );

@@ -5,6 +5,7 @@ del paquete antes de importar cualquier submódulo, las relaciones por nombre
 (relationship("User"), etc.) resuelven sin importar en cada script.
 """
 
+from app.modules.adjustments.models import HourAdjustment  # noqa: F401
 from app.modules.attendance.models import AttendanceRecord  # noqa: F401
 from app.modules.audit.models import AuditLog  # noqa: F401
 from app.modules.employees.models import Employee  # noqa: F401

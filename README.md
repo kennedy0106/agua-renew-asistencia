@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 9 (permisos, recuperación de horas y saldo)
+
+- [x] Modelo `hour_adjustments` (tipo PERMISO/RECUPERACION/OTRO, ±minutos, PENDING/APPROVED/REJECTED) + migración `27ebe1b0b42a` en Neon
+- [x] Crear ajustes: ADMIN/BOSS (decisión documentada: el SUPERVISOR registra incidencias de marcación, no ajustes); listar y ver saldo: cualquier autenticado
+- [x] Aprobar/rechazar: ADMIN/BOSS, solo PENDING (409 si ya resuelto), rechazo con motivo, ambos con auditoría
+- [x] **Saldo = trabajado − esperado + ajustes APROBADOS**; nada automático: la diferencia negativa queda como saldo a recuperar
+- [x] Frontend: sección "Ajustes y saldo" en detalle de empleado (4 tarjetas de balance + lista con aprobar/rechazar)
+- [x] Tests: 133 en verde (18 nuevos: permisos, aprobación/rechazo, saldo con pendientes excluidos, rango inválido)
+- [x] Smoke test real contra Neon: +120 RECUPERACION aprobado → balance 480−12480+120
+
 ## Estado — Fase 8 (correcciones y auditoría)
 
 - [x] Modelo `audit_logs` (old/new en JSONB, reason, performed_by) + migración `0201cd2b1d1e` en Neon
