@@ -8,4 +8,8 @@ from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
-    """Base única del MVP. Fase 0: aún sin modelos."""
+    """Base única del MVP.
+
+    Los modelos se registran en ``app.modules`` (ver su __init__.py);
+    aquí NO se importan para evitar ciclos de importación.
+    """

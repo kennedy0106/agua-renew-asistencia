@@ -26,6 +26,15 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"  # Origen permitido en CORS (producción).
     timezone: str = "America/Lima"  # Zona horaria oficial del negocio.
 
+    # --- Autenticación (Fase 1) ---
+    jwt_expire_minutes: int = 480  # Vida de la sesión (8 h por defecto).
+    jwt_algorithm: str = "HS256"
+    session_cookie_name: str = "agua_renew_session"
+    session_cookie_secure: bool = False  # True en producción (solo HTTPS).
+    # En producción frontend (Vercel) y backend (Railway) son cross-site:
+    # requerirá "none" + secure. Dev local (mismo sitio) usa "lax".
+    session_cookie_samesite: str = "lax"
+
 
 @lru_cache
 def get_settings() -> Settings:

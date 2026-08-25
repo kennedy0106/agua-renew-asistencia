@@ -29,6 +29,27 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 1 (autenticación y permisos)
+
+- [x] Modelos `system_roles` (ADMIN/BOSS/SUPERVISOR) y `users` — migración `41113f50ab64` aplicada a Neon
+- [x] Contraseñas con **Argon2** (nunca texto plano, nunca hash débil)
+- [x] Sesión = **JWT en cookie HttpOnly + SameSite** (Secure en producción); el frontend nunca toca el token
+- [x] Dependencias de permisos: `require_any_role("ADMIN", ...)`, verificadas en backend
+- [x] Endpoints: `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`
+- [x] Seed idempotente de roles + script seguro de primer ADMIN (clave por flag/prompt, nunca en el repo)
+- [x] Tests: 25 en verde (login ok/incorrecto/inactivo, sin auth, roles, logout, seed, Argon2, JWT)
+- [x] Frontend: `/admin/login` + `/admin/dashboard` (sesión verificada contra el backend)
+- [ ] Pendiente de decisión: SameSite=None+Secure cuando frontend (Vercel) y backend (Railway) sean cross-site (Fase 16)
+
+### Operación de Fase 1
+
+```bash
+cd backend
+uv run python -m scripts.seed_roles                       # idempotente, siembra los 3 roles
+uv run python -m scripts.create_admin --username admin    # pide la contraseña por prompt
+uv run alembic upgrade head                               # aplicar migraciones
+```
+
 ## Estado — Fase 0 (base del proyecto)
 
 - [x] Monorepo creado

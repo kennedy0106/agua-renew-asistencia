@@ -28,7 +28,9 @@ if _migration_url:
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Los modelos se importan aquí en fases futuras para que autogenerate los vea.
+# Los modelos se registran al importar app.modules (relaciones por nombre).
+import app.modules  # noqa: F401,E402
+
 target_metadata = Base.metadata
 
 

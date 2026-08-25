@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.db.session import engine
+from app.modules.auth.router import router as auth_router
 
 settings = get_settings()
 
@@ -52,3 +53,7 @@ def health_db() -> dict:
         return {"status": "ok", "database": "connected"}
     except Exception as exc:  # noqa: BLE001 — el health debe reportar, no propagar
         return {"status": "error", "detail": str(exc)}
+
+
+# --- Módulos (cada fase registra sus rutas aquí) ---
+app.include_router(auth_router)
