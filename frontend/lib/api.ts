@@ -499,3 +499,56 @@ export type PayrollSummary = {
   total_manual: string;
   total: string;
 };
+
+// --- Usuarios del sistema (Fase 13, solo ADMIN) ---
+
+export type AdminUser = {
+  id: string;
+  username: string;
+  system_role_id: string;
+  role: string | null;
+  employee_id: string | null;
+  employee_name: string | null;
+  active: boolean;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+export type SystemRole = {
+  id: string;
+  name: string;
+  description: string | null;
+};
+
+export const systemRolesApi = {
+  list: () => apiFetch<SystemRole[]>("/api/v1/system-roles"),
+};
+
+export const usersApi = {
+  list: () => apiFetch<AdminUser[]>("/api/v1/users"),
+  create: (payload: {
+    username: string;
+    password: string;
+    system_role_id: string;
+    employee_id?: string | null;
+  }) =>
+    apiFetch<AdminUser>("/api/v1/users", { method: "POST", body: JSON.stringify(payload) }),
+  update: (
+    userId: string,
+    payload: { system_role_id?: string; active?: boolean; employee_id?: string | null },
+  ) =>
+    apiFetch<AdminUser>(`/api/v1/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  resetPassword: (userId: string, newPassword: string) =>
+    apiFetch<AdminUser>(`/api/v1/users/${userId}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+  changeOwnPassword: (currentPassword: string, newPassword: string) =>
+    apiFetch<null>("/api/v1/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+};

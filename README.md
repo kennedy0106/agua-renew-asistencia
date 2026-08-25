@@ -29,6 +29,17 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 13 (usuarios del sistema)
+
+- [x] Gestión de usuarios SOLO ADMIN: `GET/POST /api/v1/users`, `PATCH /{id}`, `POST /{id}/reset-password`
+- [x] `GET /api/v1/system-roles` (autenticado) para selectores
+- [x] Guardas: no auto-desactivarse (409), **mínimo 1 ADMIN activo** (409), username único, un empleado solo un usuario
+- [x] Vínculo opcional usuario↔empleado (relación `User.employee` agregada)
+- [x] `POST /api/v1/auth/change-password` (cualquier rol, exige contraseña actual)
+- [x] Auditoría de crear/actualizar/resetear/cambiar clave (sin exponer contraseñas)
+- [x] Frontend `/admin/users` (tabla, crear, rol, vínculo, activar/desactivar, reset clave) + "Cambiar mi contraseña" en el dashboard
+- [x] Tests: 178 en verde (16 nuevos); smoke test real: 409 último admin, reset 401→200
+
 ## Estado — Fase 12 (pantalla de sueldos)
 
 - [x] `GET /api/v1/payroll/periods/{id}/summary`: totales del periodo calculados por el backend (base, HE, manual, total, empleados)

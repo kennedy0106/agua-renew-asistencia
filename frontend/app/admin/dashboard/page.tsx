@@ -2,7 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { attendanceAdminApi, AttendanceSummary, authApi, UserOut } from "@/lib/api";
+import {
+  ApiError,
+  attendanceAdminApi,
+  AttendanceSummary,
+  authApi,
+  usersApi,
+  UserOut,
+} from "@/lib/api";
 
 export default function AdminDashboardPage() {
   const router = useRouter();
@@ -185,12 +192,113 @@ export default function AdminDashboardPage() {
               <p className="mt-1 text-xs text-zinc-500">Liquidaciones por periodo</p>
             </a>
           )}
+          {user?.role === "ADMIN" && (
+            <a
+              href="/admin/users"
+              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
+            >
+              <p className="text-sm font-semibold text-zinc-900">Usuarios</p>
+              <p className="mt-1 text-xs text-zinc-500">Cuentas, roles y vínculo con empleados</p>
+            </a>
+          )}
         </div>
 
+        <PasswordChangeCard />
+
         <p className="mt-6 text-sm text-zinc-400">
-          Los módulos de sueldos y remuneraciones llegarán en fases posteriores.
+          Cargos, jornadas y sueldos se gestionan desde el detalle de cada empleado.
         </p>
       </main>
+    </div>
+  );
+}
+
+function PasswordChangeCard() {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setMessage(null);
+    if (next !== confirm) {
+      setError("La confirmación no coincide con la nueva contraseña.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await usersApi.changeOwnPassword(current, next);
+      setMessage("Contraseña actualizada. Úsala en tu próximo inicio de sesión.");
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo cambiar la contraseña");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-sm font-semibold text-zinc-900 hover:text-sky-700"
+      >
+        {open ? "▾" : "▸"} Cambiar mi contraseña
+      </button>
+      {open && (
+        <form onSubmit={handleSubmit} className="mt-3 grid gap-3 sm:grid-cols-3">
+          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+            Contraseña actual
+            <input
+              type="password"
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+              required
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+            Nueva contraseña (mín 8)
+            <input
+              type="password"
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+              required
+              minLength={8}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+            Confirmar nueva
+            <input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              required
+              minLength={8}
+              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+            />
+          </label>
+          <div className="sm:col-span-3">
+            <button
+              type="submit"
+              disabled={busy}
+              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-900 disabled:opacity-50"
+            >
+              {busy ? "Guardando…" : "Cambiar contraseña"}
+            </button>
+          </div>
+          {message && <p className="text-sm text-emerald-700 sm:col-span-3">{message}</p>}
+          {error && <p className="text-sm text-red-600 sm:col-span-3">{error}</p>}
+        </form>
+      )}
     </div>
   );
 }

@@ -35,3 +35,4 @@ class User(Base):
     )
 
     system_role = relationship("SystemRole", back_populates="users")
+    employee = relationship("Employee", foreign_keys=[employee_id])

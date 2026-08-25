@@ -21,6 +21,8 @@ from app.modules.overtime.router import router as overtime_router
 from app.modules.payroll.router import router as payroll_router
 from app.modules.salary.router import router as salary_router
 from app.modules.schedules.router import router as schedules_router
+from app.modules.system_roles.router import router as system_roles_router
+from app.modules.users.router import router as users_router
 
 settings = get_settings()
 
@@ -75,3 +77,5 @@ app.include_router(audit_router)
 app.include_router(adjustments_router)
 app.include_router(overtime_router)
 app.include_router(payroll_router)
+app.include_router(users_router)
+app.include_router(system_roles_router)

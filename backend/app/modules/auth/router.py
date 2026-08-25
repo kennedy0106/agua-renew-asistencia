@@ -14,6 +14,8 @@ from app.db.session import get_db
 from app.modules.auth.schemas import LoginRequest, LogoutResponse, UserOut
 from app.modules.auth.service import AuthService
 from app.modules.users.models import User
+from app.modules.users.schemas import ChangePasswordRequest
+from app.modules.users.service import UserAdminService
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -51,3 +53,17 @@ def logout(response: Response) -> LogoutResponse:
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)) -> UserOut:
     return _to_user_out(user)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_own_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    """Cambia la propia contraseña (exige verificar la actual)."""
+    UserAdminService(db).change_own_password(
+        user,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )

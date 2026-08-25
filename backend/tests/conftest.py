@@ -67,6 +67,7 @@ def db_session():
     session.commit()
 
     session._test_job_roles = job_roles  # type: ignore[attr-defined]
+    session._test_system_roles = roles  # type: ignore[attr-defined]
     yield session
 
     session.close()
