@@ -29,6 +29,15 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 15 (deploy del backend en Railway)
+
+- [x] **Producción en vivo: `https://backend-api-production-fe69.up.railway.app`**
+- [x] Dockerfile (uv, python 3.12) — migraciones idempotentes al arrancar con conexión directa, luego uvicorn en `$PORT`
+- [x] Variables en Railway: DATABASE_URL (pooled) + DATABASE_URL_UNPOOLED (directa), SECRET_KEY real, ENVIRONMENT=production, `SESSION_COOKIE_SECURE=true` + `SESSION_COOKIE_SAMESITE=none` (cross-site para Vercel)
+- [x] Verificado en producción: `/health` 200, `/health/db` → connected, `/docs` 200, login 200 con cookie `HttpOnly; SameSite=none; Secure`
+- [x] Proyecto Railway `agua-renew-erp` (id `dbe8d65e`), servicio `backend-api`
+- [x] Gotcha resuelto: los valores del `.env` local venían entre comillas (`"..."`) — pydantic las tolera localmente pero SQLAlchemy en producción no; se limpiaron al configurar
+
 ## Estado — Fase 14 (exportaciones CSV)
 
 - [x] `GET /api/v1/exports/attendance.csv` (cualquier autenticado; mismos filtros del panel)
