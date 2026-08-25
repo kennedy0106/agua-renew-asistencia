@@ -29,6 +29,17 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 11 (motor de payroll)
+
+- [x] Modelos `payroll_periods` (OPEN/CALCULATED/CLOSED) y `payroll_records` (snapshot completo) + migración `92df4e589f79` en Neon
+- [x] Flujo: crear periodo (sin solapes, 409) → calcular → ajuste manual con motivo (auditado) → confirmar/cerrar (inmutable)
+- [x] Cálculo por empleado ACTIVO con sueldo vigente: total = sueldo base + horas extra aprobadas (método del salary_settings) + ajuste manual; sin sueldo → no incluido
+- [x] Ajustes de horas NO cambian el monto automáticamente (nada automático en dinero); quedan como referencia en adjustment_minutes
+- [x] Recalcular permitido pre-cierre (reemplaza preview); tras CLOSED → 409; confirmar sin calcular → 409
+- [x] Frontend `/admin/payroll`: periodos, calcular/recalcular, tabla con ajuste manual inline, confirmar y cerrar
+- [x] Tests: 159 en verde (15 nuevos de payroll)
+- [x] Smoke test real contra Neon: María → 1500 + HE 9.01 = 1509.01 → +50 viáticos = 1559.01 → CLOSED → recalcular 409
+
 ## Estado — Fase 10 (horas extra)
 
 - [x] Tipo `OVERTIME` en hour_adjustments (minutos deben ser positivos, 422 si no)

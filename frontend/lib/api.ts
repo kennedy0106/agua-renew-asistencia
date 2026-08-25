@@ -427,3 +427,60 @@ export const overtimeApi = {
       })}`,
     ),
 };
+
+// --- Planilla (Fase 11, solo ADMIN/BOSS) ---
+
+export type PayrollPeriod = {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: "OPEN" | "CALCULATED" | "CLOSED";
+  created_at: string;
+  updated_at: string;
+};
+
+export type PayrollRecord = {
+  id: string;
+  payroll_period_id: string;
+  employee_id: string;
+  employee_name: string | null;
+  monthly_salary: string;
+  worked_minutes: number;
+  expected_minutes: number;
+  overtime_minutes: number;
+  overtime_amount: string;
+  adjustment_minutes: number;
+  adjustment_amount: string;
+  base_salary: string;
+  manual_adjustment: string;
+  total: string;
+  status: "PREVIEW" | "CONFIRMED";
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const payrollApi = {
+  periods: () => apiFetch<PayrollPeriod[]>("/api/v1/payroll/periods"),
+  createPeriod: (payload: { name: string; start_date: string; end_date: string }) =>
+    apiFetch<PayrollPeriod>("/api/v1/payroll/periods", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  calculate: (periodId: string) =>
+    apiFetch<PayrollRecord[]>(`/api/v1/payroll/periods/${periodId}/calculate`, {
+      method: "POST",
+    }),
+  records: (periodId: string) =>
+    apiFetch<PayrollRecord[]>(`/api/v1/payroll/periods/${periodId}/records`),
+  setAdjustment: (recordId: string, amount: string, notes: string | null) =>
+    apiFetch<PayrollRecord>(`/api/v1/payroll/records/${recordId}/adjustment`, {
+      method: "PATCH",
+      body: JSON.stringify({ amount, notes }),
+    }),
+  confirm: (periodId: string) =>
+    apiFetch<PayrollPeriod>(`/api/v1/payroll/periods/${periodId}/confirm`, {
+      method: "POST",
+    }),
+};

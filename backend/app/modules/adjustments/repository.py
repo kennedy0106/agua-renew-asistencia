@@ -59,13 +59,20 @@ class AdjustmentRepository:
         self.db.refresh(adjustment)
         return adjustment
 
-    def approved_minutes_in_range(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> int:
-        total = self.db.scalar(
-            select(func.coalesce(func.sum(HourAdjustment.minutes), 0)).where(
-                HourAdjustment.employee_id == employee_id,
-                HourAdjustment.status == "APPROVED",
-                HourAdjustment.adjustment_date >= date_from,
-                HourAdjustment.adjustment_date <= date_to,
-            )
+    def approved_minutes_in_range(
+        self,
+        employee_id: uuid.UUID,
+        date_from: date,
+        date_to: date,
+        adjustment_type: str | None = None,
+    ) -> int:
+        query = select(func.coalesce(func.sum(HourAdjustment.minutes), 0)).where(
+            HourAdjustment.employee_id == employee_id,
+            HourAdjustment.status == "APPROVED",
+            HourAdjustment.adjustment_date >= date_from,
+            HourAdjustment.adjustment_date <= date_to,
         )
+        if adjustment_type is not None:
+            query = query.where(HourAdjustment.adjustment_type == adjustment_type)
+        total = self.db.scalar(query)
         return int(total or 0)

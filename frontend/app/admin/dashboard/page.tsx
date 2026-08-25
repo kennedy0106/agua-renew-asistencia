@@ -167,6 +167,15 @@ export default function AdminDashboardPage() {
               <p className="mt-1 text-xs text-zinc-500">Bitácora de correcciones (solo admin)</p>
             </a>
           )}
+          {(user?.role === "ADMIN" || user?.role === "BOSS") && (
+            <a
+              href="/admin/payroll"
+              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
+            >
+              <p className="text-sm font-semibold text-zinc-900">Planilla</p>
+              <p className="mt-1 text-xs text-zinc-500">Periodos, cálculo y cierre</p>
+            </a>
+          )}
         </div>
 
         <p className="mt-6 text-sm text-zinc-400">
