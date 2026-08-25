@@ -26,6 +26,15 @@ class AttendanceRepository:
             .limit(1)
         )
 
+    def get_by_id(self, record_id: uuid.UUID) -> AttendanceRecord | None:
+        return self.db.scalar(select(AttendanceRecord).where(AttendanceRecord.id == record_id))
+
+    def save(self, record: AttendanceRecord) -> AttendanceRecord:
+        self.db.add(record)
+        self.db.commit()
+        self.db.refresh(record)
+        return record
+
     def get_last(self, employee_id: uuid.UUID) -> AttendanceRecord | None:
         return self.db.scalar(
             select(AttendanceRecord)

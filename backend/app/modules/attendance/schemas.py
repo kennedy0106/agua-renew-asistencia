@@ -61,3 +61,16 @@ class AttendanceSummary(BaseModel):
     no_entry_today: int
     open_entries: int
     checked_out_today: int
+
+
+class AttendanceCorrection(BaseModel):
+    """Corrección de un registro (Fase 8). El motivo es obligatorio.
+
+    Campos opcionales: enviar explícitamente null para LIMPIAR
+    check_out_at o notes (el backend recalcula lo derivado).
+    """
+
+    check_in_at: datetime | None = None
+    check_out_at: datetime | None = None
+    notes: str | None = Field(default=None, max_length=255)
+    reason: str = Field(min_length=3, max_length=500)

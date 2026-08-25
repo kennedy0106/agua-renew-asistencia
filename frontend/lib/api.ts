@@ -288,4 +288,42 @@ export const attendanceAdminApi = {
     params: { employee_id?: string; date_from?: string; date_to?: string; status?: string } = {},
   ) => apiFetch<AttendanceListItem[]>(`/api/v1/attendance${toQueryString(params)}`),
   summary: () => apiFetch<AttendanceSummary>("/api/v1/attendance/summary"),
+  correct: (
+    recordId: string,
+    payload: {
+      check_in_at?: string | null;
+      check_out_at?: string | null;
+      notes?: string | null;
+      reason: string;
+    },
+  ) =>
+    apiFetch<AttendanceRecordOut>(`/api/v1/attendance/${recordId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+};
+
+// --- Auditoría (solo ADMIN) ---
+
+export type AuditLog = {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  reason: string;
+  old_values: Record<string, unknown> | null;
+  new_values: Record<string, unknown> | null;
+  performed_by: string | null;
+  performed_by_username: string | null;
+  created_at: string;
+};
+
+export const auditApi = {
+  list: (params: { entity_id?: string; limit?: number } = {}) =>
+    apiFetch<AuditLog[]>(
+      `/api/v1/audit-logs${toQueryString({
+        entity_id: params.entity_id,
+        limit: params.limit !== undefined ? String(params.limit) : undefined,
+      })}`,
+    ),
 };

@@ -6,6 +6,7 @@ del paquete antes de importar cualquier submódulo, las relaciones por nombre
 """
 
 from app.modules.attendance.models import AttendanceRecord  # noqa: F401
+from app.modules.audit.models import AuditLog  # noqa: F401
 from app.modules.employees.models import Employee  # noqa: F401
 from app.modules.job_roles.models import JobRole  # noqa: F401
 from app.modules.salary.models import SalarySetting  # noqa: F401

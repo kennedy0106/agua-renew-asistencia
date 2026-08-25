@@ -9,7 +9,10 @@ import {
   authApi,
   employeesApi,
   Employee,
+  UserOut,
 } from "@/lib/api";
+
+const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
 function formatClock(iso: string | null): string {
   if (!iso) return "—";
@@ -30,8 +33,21 @@ function formatDifference(minutes: number | null): string {
   return `${sign}${formatMinutes(minutes)}`;
 }
 
+function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fromLocalInput(local: string): string | null {
+  if (!local) return null;
+  return new Date(local).toISOString();
+}
+
 export default function AdminAttendancePage() {
   const router = useRouter();
+  const [user, setUser] = useState<UserOut | null>(null);
   const [records, setRecords] = useState<AttendanceListItem[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,9 +58,20 @@ export default function AdminAttendancePage() {
   const [dateTo, setDateTo] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
 
+  // Corrección (Fase 8)
+  const [correcting, setCorrecting] = useState<AttendanceListItem | null>(null);
+  const [corrCheckIn, setCorrCheckIn] = useState("");
+  const [corrCheckOut, setCorrCheckOut] = useState("");
+  const [corrNotes, setCorrNotes] = useState("");
+  const [corrReason, setCorrReason] = useState("");
+  const [savingCorrection, setSavingCorrection] = useState(false);
+
+  const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+
   const load = useCallback(async () => {
     try {
-      await authApi.me();
+      const me = await authApi.me();
+      setUser(me);
       const [list, emps] = await Promise.all([
         attendanceAdminApi.list({
           employee_id: employeeFilter || undefined,
@@ -71,6 +98,36 @@ export default function AdminAttendancePage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  function startCorrection(record: AttendanceListItem) {
+    setCorrecting(record);
+    setCorrCheckIn(toLocalInput(record.check_in_at));
+    setCorrCheckOut(toLocalInput(record.check_out_at));
+    setCorrNotes(record.notes ?? "");
+    setCorrReason("");
+    setError(null);
+  }
+
+  async function handleSaveCorrection(event: React.FormEvent) {
+    event.preventDefault();
+    if (!correcting) return;
+    setSavingCorrection(true);
+    setError(null);
+    try {
+      await attendanceAdminApi.correct(correcting.id, {
+        check_in_at: fromLocalInput(corrCheckIn),
+        check_out_at: fromLocalInput(corrCheckOut),
+        notes: corrNotes.trim() || null,
+        reason: corrReason.trim(),
+      });
+      setCorrecting(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo corregir el registro");
+    } finally {
+      setSavingCorrection(false);
+    }
+  }
 
   return (
     <div className="flex flex-1 flex-col bg-zinc-50">
@@ -139,6 +196,78 @@ export default function AdminAttendancePage() {
           </select>
         </div>
 
+        {correcting && canManage && (
+          <form
+            onSubmit={handleSaveCorrection}
+            className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/60 p-4"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-zinc-900">
+                Corregir registro · {correcting.employee_name}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setCorrecting(null)}
+                className="text-xs text-zinc-400 hover:text-zinc-600"
+              >
+                Cerrar ✕
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Entrada
+                <input
+                  type="datetime-local"
+                  value={corrCheckIn}
+                  onChange={(e) => setCorrCheckIn(e.target.value)}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-amber-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Salida (vacío = quitar salida)
+                <input
+                  type="datetime-local"
+                  value={corrCheckOut}
+                  onChange={(e) => setCorrCheckOut(e.target.value)}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-amber-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Notas
+                <input
+                  type="text"
+                  value={corrNotes}
+                  onChange={(e) => setCorrNotes(e.target.value)}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-amber-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                Motivo (obligatorio)
+                <input
+                  type="text"
+                  value={corrReason}
+                  onChange={(e) => setCorrReason(e.target.value)}
+                  required
+                  minLength={3}
+                  placeholder="Ej. olvidó marcar salida"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-amber-500"
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              El backend recalcula automáticamente minutos trabajados y estado; la corrección queda
+              registrada en auditoría.
+            </p>
+            <button
+              type="submit"
+              disabled={savingCorrection || corrReason.trim().length < 3}
+              className="mt-3 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+            >
+              {savingCorrection ? "Guardando…" : "Guardar corrección"}
+            </button>
+          </form>
+        )}
+
         <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
@@ -151,12 +280,13 @@ export default function AdminAttendancePage() {
                 <th className="px-4 py-3">Esperado</th>
                 <th className="px-4 py-3">Diferencia</th>
                 <th className="px-4 py-3">Estado</th>
+                {canManage && <th className="px-4 py-3 text-right">Acciones</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
               {records.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-zinc-400">
+                  <td colSpan={canManage ? 9 : 8} className="px-4 py-6 text-center text-zinc-400">
                     Sin registros con los filtros actuales.
                   </td>
                 </tr>
@@ -203,6 +333,18 @@ export default function AdminAttendancePage() {
                       {record.status === "OPEN" ? "Abierta" : "Completado"}
                     </span>
                   </td>
+                  {canManage && (
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => startCorrection(record)}
+                          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 transition-colors hover:bg-zinc-100"
+                        >
+                          Corregir
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

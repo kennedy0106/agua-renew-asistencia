@@ -13,10 +13,11 @@ from datetime import date, datetime
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user
+from app.core.permissions import get_current_user, require_any_role
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
+    AttendanceCorrection,
     AttendanceListItem,
     AttendanceRecordOut,
     AttendanceSummary,
@@ -25,9 +26,11 @@ from app.modules.attendance.schemas import (
     IdentifyRequest,
     IdentifyResponse,
 )
-from app.modules.attendance.service import AttendanceService
+from app.modules.attendance.service import AttendanceService, _MISSING
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
+
+can_correct = require_any_role("ADMIN", "BOSS")
 
 
 @router.post("/identify", response_model=IdentifyResponse)
@@ -65,3 +68,21 @@ def list_attendance(
 def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> AttendanceSummary:
     today = datetime.now(lima_tz()).date()
     return AttendanceService(db).summary(today)
+
+
+@router.patch("/{record_id}", response_model=AttendanceRecordOut)
+def correct_attendance(
+    record_id: uuid.UUID,
+    payload: AttendanceCorrection,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> AttendanceRecordOut:
+    """Corrige un registro (motivo obligatorio). El backend recalcula todo lo derivado."""
+    return AttendanceService(db).correct_record(
+        record_id,
+        reason=payload.reason,
+        current_user_id=user.id,
+        check_in_at=payload.check_in_at if "check_in_at" in payload.model_fields_set else _MISSING,
+        check_out_at=payload.check_out_at if "check_out_at" in payload.model_fields_set else _MISSING,
+        notes=payload.notes if "notes" in payload.model_fields_set else _MISSING,
+    )

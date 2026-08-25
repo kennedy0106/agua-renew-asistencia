@@ -17,9 +17,12 @@ from sqlalchemy.orm import Session
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.repository import AttendanceRepository
+from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.repository import WorkScheduleRepository
 from app.modules.schedules.service import ScheduleService
+
+_MISSING = object()  # sentinela: distingue "no enviado" de "enviado como null"
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -187,3 +190,74 @@ class AttendanceService:
             "open_entries": self.repo.count_open(),
             "checked_out_today": self.repo.count_complete_on(today),
         }
+
+    # --- Correcciones y auditoría (Fase 8) ---
+
+    @staticmethod
+    def _serialize(record: AttendanceRecord) -> dict:
+        return {
+            "work_date": record.work_date.isoformat(),
+            "check_in_at": record.check_in_at.isoformat(),
+            "check_out_at": record.check_out_at.isoformat() if record.check_out_at else None,
+            "worked_minutes": record.worked_minutes,
+            "status": record.status,
+            "notes": record.notes,
+        }
+
+    def correct_record(
+        self,
+        record_id: uuid.UUID,
+        *,
+        reason: str,
+        current_user_id: uuid.UUID | None,
+        check_in_at=_MISSING,
+        check_out_at=_MISSING,
+        notes=_MISSING,
+    ) -> AttendanceRecord:
+        """Corrige un registro de asistencia y lo audita.
+
+        Los valores derivados SIEMPRE los recalcula el backend:
+        work_date (de check_in en Lima), worked_minutes (duración −
+        refrigerio) y status (OPEN/COMPLETE según haya salida).
+        """
+        record = self.repo.get_by_id(record_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+
+        old_values = self._serialize(record)
+
+        if check_in_at is not _MISSING:
+            record.check_in_at = _as_utc(check_in_at)
+            record.work_date = record.check_in_at.astimezone(lima_tz()).date()
+        if check_out_at is not _MISSING:
+            record.check_out_at = None if check_out_at is None else _as_utc(check_out_at)
+        if notes is not _MISSING:
+            record.notes = notes or None
+
+        # Recalcular derivados.
+        if record.check_out_at is None:
+            record.status = "OPEN"
+            record.worked_minutes = None
+        else:
+            schedule = WorkScheduleRepository(self.db).get_for_date(record.employee_id, record.work_date)
+            break_minutes = schedule.break_minutes if schedule else 0
+            record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, break_minutes)
+            record.status = "COMPLETE"
+
+        new_values = self._serialize(record)
+        if old_values == new_values:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="No hay cambios que registrar"
+            )
+
+        saved = self.repo.save(record)
+        AuditRepository(self.db).create(
+            entity_type="attendance",
+            entity_id=record_id,
+            action="correction",
+            old_values=old_values,
+            new_values=new_values,
+            reason=reason.strip(),
+            performed_by=current_user_id,
+        )
+        return saved

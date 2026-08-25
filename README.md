@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 8 (correcciones y auditoría)
+
+- [x] Modelo `audit_logs` (old/new en JSONB, reason, performed_by) + migración `0201cd2b1d1e` en Neon
+- [x] `PATCH /api/v1/attendance/{id}` (ADMIN+BOSS) con **motivo obligatorio**; el backend recalcula work_date, worked_minutes y status
+- [x] Corrección sin cambios → 409; limpiar salida (null) vuelve el registro a OPEN
+- [x] `GET /api/v1/audit-logs` — **solo ADMIN** (SUPERVISOR y BOSS → 403), filtros entity_type/entity_id
+- [x] Frontend: botón "Corregir" en `/admin/attendance` (formulario con motivo) + página `/admin/audit` con old→new
+- [x] Tests: 115 en verde (13 nuevos: motivo obligatorio, permisos, recálculo con refrigerio, cruce de medianoche, old/new en bitácora)
+- [x] Smoke test real contra Neon: corrección 08:00→17:00 Lima = 480 min; bitácora con admin y motivo
+
 ## Estado — Fase 7 (panel de asistencia para jefes)
 
 - [x] `GET /api/v1/attendance` (autenticado) con filtros: employee_id, date_from, date_to, status
