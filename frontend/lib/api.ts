@@ -70,3 +70,56 @@ export const jobRolesApi = {
       body: JSON.stringify(patch),
     }),
 };
+
+export type Employee = {
+  id: string;
+  dni: string;
+  employee_code: string;
+  first_name: string;
+  last_name: string;
+  job_role_id: string;
+  job_role_name: string | null;
+  hire_date: string | null;
+  termination_date: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+function toQueryString(params: Record<string, string | boolean | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  }
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const employeesApi = {
+  list: (params: { active?: boolean; search?: string } = {}) =>
+    apiFetch<Employee[]>(`/api/v1/employees${toQueryString(params)}`),
+  create: (payload: {
+    dni: string;
+    employee_code: string;
+    first_name: string;
+    last_name: string;
+    job_role_id: string;
+    hire_date?: string | null;
+  }) =>
+    apiFetch<Employee>("/api/v1/employees", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  update: (
+    id: string,
+    patch: Partial<
+      Pick<Employee, "dni" | "employee_code" | "first_name" | "last_name" | "job_role_id" | "hire_date" | "termination_date">
+    >,
+  ) =>
+    apiFetch<Employee>(`/api/v1/employees/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deactivate: (id: string) =>
+    apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, { method: "POST" }),
+};

@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 3 (gestión de empleados)
+
+- [x] Modelo `employees` + migración `004a0c1cd919` aplicada a Neon (incluye FK de `users.employee_id` → employees, deuda de Fase 1 cerrada)
+- [x] Endpoints: `GET /api/v1/employees` (lista con filtros active/search, autenticado), `GET /{id}`, `POST`, `PATCH /{id}`, `POST /{id}/deactivate`
+- [x] **Permisos (decisión de negocio): crear/editar/desactivar = ADMIN y JEFE (BOSS)**; SUPERVISOR solo consulta
+- [x] Reglas: DNI 8 dígitos (422), DNI y código únicos (409), cargo debe existir, cesado = INACTIVO (nunca se borra)
+- [x] Frontend `/admin/employees`: lista + filtros (estado/búsqueda), crear, editar en línea, desactivar/activar
+- [x] Tests: 56 en verde (18 nuevos de empleados: permisos ADMIN/BOSS/SUPERVISOR, DNI inválido/duplicado, código duplicado, 404, filtros, desactivación)
+- [x] Smoke test real contra Neon: login → crear (UTF-8) → búsqueda → desactivar → historial visible
+
 ## Estado — Fase 2 (cargos laborales)
 
 - [x] Modelo `job_roles` + migración `8a415d406af1` aplicada a Neon

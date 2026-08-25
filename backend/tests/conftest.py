@@ -48,6 +48,14 @@ def db_session():
         role = role_repo.create(name=name, description=description)
         roles[name] = role.id
 
+    # Cargos laborales de prueba (Fase 2+).
+    from app.modules.job_roles.repository import JobRoleRepository
+
+    job_roles = {}
+    job_repo = JobRoleRepository(session)
+    for name in ("Operario", "Chofer"):
+        job_roles[name] = job_repo.create(name=name).id
+
     users = UserRepository(session)
     users.create(username="admin", password_hash=hash_password("Admin123!"), system_role_id=roles["ADMIN"])
     users.create(username="boss", password_hash=hash_password("Boss123!"), system_role_id=roles["BOSS"])
@@ -58,6 +66,7 @@ def db_session():
     inactive.active = False
     session.commit()
 
+    session._test_job_roles = job_roles  # type: ignore[attr-defined]
     yield session
 
     session.close()

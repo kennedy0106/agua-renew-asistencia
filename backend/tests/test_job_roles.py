@@ -24,19 +24,20 @@ def test_list_con_rol_autenticado(client):
     _login(client, "supervisor", "Sup123!")
     response = client.get("/api/v1/job-roles")
     assert response.status_code == 200
-    assert response.json() == []
+    names = {r["name"] for r in response.json()}
+    assert "Operario" in names  # sembrado por el fixture
 
 
 # --- Creación ---
 
 def test_create_como_admin(client):
     _login(client, "admin", "Admin123!")
-    response = _create(client, "Operario", "Línea de producción")
+    response = _create(client, "Almacén", "Control de stock")
     assert response.status_code == 201
     body = response.json()
-    assert body["name"] == "Operario"
+    assert body["name"] == "Almacén"
     assert body["active"] is True
-    assert body["description"] == "Línea de producción"
+    assert body["description"] == "Control de stock"
 
 
 def test_create_como_boss_forbidden(client):

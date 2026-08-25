@@ -91,10 +91,13 @@ export default function AdminDashboardPage() {
             <p className="text-sm font-semibold text-zinc-900">Cargos laborales</p>
             <p className="mt-1 text-xs text-zinc-500">Operario, Chofer, Almacén…</p>
           </a>
-          <div className="rounded-2xl border border-dashed border-zinc-200 p-5 text-zinc-300">
-            <p className="text-sm font-semibold">Empleados</p>
-            <p className="mt-1 text-xs">Llega en la Fase 3</p>
-          </div>
+          <a
+            href="/admin/employees"
+            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
+          >
+            <p className="text-sm font-semibold text-zinc-900">Empleados</p>
+            <p className="mt-1 text-xs text-zinc-500">DNI, código, cargo y estado</p>
+          </a>
           <div className="rounded-2xl border border-dashed border-zinc-200 p-5 text-zinc-300">
             <p className="text-sm font-semibold">Asistencia</p>
             <p className="mt-1 text-xs">Llega en la Fase 6</p>

@@ -21,7 +21,9 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    employee_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)  # FK a employees en Fase 3
+    employee_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("employees.id"), nullable=True, index=True
+    )  # Vincular un usuario a su empleado (opcional; Fase 14 lo gestiona)
     system_role_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("system_roles.id"), nullable=False, index=True
     )
