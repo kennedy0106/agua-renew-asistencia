@@ -7,6 +7,9 @@ import {
   authApi,
   employeesApi,
   Employee,
+  salaryApi,
+  SalaryPayload,
+  SalarySetting,
   scheduleApi,
   SchedulePayload,
   UserOut,
@@ -69,6 +72,19 @@ export default function EmployeeDetailPage() {
   const [form, setForm] = useState<SchedulePayload>(defaultForm());
   const [saving, setSaving] = useState(false);
 
+  const [salary, setSalary] = useState<SalarySetting | null>(null);
+  const [salaryHistory, setSalaryHistory] = useState<SalarySetting[]>([]);
+  const [showSalaryForm, setShowSalaryForm] = useState(false);
+  const [salaryForm, setSalaryForm] = useState<SalaryPayload>({
+    effective_from: "",
+    monthly_salary: "",
+    overtime_enabled: false,
+    overtime_method: "PERCENTAGE",
+    overtime_percentage: null,
+    overtime_fixed_rate: null,
+  });
+  const [savingSalary, setSavingSalary] = useState(false);
+
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
   const load = useCallback(async () => {
@@ -84,6 +100,17 @@ export default function EmployeeDetailPage() {
         else throw err;
       }
       setHistory(await scheduleApi.history(employeeId));
+
+      // Salario: solo ADMIN/BOSS (el backend rechaza 403 al supervisor).
+      if (MANAGE_ROLES.includes(me.role)) {
+        try {
+          setSalary(await salaryApi.get(employeeId));
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) setSalary(null);
+          else throw err;
+        }
+        setSalaryHistory(await salaryApi.history(employeeId));
+      }
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -115,6 +142,42 @@ export default function EmployeeDetailPage() {
       setSaving(false);
     }
   }
+
+  async function handleSaveSalary(event: React.FormEvent) {
+    event.preventDefault();
+    setSavingSalary(true);
+    setError(null);
+    try {
+      await salaryApi.set(employeeId, salaryForm);
+      setShowSalaryForm(false);
+      setSalaryForm({
+        effective_from: "",
+        monthly_salary: "",
+        overtime_enabled: false,
+        overtime_method: "PERCENTAGE",
+        overtime_percentage: null,
+        overtime_fixed_rate: null,
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo guardar el sueldo");
+    } finally {
+      setSavingSalary(false);
+    }
+  }
+
+  function formatMoney(value: string | null): string {
+    if (value === null) return "—";
+    const num = Number(value);
+    return `S/ ${num.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  const overtimeLabel = (s: SalarySetting): string => {
+    if (!s.overtime_enabled) return "No configurado";
+    if (s.overtime_method === "PERCENTAGE") return `${s.overtime_percentage}% recargo`;
+    if (s.overtime_method === "FIXED_RATE") return `S/ ${s.overtime_fixed_rate} / hora`;
+    return "Monto manual (en periodo)";
+  };
 
   if (loading) {
     return (
@@ -298,6 +361,180 @@ export default function EmployeeDetailPage() {
             </div>
           )}
         </div>
+
+        {canManage && (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-900">Sueldo</h2>
+                <p className="text-sm text-zinc-500">
+                  Visible solo para administradores y jefes. El cambio de sueldo preserva el historial.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowSalaryForm((v) => !v)}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
+              >
+                {showSalaryForm ? "Cancelar" : "Configurar sueldo"}
+              </button>
+            </div>
+
+            {showSalaryForm && (
+              <form
+                onSubmit={handleSaveSalary}
+                className="mb-5 grid gap-3 rounded-xl bg-zinc-50 p-4 sm:grid-cols-3"
+              >
+                <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                  Vigente desde
+                  <input
+                    type="date"
+                    value={salaryForm.effective_from}
+                    onChange={(e) => setSalaryForm({ ...salaryForm, effective_from: e.target.value })}
+                    required
+                    className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                  Sueldo mensual (S/)
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    value={salaryForm.monthly_salary}
+                    onChange={(e) => setSalaryForm({ ...salaryForm, monthly_salary: e.target.value })}
+                    required
+                    className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="flex items-end gap-2 pb-2 text-sm font-medium text-zinc-700">
+                  <input
+                    type="checkbox"
+                    checked={salaryForm.overtime_enabled}
+                    onChange={(e) =>
+                      setSalaryForm({ ...salaryForm, overtime_enabled: e.target.checked })
+                    }
+                    className="h-4 w-4 accent-sky-600"
+                  />
+                  Horas extra habilitadas
+                </label>
+
+                {salaryForm.overtime_enabled && (
+                  <>
+                    <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                      Método
+                      <select
+                        value={salaryForm.overtime_method}
+                        onChange={(e) =>
+                          setSalaryForm({
+                            ...salaryForm,
+                            overtime_method: e.target.value as SalaryPayload["overtime_method"],
+                          })
+                        }
+                        className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                      >
+                        <option value="PERCENTAGE">Porcentaje (%)</option>
+                        <option value="FIXED_RATE">Tarifa fija (S/ / hora)</option>
+                        <option value="MANUAL">Monto manual (en periodo)</option>
+                      </select>
+                    </label>
+                    {salaryForm.overtime_method === "PERCENTAGE" && (
+                      <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                        Recargo (%)
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={salaryForm.overtime_percentage ?? ""}
+                          onChange={(e) =>
+                            setSalaryForm({
+                              ...salaryForm,
+                              overtime_percentage: e.target.value || null,
+                            })
+                          }
+                          required
+                          className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                        />
+                      </label>
+                    )}
+                    {salaryForm.overtime_method === "FIXED_RATE" && (
+                      <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
+                        Tarifa (S/ por hora)
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={salaryForm.overtime_fixed_rate ?? ""}
+                          onChange={(e) =>
+                            setSalaryForm({
+                              ...salaryForm,
+                              overtime_fixed_rate: e.target.value || null,
+                            })
+                          }
+                          required
+                          className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                        />
+                      </label>
+                    )}
+                  </>
+                )}
+
+                <div className="sm:col-span-3">
+                  <button
+                    type="submit"
+                    disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
+                    className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
+                  >
+                    {savingSalary ? "Guardando…" : "Guardar sueldo"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {salary ? (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-zinc-100 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                    Sueldo mensual
+                  </p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {formatMoney(salary.monthly_salary)}
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-400">desde {salary.effective_from}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-100 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                    Horas extra
+                  </p>
+                  <p className="mt-1 text-lg font-semibold text-zinc-900">{overtimeLabel(salary)}</p>
+                </div>
+                <div className="rounded-xl border border-zinc-100 p-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                    Estado
+                  </p>
+                  <p className="mt-1 text-lg font-semibold text-emerald-600">Vigente</p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-400">
+                Este empleado aún no tiene sueldo configurado.
+              </p>
+            )}
+
+            {salaryHistory.length > 1 && (
+              <div className="mt-5 border-t border-zinc-100 pt-4">
+                <h3 className="mb-2 text-sm font-semibold text-zinc-700">Historial de sueldos</h3>
+                <ul className="space-y-1 text-sm text-zinc-500">
+                  {salaryHistory.map((h) => (
+                    <li key={h.id}>
+                      {formatMoney(h.monthly_salary)} · {h.effective_from} →{" "}
+                      {h.effective_to ?? "vigente"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );

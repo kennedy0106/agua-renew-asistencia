@@ -165,3 +165,38 @@ export const scheduleApi = {
       body: JSON.stringify(payload),
     }),
 };
+
+export type SalarySetting = {
+  id: string;
+  employee_id: string;
+  monthly_salary: string;
+  overtime_enabled: boolean;
+  overtime_method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL";
+  overtime_percentage: string | null;
+  overtime_fixed_rate: string | null;
+  effective_from: string;
+  effective_to: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SalaryPayload = {
+  effective_from: string;
+  monthly_salary: string;
+  overtime_enabled: boolean;
+  overtime_method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL";
+  overtime_percentage: string | null;
+  overtime_fixed_rate: string | null;
+};
+
+export const salaryApi = {
+  get: (employeeId: string) =>
+    apiFetch<SalarySetting>(`/api/v1/employees/${employeeId}/salary-settings`),
+  history: (employeeId: string) =>
+    apiFetch<SalarySetting[]>(`/api/v1/employees/${employeeId}/salary-settings/history`),
+  set: (employeeId: string, payload: SalaryPayload) =>
+    apiFetch<SalarySetting>(`/api/v1/employees/${employeeId}/salary-settings`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+};

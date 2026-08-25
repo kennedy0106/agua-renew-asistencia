@@ -7,6 +7,7 @@ del paquete antes de importar cualquier submódulo, las relaciones por nombre
 
 from app.modules.employees.models import Employee  # noqa: F401
 from app.modules.job_roles.models import JobRole  # noqa: F401
+from app.modules.salary.models import SalarySetting  # noqa: F401
 from app.modules.schedules.models import WorkSchedule  # noqa: F401
 from app.modules.system_roles.models import SystemRole  # noqa: F401
 from app.modules.users.models import User  # noqa: F401

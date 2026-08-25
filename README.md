@@ -29,6 +29,17 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 5 (configuración salarial)
+
+- [x] Modelo `salary_settings` (sueldo NUMERIC(12,2) + horas extra + vigencia) + migración `c22981aa3b4f` en Neon
+- [x] **Privacidad salarial: TODO el router exige ADMIN/BOSS** — SUPERVISOR recibe 403 incluso para leer (MVP §6)
+- [x] Métodos de horas extra: PERCENTAGE | FIXED_RATE | MANUAL con validación cruzada (422 si falta porcentaje/tarifa)
+- [x] Vigencia histórica: S/1300 → S/1500 crea nueva configuración y cierra la anterior; consulta por `?date=`
+- [x] Dinero en Decimal/NUMERIC (nunca float); >2 decimales rechazado
+- [x] Frontend: sección Sueldo en detalle de empleado (solo ADMIN/BOSS): formulario con método condicional + historial
+- [x] Tests: 82 en verde (14 nuevos: privacidad supervisor, vigencia, Decimal, 422, 409)
+- [x] Smoke test real contra Neon: sueldo S/1500.00 + HE 25% creado y leído con precisión
+
 ## Estado — Fase 4 (jornadas laborales)
 
 - [x] Modelo `work_schedules` (minutos por día + `break_minutes` + vigencia) + migración `a41fb691bf12` en Neon; check constraint de minutos ≥ 0
