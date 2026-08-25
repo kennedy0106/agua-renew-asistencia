@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
 import { Alert, ChevronRight, Coins, Download } from "@/components/Icons";
+import { StatSkeleton, TableSkeleton } from "@/components/Loading";
 import {
   API_URL,
   ApiError,
@@ -120,14 +121,18 @@ export default function AdminSalariesPage() {
         </p>
       )}
 
-      {summary && (
-        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
-          <Stat label="Total planilla" value={formatMoney(summary.total)} />
-          <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
-          <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
-          <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
-          <Stat label="Empleados" value={String(summary.employee_count)} />
-        </div>
+      {loading ? (
+        <StatSkeleton count={5} />
+      ) : (
+        summary && (
+          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+            <Stat label="Total planilla" value={formatMoney(summary.total)} />
+            <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
+            <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
+            <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
+            <Stat label="Empleados" value={String(summary.employee_count)} />
+          </div>
+        )
       )}
 
       <div className="table-wrap">
@@ -143,13 +148,7 @@ export default function AdminSalariesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={6} className="empty">
-                  Cargando liquidaciones…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={5} cols={6} />}
             {!loading && records.length === 0 && (
               <tr>
                 <td colSpan={6} className="empty">

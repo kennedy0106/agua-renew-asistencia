@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
-import { Alert, Key, Plus, Refresh, User, Users, X } from "@/components/Icons";
+import { Alert, Key, Plus, Refresh, X } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import {
   AdminUser,
   ApiError,
@@ -231,13 +232,7 @@ export default function AdminUsersPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={6} className="empty">
-                  Cargando usuarios…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={5} cols={6} />}
             {!loading && isAdmin && users.length === 0 && (
               <tr>
                 <td colSpan={6} className="empty">

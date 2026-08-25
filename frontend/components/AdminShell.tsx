@@ -4,6 +4,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ApiError, authApi, UserOut } from "@/lib/api";
+import { Skeleton, StatSkeleton } from "./Loading";
 import {
   Briefcase,
   Chart,
@@ -80,11 +81,26 @@ export default function AdminShell({
   if (loading) {
     return (
       <div className="app-shell">
-        <div className="sidebar" />
-        <div className="main">
-          <div className="page muted" style={{ paddingTop: "3rem" }}>
-            Cargando…
+        <aside className="sidebar">
+          <div className="sidebar-brand">
+            <Skeleton width={120} height={26} round />
           </div>
+          <div style={{ padding: "1rem 0.9rem", display: "grid", gap: "0.5rem" }}>
+            {Array.from({ length: 7 }).map((_, i) => (
+              <Skeleton key={i} height={34} round />
+            ))}
+          </div>
+        </aside>
+        <div className="main">
+          <header className="topbar">
+            <Skeleton width={180} height={16} />
+          </header>
+          <main className="page">
+            <Skeleton width={220} height={18} />
+            <div style={{ marginTop: "1rem" }}>
+              <StatSkeleton count={4} />
+            </div>
+          </main>
         </div>
       </div>
     );
@@ -150,7 +166,7 @@ export default function AdminShell({
             </a>
           )}
         </header>
-        <main className="page">{children}</main>
+        <main className="page page-enter">{children}</main>
       </div>
       </div>
     </AdminUserContext.Provider>

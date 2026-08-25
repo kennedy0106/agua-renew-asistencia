@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { Alert, Shield } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import { ApiError, auditApi, AuditLog } from "@/lib/api";
 
 function formatDateTime(iso: string): string {
@@ -82,13 +83,7 @@ export default function AdminAuditPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={5} className="empty">
-                  Cargando bitácora…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={6} cols={5} />}
             {!loading && logs.length === 0 && (
               <tr>
                 <td colSpan={5} className="empty">

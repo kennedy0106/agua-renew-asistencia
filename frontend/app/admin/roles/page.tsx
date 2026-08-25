@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
 import { Alert, Briefcase, Pencil, Plus, X } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 
 const ROLES_MANAGE = "ADMIN"; // crear/editar/desactivar cargos: solo ADMIN
@@ -128,13 +129,7 @@ export default function AdminRolesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={canManage ? 4 : 3} className="empty">
-                  Cargando cargos…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={4} cols={canManage ? 4 : 3} />}
             {!loading && roles.length === 0 && (
               <tr>
                 <td colSpan={canManage ? 4 : 3} className="empty">

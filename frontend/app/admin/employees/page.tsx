@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import { ApiError, employeesApi, Employee, jobRolesApi, JobRole } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"]; // crear/editar/desactivar: ADMIN y JEFE
@@ -227,13 +228,7 @@ export default function AdminEmployeesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={canManage ? 6 : 5} className="empty">
-                  Cargando empleados…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={5} cols={canManage ? 6 : 5} />}
             {!loading && employees.length === 0 && (
               <tr>
                 <td colSpan={canManage ? 6 : 5} className="empty">

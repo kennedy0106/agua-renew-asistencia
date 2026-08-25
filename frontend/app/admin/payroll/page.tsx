@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import { ApiError, PayrollPeriod, PayrollRecord, payrollApi } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
@@ -267,7 +268,7 @@ export default function AdminPayrollPage() {
                 </tr>
               </thead>
               <tbody>
-                {records.length === 0 && (
+                {records.length === 0 && !busy && (
                   <tr>
                     <td colSpan={7} className="empty">
                       <Receipt size={26} />
@@ -275,6 +276,7 @@ export default function AdminPayrollPage() {
                     </td>
                   </tr>
                 )}
+                {busy && <TableSkeleton rows={4} cols={7} />}
                 {records.map((record) => (
                   <tr key={record.id}>
                     <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell, { useAdminUser } from "@/components/AdminShell";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
 import {
   API_URL,
   ApiError,
@@ -229,13 +230,7 @@ export default function AdminAttendancePage() {
             </tr>
           </thead>
           <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={canManage ? 9 : 8} className="empty">
-                  Cargando registros…
-                </td>
-              </tr>
-            )}
+            {loading && <TableSkeleton rows={5} cols={canManage ? 9 : 8} />}
             {!loading && records.length === 0 && (
               <tr>
                 <td colSpan={canManage ? 9 : 8} className="empty">

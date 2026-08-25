@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { StatSkeleton } from "@/components/Loading";
 import {
   Alert,
   Briefcase,
@@ -10,10 +11,8 @@ import {
   Clock,
   Coins,
   Key,
-  Logout,
   Receipt,
   Shield,
-  User,
   Users,
   Wallet,
 } from "@/components/Icons";
@@ -94,7 +93,7 @@ export default function AdminDashboardPage() {
 
   return (
     <AdminShell title="Dashboard" subtitle={user ? `Bienvenido, ${user.username}` : undefined}>
-      {summary && (
+      {summary ? (
         <div className="stat-grid">
           <StatCard
             label="Empleados activos"
@@ -122,6 +121,8 @@ export default function AdminDashboardPage() {
             icon={<Chart size={15} />}
           />
         </div>
+      ) : (
+        <StatSkeleton count={5} />
       )}
 
       <div className="module-grid">
