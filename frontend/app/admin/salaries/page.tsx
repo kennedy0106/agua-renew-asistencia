@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  API_URL,
   ApiError,
   authApi,
   PayrollPeriod,
@@ -122,18 +123,28 @@ export default function AdminSalariesPage() {
               Vista de liquidaciones. Los totales los calcula el backend.
             </p>
           </div>
-          <select
-            value={selectedId}
-            onChange={(e) => setSelectedId(e.target.value)}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-sky-500"
-          >
-            {periods.length === 0 && <option value="">Sin periodos</option>}
-            {periods.map((period) => (
-              <option key={period.id} value={period.id}>
-                {period.name} ({period.status})
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedId}
+              onChange={(e) => setSelectedId(e.target.value)}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-sky-500"
+            >
+              {periods.length === 0 && <option value="">Sin periodos</option>}
+              {periods.map((period) => (
+                <option key={period.id} value={period.id}>
+                  {period.name} ({period.status})
+                </option>
+              ))}
+            </select>
+            {selectedId && (
+              <button
+                onClick={() => window.open(`${API_URL}/api/v1/exports/salaries.csv?period_id=${selectedId}`)}
+                className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+              >
+                Exportar CSV
+              </button>
+            )}
+          </div>
         </div>
 
         {error && (

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  API_URL,
   ApiError,
   attendanceAdminApi,
   AttendanceListItem,
@@ -194,6 +195,20 @@ export default function AdminAttendancePage() {
             <option value="OPEN">Entrada abierta</option>
             <option value="COMPLETE">Completado</option>
           </select>
+          <button
+            onClick={() => {
+              const params = new URLSearchParams();
+              if (employeeFilter) params.set("employee_id", employeeFilter);
+              if (dateFrom) params.set("date_from", dateFrom);
+              if (dateTo) params.set("date_to", dateTo);
+              if (statusFilter) params.set("status", statusFilter);
+              const qs = params.toString();
+              window.open(`${API_URL}/api/v1/exports/attendance.csv${qs ? `?${qs}` : ""}`);
+            }}
+            className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
+          >
+            Exportar CSV
+          </button>
         </div>
 
         {correcting && canManage && (

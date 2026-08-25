@@ -16,6 +16,7 @@ from app.modules.attendance.router import router as attendance_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.employees.router import router as employees_router
+from app.modules.exports.router import router as exports_router
 from app.modules.job_roles.router import router as job_roles_router
 from app.modules.overtime.router import router as overtime_router
 from app.modules.payroll.router import router as payroll_router
@@ -79,3 +80,4 @@ app.include_router(overtime_router)
 app.include_router(payroll_router)
 app.include_router(users_router)
 app.include_router(system_roles_router)
+app.include_router(exports_router)

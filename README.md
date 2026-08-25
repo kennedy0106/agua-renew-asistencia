@@ -29,6 +29,15 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 14 (exportaciones CSV)
+
+- [x] `GET /api/v1/exports/attendance.csv` (cualquier autenticado; mismos filtros del panel)
+- [x] `GET /api/v1/exports/salaries.csv?period_id=` (ADMIN/BOSS; snapshot del periodo)
+- [x] **BOM UTF-8** para que Excel muestre los acentos; Content-Disposition attachment
+- [x] Frontend: botones "Exportar CSV" en `/admin/attendance` (respeta filtros) y `/admin/salaries`
+- [x] Tests: 185 en verde (7 nuevos: BOM, headers, contenido con acentos, filtro por empleado, vacío, permisos, 404)
+- [x] Smoke test real contra Neon: ambos CSV con BOM y datos correctos (hora Lima 10:42; sueldos 1559.01)
+
 ## Estado — Fase 13 (usuarios del sistema)
 
 - [x] Gestión de usuarios SOLO ADMIN: `GET/POST /api/v1/users`, `PATCH /{id}`, `POST /{id}/reset-password`
