@@ -34,6 +34,9 @@ class SalaryService:
             )
         return setting
 
+    def get_for_date(self, employee_id: uuid.UUID, day: date) -> SalarySetting | None:
+        return self.repo.get_for_date(employee_id, day)
+
     def get_for_date_or_404(self, employee_id: uuid.UUID, day: date) -> SalarySetting:
         setting = self.repo.get_for_date(employee_id, day)
         if setting is None:

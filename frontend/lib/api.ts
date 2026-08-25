@@ -335,7 +335,7 @@ export type HourAdjustment = {
   employee_id: string;
   adjustment_date: string;
   minutes: number;
-  adjustment_type: "PERMISO" | "RECUPERACION" | "OTRO";
+  adjustment_type: "PERMISO" | "RECUPERACION" | "OTRO" | "OVERTIME";
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
   approved_by: string | null;
@@ -380,6 +380,48 @@ export const adjustmentsApi = {
   balance: (employeeId: string, dateFrom?: string, dateTo?: string) =>
     apiFetch<Balance>(
       `/api/v1/employees/${employeeId}/balance${toQueryString({
+        date_from: dateFrom,
+        date_to: dateTo,
+      })}`,
+    ),
+};
+
+// --- Horas extra (Fase 10) ---
+
+export type OvertimeDetectItem = {
+  work_date: string;
+  worked_minutes: number;
+  expected_minutes: number;
+  extra_minutes: number;
+};
+
+export type OvertimeValue = {
+  date_from: string;
+  date_to: string;
+  method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL" | null;
+  overtime_minutes: number;
+  hourly_rate: string | null;
+  value: string;
+  breakdown: {
+    adjustment_id: string;
+    adjustment_date: string;
+    minutes: number;
+    rate: string | null;
+    value: string;
+  }[];
+};
+
+export const overtimeApi = {
+  detect: (employeeId: string, dateFrom: string, dateTo: string) =>
+    apiFetch<OvertimeDetectItem[]>(
+      `/api/v1/employees/${employeeId}/overtime/detect${toQueryString({
+        date_from: dateFrom,
+        date_to: dateTo,
+      })}`,
+    ),
+  value: (employeeId: string, dateFrom: string, dateTo: string) =>
+    apiFetch<OvertimeValue>(
+      `/api/v1/employees/${employeeId}/overtime/value${toQueryString({
         date_from: dateFrom,
         date_to: dateTo,
       })}`,

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class AdjustmentCreate(BaseModel):
     adjustment_date: date
     minutes: int = Field(ge=-1440, le=1440, description="Minutos, con signo (ej. +200 recuperación, -120 permiso)")
-    adjustment_type: Literal["PERMISO", "RECUPERACION", "OTRO"]
+    adjustment_type: Literal["PERMISO", "RECUPERACION", "OTRO", "OVERTIME"]
     reason: str = Field(min_length=3, max_length=500)
 
 

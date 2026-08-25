@@ -29,6 +29,17 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 10 (horas extra)
+
+- [x] Tipo `OVERTIME` en hour_adjustments (minutos deben ser positivos, 422 si no)
+- [x] `GET /employees/{id}/overtime/detect`: días con sobretiempo (trabajado > esperado) — solo informativo, ADMIN/BOSS
+- [x] `GET /employees/{id}/overtime/value`: valor SOLO de ajustes OVERTIME APROBADOS según método del salary_settings vigente (PERCENTAGE/FIXED_RATE/MANUAL); overtime_enabled=false → 0; pendientes excluidos
+- [x] Tarifa por hora DERIVADA: sueldo mensual / minutos esperados del mes (jornada real); fallback documentado 240 h
+- [x] Dinero en Decimal con redondeo a céntimos
+- [x] Frontend: bloque "Horas extra" en detalle del empleado (detectar → registrar como HE → aprobar) + valor con método/tarifa
+- [x] Tests: 144 en verde (11 nuevos: detección, 4 métodos/estados, pendiente excluido, permisos, 422)
+- [x] Smoke test real contra Neon: detect 0 días (correcto), HE +60 aprobada → PERCENTAGE tarifa 7.2115 → S/ 9.01
+
 ## Estado — Fase 9 (permisos, recuperación de horas y saldo)
 
 - [x] Modelo `hour_adjustments` (tipo PERMISO/RECUPERACION/OTRO, ±minutos, PENDING/APPROVED/REJECTED) + migración `27ebe1b0b42a` en Neon

@@ -10,6 +10,9 @@ import {
   employeesApi,
   Employee,
   HourAdjustment,
+  OvertimeDetectItem,
+  OvertimeValue,
+  overtimeApi,
   salaryApi,
   SalaryPayload,
   SalarySetting,
@@ -101,6 +104,63 @@ export default function EmployeeDetailPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [savingAdj, setSavingAdj] = useState(false);
 
+  // Horas extra (Fase 10)
+  const [detectedDays, setDetectedDays] = useState<OvertimeDetectItem[] | null>(null);
+  const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
+  const [detecting, setDetecting] = useState(false);
+
+  function monthRange(): { from: string; to: string } {
+    const now = new Date();
+    const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+    return { from, to };
+  }
+
+  async function loadOvertime(role?: string) {
+    const canView = role
+      ? MANAGE_ROLES.includes(role)
+      : user
+        ? MANAGE_ROLES.includes(user.role)
+        : false;
+    if (!canView) return;
+    setError(null);
+    try {
+      const { from, to } = monthRange();
+      const [detected, value] = await Promise.all([
+        overtimeApi.detect(employeeId, from, to),
+        overtimeApi.value(employeeId, from, to),
+      ]);
+      setDetectedDays(detected);
+      setOvertimeValue(value);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo consultar horas extra");
+    }
+  }
+
+  async function registerOvertime(day: OvertimeDetectItem) {
+    setError(null);
+    try {
+      await adjustmentsApi.create(employeeId, {
+        adjustment_date: day.work_date,
+        minutes: day.extra_minutes,
+        adjustment_type: "OVERTIME",
+        reason: `Horas extra del ${day.work_date} (${Math.round(day.extra_minutes / 60)} h)`,
+      });
+      await Promise.all([loadOvertime(), loadAdjustmentsAndBalance()]);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo registrar la hora extra");
+    }
+  }
+
+  async function loadAdjustmentsAndBalance() {
+    const [bal, adj] = await Promise.all([
+      adjustmentsApi.balance(employeeId),
+      adjustmentsApi.list(employeeId),
+    ]);
+    setBalance(bal);
+    setAdjustments(adj);
+  }
+
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
   const load = useCallback(async () => {
@@ -135,6 +195,11 @@ export default function EmployeeDetailPage() {
       ]);
       setBalance(bal);
       setAdjustments(adj);
+
+      // Horas extra: solo ADMIN/BOSS (información salarial).
+      if (MANAGE_ROLES.includes(me.role)) {
+        await loadOvertime(me.role);
+      }
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -272,6 +337,7 @@ export default function EmployeeDetailPage() {
   const typeLabel: Record<string, string> = {
     PERMISO: "Permiso",
     RECUPERACION: "Recuperación",
+    OVERTIME: "Horas extra",
     OTRO: "Otro",
   };
 
@@ -696,6 +762,99 @@ export default function EmployeeDetailPage() {
             </div>
           )}
 
+          {canManage && (
+            <div className="mb-5 rounded-xl border border-sky-100 bg-sky-50/50 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-900">Horas extra</h3>
+                  <p className="text-xs text-zinc-500">
+                    Detectar ≠ pagar: registrar crea un ajuste pendiente que debe aprobarse.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setDetecting(true);
+                    loadOvertime().finally(() => setDetecting(false));
+                  }}
+                  disabled={detecting}
+                  className="rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+                >
+                  {detecting ? "Consultando…" : "Detectar sobretiempo del mes"}
+                </button>
+              </div>
+
+              {overtimeValue && overtimeValue.overtime_minutes > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg bg-white px-3 py-2 text-sm">
+                  <span className="text-zinc-500">
+                    Método:{" "}
+                    <span className="font-medium text-zinc-900">
+                      {overtimeValue.method === "PERCENTAGE"
+                        ? "Porcentaje"
+                        : overtimeValue.method === "FIXED_RATE"
+                          ? "Tarifa fija"
+                          : "Manual"}
+                    </span>
+                  </span>
+                  {overtimeValue.hourly_rate && (
+                    <span className="text-zinc-500">
+                      Tarifa:{" "}
+                      <span className="font-medium text-zinc-900">
+                        S/ {Number(overtimeValue.hourly_rate).toFixed(2)} / h
+                      </span>
+                    </span>
+                  )}
+                  <span className="text-zinc-500">
+                    Minutos aprobados:{" "}
+                    <span className="font-medium text-zinc-900">
+                      {overtimeValue.overtime_minutes}
+                    </span>
+                  </span>
+                  <span className="text-zinc-500">
+                    Valor:{" "}
+                    <span className="font-semibold text-emerald-700">
+                      S/ {Number(overtimeValue.value).toFixed(2)}
+                    </span>
+                  </span>
+                </div>
+              )}
+
+              {detectedDays !== null &&
+                (detectedDays.length === 0 ? (
+                  <p className="text-xs text-zinc-400">
+                    Sin sobretiempo detectado este mes (trabajado ≤ esperado todos los días).
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detectedDays.map((day) => (
+                      <li
+                        key={day.work_date}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-sm"
+                      >
+                        <span className="text-zinc-700">
+                          <span className="font-medium text-zinc-900">{day.work_date}</span>
+                          <span className="ml-2 text-zinc-400">
+                            trabajado {signedMinutes(day.worked_minutes)} · esperado{" "}
+                            {signedMinutes(day.expected_minutes)}
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-sky-700">
+                            +{signedMinutes(day.extra_minutes)}
+                          </span>
+                          <button
+                            onClick={() => registerOvertime(day)}
+                            className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700"
+                          >
+                            Registrar como HE
+                          </button>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
+            </div>
+          )}
+
           {canManage && showAdjForm && (
             <form
               onSubmit={handleCreateAdjustment}
@@ -737,6 +896,7 @@ export default function EmployeeDetailPage() {
                 >
                   <option value="RECUPERACION">Recuperación</option>
                   <option value="PERMISO">Permiso</option>
+                  <option value="OVERTIME">Horas extra</option>
                   <option value="OTRO">Otro</option>
                 </select>
               </label>

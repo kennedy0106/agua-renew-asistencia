@@ -46,6 +46,11 @@ class AdjustmentService:
         reason: str,
     ) -> HourAdjustment:
         self._get_employee(employee_id)
+        if adjustment_type == "OVERTIME" and minutes <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Las horas extra deben registrarse con minutos positivos",
+            )
         return self.repo.create(
             employee_id=employee_id,
             adjustment_date=adjustment_date,

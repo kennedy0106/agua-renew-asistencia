@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
-ADJUSTMENT_TYPES = ("PERMISO", "RECUPERACION", "OTRO")
+ADJUSTMENT_TYPES = ("PERMISO", "RECUPERACION", "OTRO", "OVERTIME")
 ADJUSTMENT_PENDING = "PENDING"
 ADJUSTMENT_APPROVED = "APPROVED"
 ADJUSTMENT_REJECTED = "REJECTED"
