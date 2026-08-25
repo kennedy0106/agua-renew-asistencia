@@ -14,6 +14,7 @@ from app.db.session import engine
 from app.modules.auth.router import router as auth_router
 from app.modules.employees.router import router as employees_router
 from app.modules.job_roles.router import router as job_roles_router
+from app.modules.schedules.router import router as schedules_router
 
 settings = get_settings()
 
@@ -61,3 +62,4 @@ def health_db() -> dict:
 app.include_router(auth_router)
 app.include_router(job_roles_router)
 app.include_router(employees_router)
+app.include_router(schedules_router)

@@ -122,4 +122,46 @@ export const employeesApi = {
     }),
   deactivate: (id: string) =>
     apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, { method: "POST" }),
+  get: (id: string) => apiFetch<Employee>(`/api/v1/employees/${id}`),
+};
+
+export type WorkSchedule = {
+  id: string;
+  employee_id: string;
+  monday_minutes: number;
+  tuesday_minutes: number;
+  wednesday_minutes: number;
+  thursday_minutes: number;
+  friday_minutes: number;
+  saturday_minutes: number;
+  sunday_minutes: number;
+  break_minutes: number;
+  effective_from: string;
+  effective_to: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SchedulePayload = {
+  effective_from: string;
+  monday_minutes: number;
+  tuesday_minutes: number;
+  wednesday_minutes: number;
+  thursday_minutes: number;
+  friday_minutes: number;
+  saturday_minutes: number;
+  sunday_minutes: number;
+  break_minutes: number;
+};
+
+export const scheduleApi = {
+  get: (employeeId: string) =>
+    apiFetch<WorkSchedule>(`/api/v1/employees/${employeeId}/schedule`),
+  history: (employeeId: string) =>
+    apiFetch<WorkSchedule[]>(`/api/v1/employees/${employeeId}/schedule/history`),
+  set: (employeeId: string, payload: SchedulePayload) =>
+    apiFetch<WorkSchedule>(`/api/v1/employees/${employeeId}/schedule`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };

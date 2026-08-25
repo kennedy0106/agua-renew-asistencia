@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 4 (jornadas laborales)
+
+- [x] Modelo `work_schedules` (minutos por día + `break_minutes` + vigencia) + migración `a41fb691bf12` en Neon; check constraint de minutos ≥ 0
+- [x] Endpoints: `GET /employees/{id}/schedule` (con `?date=` opcional), `GET /schedule/history`, `POST /employees/{id}/schedule` (ADMIN y BOSS)
+- [x] `ScheduleService.expected_minutes(employee, date)`: jornada vigente en la fecha; 0 si no hay jornada o día no laborable
+- [x] Vigencia histórica: cambiar jornada cierra la anterior (`effective_to` = día anterior); solapamiento → 409
+- [x] Frontend: detalle `/admin/employees/[id]` con jornada actual, historial y formulario en horas (backend guarda minutos)
+- [x] Tests: 68 en verde (12 nuevos de jornadas: días, cambio histórico, 409, permisos, sin jornada, 422)
+- [x] Smoke test real contra Neon: crear empleado → jornada L-S 480/D 0 → consulta por fecha (lunes 480)
+
 ## Estado — Fase 3 (gestión de empleados)
 
 - [x] Modelo `employees` + migración `004a0c1cd919` aplicada a Neon (incluye FK de `users.employee_id` → employees, deuda de Fase 1 cerrada)

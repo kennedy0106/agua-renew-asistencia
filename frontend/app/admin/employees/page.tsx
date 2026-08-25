@@ -387,8 +387,13 @@ export default function AdminEmployeesPage() {
                     </>
                   ) : (
                     <>
-                      <td className="px-4 py-3 font-medium text-zinc-900">
-                        {employee.first_name} {employee.last_name}
+                      <td className="px-4 py-3">
+                        <a
+                          href={`/admin/employees/${employee.id}`}
+                          className="font-medium text-zinc-900 hover:text-sky-700 hover:underline"
+                        >
+                          {employee.first_name} {employee.last_name}
+                        </a>
                       </td>
                       <td className="px-4 py-3">{employee.dni}</td>
                       <td className="px-4 py-3">{employee.employee_code}</td>
