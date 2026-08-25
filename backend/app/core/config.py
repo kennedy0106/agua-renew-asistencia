@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_name: str = "Agua ReNew — Asistencia API"
     environment: str = "development"  # development | production
     database_url: str = ""  # PostgreSQL (Neon en producción). Vacío = sin BD.
+    database_url_unpooled: str = ""  # Conexión directa (sin pooler): para migraciones Alembic.
     secret_key: str = "change-me"  # Requerido en producción (firma de sesiones/JWT).
     frontend_url: str = "http://localhost:3000"  # Origen permitido en CORS (producción).
     timezone: str = "America/Lima"  # Zona horaria oficial del negocio.

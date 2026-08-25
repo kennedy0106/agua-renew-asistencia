@@ -12,14 +12,18 @@ from alembic import context
 
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.session import engine_url
 
 config = context.config
 
 # La URL sale de la configuración central (.env / entorno).
+# Migraciones SIEMPRE con conexión directa (sin -pooler): las pooled no
+# soportan operaciones a nivel de sesión (ver skill neon-postgres).
 settings = get_settings()
-if settings.database_url:
+_migration_url = engine_url(settings.database_url_unpooled or settings.database_url)
+if _migration_url:
     # Escapar % para evitar interpolación del .ini.
-    config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+    config.set_main_option("sqlalchemy.url", _migration_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

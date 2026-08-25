@@ -37,7 +37,21 @@ agua-renew-erp/
 - [x] pytest con tests de health (2/2 en verde)
 - [x] Frontend Next.js mínimo (pantalla temporal)
 - [x] Variables de entorno documentadas (`.env.example`)
-- [ ] Conexión real a PostgreSQL (pendiente: `DATABASE_URL` de Neon)
+- [x] Conexión real a PostgreSQL — proyecto Neon **agua-renew-asistencia**
+      (org Kennedy, aws-us-east-2). Verificado: `GET /health/db` →
+      `{"status":"ok","database":"connected"}`; `SELECT 1` OK en conexión
+      pooled y directa.
+
+### Neon (infraestructura)
+
+- Proyecto: `agua-renew-asistencia` (`bitter-darkness-86548080`), rama `main`.
+- `backend/.env` (gitignored) tiene `DATABASE_URL` (pooled, para la app) y
+  `DATABASE_URL_UNPOOLED` (directa, para Alembic) — generado con
+  `neon env pull --file backend/.env`.
+- Las migraciones usan SIEMPRE la conexión directa (ver `alembic/env.py`).
+- CLI de Neon v4.3.1; MCP server instalado global (configurado para Codex);
+  skills de Neon en `.agents/skills/` (proyecto) y enlazadas a Hermes Agent.
+- Contexto: `.neon` (orgId/projectId, seguro de commitear).
 
 ## Arranque local
 
