@@ -29,6 +29,21 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 17 (estabilización: escenarios A–I) ✅ MVP COMPLETO
+
+- [x] **194 tests en verde** (9 nuevos de escenarios end-to-end por la API)
+- [x] Escenario A (jornada normal → saldo 0, payroll = sueldo) ✓
+- [x] Escenario B (llega tarde → −30 min, sin descuento automático) ✓
+- [x] Escenario C (sale antes → −30 min) ✓
+- [x] Escenario D (permiso + recuperación otro día → día cubierto y +480 recuperados) ✓
+- [x] Escenario E (horas adicionales detectadas: extra 60) ✓
+- [x] Escenario F (jefe aprueba SOLO parte como HE → 60 min, S/ 9.01) ✓
+- [x] Escenario G (olvida salida → corrección con motivo → COMPLETE + auditoría) ✓
+- [x] Escenario H (cambio de sueldo en mes posterior → 1300 agosto / 1500 septiembre) ✓
+- [x] Escenario I (supervisor consulta salario → 403 en 4 endpoints) ✓
+- [x] Logs de producción sin errores; datos reales verificados (periodo cerrado 1559.01, balance −11820 coherente)
+- [x] Nota honesta: la revisión visual de UX queda pendiente de tu prueba manual en producción
+
 ## Estado — Fase 16 (frontend en Vercel + dominio)
 
 - [x] **Producción en vivo: `https://agua-renew-erp-frontend.vercel.app`**
