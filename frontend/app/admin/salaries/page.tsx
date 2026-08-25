@@ -1,16 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import AdminShell, { useAdminUser } from "@/components/AdminShell";
+import { Alert, ChevronRight, Coins, Download } from "@/components/Icons";
 import {
   API_URL,
   ApiError,
-  authApi,
   PayrollPeriod,
   PayrollRecord,
   PayrollSummary,
   payrollApi,
-  UserOut,
 } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
@@ -30,8 +29,7 @@ function formatMinutes(minutes: number): string {
 }
 
 export default function AdminSalariesPage() {
-  const router = useRouter();
-  const [user, setUser] = useState<UserOut | null>(null);
+  const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
@@ -40,14 +38,11 @@ export default function AdminSalariesPage() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
+  const canView = user ? MANAGE_ROLES.includes(user.role) : false;
+
   const load = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-      if (!MANAGE_ROLES.includes(me.role)) {
-        setError("Solo administradores y jefes pueden ver los sueldos.");
-        return;
-      }
+      if (!canView) return;
       const list = await payrollApi.periods();
       setPeriods(list);
       if (list.length > 0 && !selectedId) {
@@ -55,22 +50,18 @@ export default function AdminSalariesPage() {
       }
       setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        router.replace("/admin/login");
-      } else {
-        setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
-      }
+      setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [router, selectedId]);
+  }, [canView, selectedId]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId || !canView) return;
     let active = true;
     Promise.all([payrollApi.summary(selectedId), payrollApi.records(selectedId)])
       .then(([sum, recs]) => {
@@ -87,147 +78,108 @@ export default function AdminSalariesPage() {
     return () => {
       active = false;
     };
-  }, [selectedId]);
-
-  if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 text-zinc-500">
-        Cargando…
-      </div>
-    );
-  }
+  }, [selectedId, canView]);
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-50">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-600 text-lg">
-            💧
-          </span>
-          <span className="font-semibold text-zinc-900">Agua ReNew</span>
-          <span className="text-sm text-zinc-500">· Sueldos</span>
-        </div>
-        <button
-          onClick={() => router.push("/admin/dashboard")}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 transition-colors hover:bg-zinc-100"
-        >
-          ← Dashboard
-        </button>
-      </header>
+    <AdminShell
+      title="Sueldos por periodo"
+      subtitle="Vista de liquidaciones · los totales los calcula el backend"
+    >
+      {!canView && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          Solo administradores y jefes pueden ver los sueldos.
+        </p>
+      )}
 
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold text-zinc-900">Sueldos por periodo</h1>
-            <p className="text-sm text-zinc-500">
-              Vista de liquidaciones. Los totales los calcula el backend.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
-              className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-sky-500"
-            >
-              {periods.length === 0 && <option value="">Sin periodos</option>}
-              {periods.map((period) => (
-                <option key={period.id} value={period.id}>
-                  {period.name} ({period.status})
-                </option>
-              ))}
-            </select>
-            {selectedId && (
-              <button
-                onClick={() => window.open(`${API_URL}/api/v1/exports/salaries.csv?period_id=${selectedId}`)}
-                className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50"
-              >
-                Exportar CSV
-              </button>
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      <div className="toolbar">
+        <select className="select" value={selectedId} onChange={(e) => setSelectedId(e.target.value)} style={{ maxWidth: 260 }}>
+          {periods.length === 0 && <option value="">Sin periodos</option>}
+          {periods.map((period) => (
+            <option key={period.id} value={period.id}>
+              {period.name} ({period.status})
+            </option>
+          ))}
+        </select>
+        <span className="spacer" />
+        {selectedId && (
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => window.open(`${API_URL}/api/v1/exports/salaries.csv?period_id=${selectedId}`)}
+          >
+            <Download size={15} />
+            Exportar CSV
+          </button>
         )}
+      </div>
 
-        {summary && (
-          <div className="mb-6 grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Total planilla
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                {formatMoney(summary.total)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Sueldo base
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                {formatMoney(summary.total_base)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Horas extra
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-emerald-600">
-                {formatMoney(summary.total_overtime)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Ajustes manuales
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-sky-600">
-                {formatMoney(summary.total_manual)}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Empleados
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                {summary.employee_count}
-              </p>
-            </div>
-          </div>
-        )}
+      {error && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          {error}
+        </p>
+      )}
 
-        <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+      {summary && (
+        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+          <Stat label="Total planilla" value={formatMoney(summary.total)} />
+          <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
+          <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
+          <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
+          <Stat label="Empleados" value={String(summary.employee_count)} />
+        </div>
+      )}
+
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Empleado</th>
+              <th style={{ textAlign: "right" }}>Sueldo base</th>
+              <th style={{ textAlign: "right" }}>Horas extra</th>
+              <th style={{ textAlign: "right" }}>Ajuste manual</th>
+              <th style={{ textAlign: "right" }}>Total</th>
+              <th style={{ textAlign: "right" }}>Detalle</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
               <tr>
-                <th className="px-4 py-3">Empleado</th>
-                <th className="px-4 py-3 text-right">Sueldo base</th>
-                <th className="px-4 py-3 text-right">Horas extra</th>
-                <th className="px-4 py-3 text-right">Ajuste manual</th>
-                <th className="px-4 py-3 text-right">Total</th>
-                <th className="px-4 py-3 text-right">Detalle</th>
+                <td colSpan={6} className="empty">
+                  Cargando liquidaciones…
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {records.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-zinc-400">
-                    Sin registros para este periodo.
-                  </td>
-                </tr>
-              )}
-              {records.map((record) => (
-                <FragmentRow
-                  key={record.id}
-                  record={record}
-                  expanded={expanded === record.id}
-                  onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </main>
+            )}
+            {!loading && records.length === 0 && (
+              <tr>
+                <td colSpan={6} className="empty">
+                  <Coins size={26} />
+                  Sin registros para este periodo.
+                </td>
+              </tr>
+            )}
+            {records.map((record) => (
+              <FragmentRow
+                key={record.id}
+                record={record}
+                expanded={expanded === record.id}
+                onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </AdminShell>
+  );
+}
+
+function Stat({ label, value, green }: { label: string; value: string; green?: boolean }) {
+  return (
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={green ? { color: "var(--dark-green)" } : undefined}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -243,65 +195,64 @@ function FragmentRow({
 }) {
   return (
     <>
-      <tr className={expanded ? "bg-sky-50/50" : ""}>
-        <td className="px-4 py-3 font-medium text-zinc-900">{record.employee_name ?? "—"}</td>
-        <td className="px-4 py-3 text-right tabular-nums">{formatMoney(record.base_salary)}</td>
-        <td className="px-4 py-3 text-right tabular-nums">
+      <tr style={expanded ? { background: "var(--blue-soft)" } : undefined}>
+        <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>
+        <td className="num" style={{ textAlign: "right" }}>
+          {formatMoney(record.base_salary)}
+        </td>
+        <td className="num" style={{ textAlign: "right" }}>
           {record.overtime_minutes > 0 ? (
-            <span className="text-emerald-700">{formatMoney(record.overtime_amount)}</span>
+            <span style={{ color: "var(--dark-green)" }}>{formatMoney(record.overtime_amount)}</span>
           ) : (
             "—"
           )}
         </td>
-        <td className="px-4 py-3 text-right tabular-nums">
+        <td className="num" style={{ textAlign: "right" }}>
           {Number(record.manual_adjustment) !== 0 ? (
-            <span className={Number(record.manual_adjustment) < 0 ? "text-red-600" : "text-sky-700"}>
+            <span style={{ color: Number(record.manual_adjustment) < 0 ? "var(--red)" : "var(--primary-blue)" }}>
               {formatMoney(record.manual_adjustment)}
             </span>
           ) : (
-            <span className="text-zinc-300">—</span>
+            <span className="muted">—</span>
           )}
         </td>
-        <td className="px-4 py-3 text-right font-semibold tabular-nums text-zinc-900">
+        <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>
           {formatMoney(record.total)}
         </td>
-        <td className="px-4 py-3 text-right">
-          <button
-            onClick={onToggle}
-            className="text-xs text-sky-600 hover:underline"
-          >
+        <td style={{ textAlign: "right" }}>
+          <button className="link-btn" onClick={onToggle} style={{ fontSize: "0.78rem" }}>
             {expanded ? "Ocultar" : "Ver detalle"}
           </button>
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-zinc-50/60">
-          <td colSpan={6} className="px-6 py-4">
-            <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <tr style={{ background: "var(--gray-100)" }}>
+          <td colSpan={6} style={{ padding: "0.9rem 1.2rem" }}>
+            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", fontSize: "0.84rem" }}>
               <div>
-                <p className="text-xs text-zinc-400">Trabajado</p>
-                <p className="font-medium text-zinc-900">{formatMinutes(record.worked_minutes)}</p>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>Trabajado</p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.worked_minutes)}</p>
               </div>
               <div>
-                <p className="text-xs text-zinc-400">Esperado (jornada)</p>
-                <p className="font-medium text-zinc-900">{formatMinutes(record.expected_minutes)}</p>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>Esperado (jornada)</p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.expected_minutes)}</p>
               </div>
               <div>
-                <p className="text-xs text-zinc-400">Horas extra</p>
-                <p className="font-medium text-zinc-900">
+                <p className="label" style={{ marginBottom: "0.1rem" }}>Horas extra</p>
+                <p style={{ fontWeight: 600 }}>
                   {record.overtime_minutes > 0
                     ? `${formatMinutes(record.overtime_minutes)} = ${formatMoney(record.overtime_amount)}`
                     : "—"}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-zinc-400">Ajustes de horas (aprobados)</p>
-                <p className="font-medium text-zinc-900">{formatMinutes(record.adjustment_minutes)}</p>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>Ajustes de horas (aprobados)</p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.adjustment_minutes)}</p>
               </div>
               {record.notes && (
-                <div className="sm:col-span-2 lg:col-span-4">
-                  <p className="text-xs text-zinc-400">Notas del ajuste manual</p>
-                  <p className="font-medium text-zinc-900">{record.notes}</p>
+                <div>
+                  <p className="label" style={{ marginBottom: "0.1rem" }}>Notas del ajuste manual</p>
+                  <p style={{ fontWeight: 600 }}>{record.notes}</p>
                 </div>
               )}
             </div>

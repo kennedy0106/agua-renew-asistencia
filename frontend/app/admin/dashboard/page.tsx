@@ -1,214 +1,169 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import AdminShell from "@/components/AdminShell";
 import {
-  ApiError,
-  attendanceAdminApi,
-  AttendanceSummary,
-  authApi,
-  usersApi,
-  UserOut,
-} from "@/lib/api";
+  Alert,
+  Briefcase,
+  Chart,
+  ClipboardCheck,
+  Clock,
+  Coins,
+  Key,
+  Logout,
+  Receipt,
+  Shield,
+  User,
+  Users,
+  Wallet,
+} from "@/components/Icons";
+import { ApiError, attendanceAdminApi, AttendanceSummary, authApi, usersApi, UserOut } from "@/lib/api";
+
+const MODULES = [
+  {
+    href: "/admin/attendance",
+    title: "Asistencia",
+    desc: "Marcaciones, esperado y diferencia por día.",
+    icon: ClipboardCheck,
+    roles: null,
+  },
+  {
+    href: "/admin/employees",
+    title: "Empleados",
+    desc: "DNI, código, cargo y estado del personal.",
+    icon: Users,
+    roles: null,
+  },
+  {
+    href: "/admin/roles",
+    title: "Cargos laborales",
+    desc: "Operario, chofer, almacén y más.",
+    icon: Briefcase,
+    roles: null,
+  },
+  {
+    href: "/admin/payroll",
+    title: "Planilla",
+    desc: "Periodos, cálculo y cierre mensual.",
+    icon: Receipt,
+    roles: ["ADMIN", "BOSS"],
+  },
+  {
+    href: "/admin/salaries",
+    title: "Sueldos",
+    desc: "Liquidaciones por periodo.",
+    icon: Coins,
+    roles: ["ADMIN", "BOSS"],
+  },
+  {
+    href: "/admin/users",
+    title: "Usuarios",
+    desc: "Cuentas, roles y vínculo con empleados.",
+    icon: Key,
+    roles: ["ADMIN"],
+  },
+  {
+    href: "/admin/audit",
+    title: "Auditoría",
+    desc: "Bitácora de correcciones y acciones.",
+    icon: Shield,
+    roles: ["ADMIN"],
+  },
+];
 
 export default function AdminDashboardPage() {
-  const router = useRouter();
   const [user, setUser] = useState<UserOut | null>(null);
   const [summary, setSummary] = useState<AttendanceSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const me = await authApi.me();
+      setUser(me);
+      const [resumen] = await Promise.all([attendanceAdminApi.summary()]);
+      setSummary(resumen);
+    } catch {
+      /* AdminShell redirige si la sesión expiró */
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    authApi
-      .me()
-      .then((me) => {
-        if (active) setUser(me);
-        return attendanceAdminApi.summary();
-      })
-      .then((s) => {
-        if (active) setSummary(s);
-      })
-      .catch(() => {
-        if (active) router.replace("/admin/login");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [router]);
+    load();
+  }, [load]);
 
-  async function handleLogout() {
-    await authApi.logout();
-    router.replace("/admin/login");
-  }
-
-  if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 text-zinc-500">
-        Verificando sesión…
-      </div>
-    );
-  }
+  const modules = MODULES.filter((m) => !m.roles || (user && m.roles.includes(user.role)));
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-50">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-600 text-lg">
-            💧
-          </span>
-          <span className="font-semibold text-zinc-900">Agua ReNew</span>
-          <span className="text-sm text-zinc-500">· Panel administrativo</span>
+    <AdminShell title="Dashboard" subtitle={user ? `Bienvenido, ${user.username}` : undefined}>
+      {summary && (
+        <div className="stat-grid">
+          <StatCard
+            label="Empleados activos"
+            value={summary.employees_active}
+            icon={<Users size={15} />}
+          />
+          <StatCard
+            label="Presentes hoy"
+            value={summary.present_today}
+            icon={<Clock size={15} />}
+          />
+          <StatCard
+            label="Sin entrada hoy"
+            value={summary.no_entry_today}
+            icon={<Alert size={15} />}
+          />
+          <StatCard
+            label="Entradas abiertas"
+            value={summary.open_entries}
+            icon={<ClipboardCheck size={15} />}
+          />
+          <StatCard
+            label="Con salida hoy"
+            value={summary.checked_out_today}
+            icon={<Chart size={15} />}
+          />
         </div>
-        <button
-          onClick={handleLogout}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 transition-colors hover:bg-zinc-100"
-        >
-          Cerrar sesión
-        </button>
-      </header>
+      )}
 
-      <main className="flex-1 p-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-zinc-900">Dashboard</h1>
-          <p className="text-sm text-zinc-500">
-            Bienvenido, <span className="font-medium text-zinc-700">{user?.username}</span>
-          </p>
-        </div>
-
-        <div className="mb-6">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-400">
-            Resumen de hoy
-          </h2>
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Empleados activos
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                {summary?.employees_active ?? "—"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Presentes hoy
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-emerald-600">
-                {summary?.present_today ?? "—"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Sin entrada
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-amber-600">
-                {summary?.no_entry_today ?? "—"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Entradas abiertas
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-sky-600">
-                {summary?.open_entries ?? "—"}
-              </p>
-            </div>
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Con salida hoy
-              </p>
-              <p className="mt-1 text-2xl font-semibold text-zinc-900">
-                {summary?.checked_out_today ?? "—"}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Rol</p>
-            <p className="mt-1 text-lg font-semibold text-zinc-900">{user?.role}</p>
-          </div>
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Usuario</p>
-            <p className="mt-1 text-lg font-semibold text-zinc-900">{user?.username}</p>
-          </div>
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-            <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">Estado</p>
-            <p className="mt-1 text-lg font-semibold text-emerald-600">
-              {user?.active ? "Activo" : "Inactivo"}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-6 grid gap-3 sm:grid-cols-3">
-          <a
-            href="/admin/roles"
-            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-          >
-            <p className="text-sm font-semibold text-zinc-900">Cargos laborales</p>
-            <p className="mt-1 text-xs text-zinc-500">Operario, Chofer, Almacén…</p>
-          </a>
-          <a
-            href="/admin/employees"
-            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-          >
-            <p className="text-sm font-semibold text-zinc-900">Empleados</p>
-            <p className="mt-1 text-xs text-zinc-500">DNI, código, cargo y estado</p>
-          </a>
-          <a
-            href="/admin/attendance"
-            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-          >
-            <p className="text-sm font-semibold text-zinc-900">Asistencia</p>
-            <p className="mt-1 text-xs text-zinc-500">Marcaciones, esperado y diferencia</p>
-          </a>
-          {user?.role === "ADMIN" && (
-            <a
-              href="/admin/audit"
-              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-            >
-              <p className="text-sm font-semibold text-zinc-900">Auditoría</p>
-              <p className="mt-1 text-xs text-zinc-500">Bitácora de correcciones (solo admin)</p>
+      <div className="module-grid">
+        {modules.map((m) => {
+          const Icon = m.icon;
+          const green = m.href === "/admin/payroll" || m.href === "/admin/salaries";
+          return (
+            <a key={m.href} href={m.href} className="module-card">
+              <div className={`icon-tile${green ? " tile-green" : ""}`}>
+                <Icon size={20} />
+              </div>
+              <div>
+                <h3>{m.title}</h3>
+                <p>{m.desc}</p>
+              </div>
             </a>
-          )}
-          {(user?.role === "ADMIN" || user?.role === "BOSS") && (
-            <a
-              href="/admin/payroll"
-              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-            >
-              <p className="text-sm font-semibold text-zinc-900">Planilla</p>
-              <p className="mt-1 text-xs text-zinc-500">Periodos, cálculo y cierre</p>
-            </a>
-          )}
-          {(user?.role === "ADMIN" || user?.role === "BOSS") && (
-            <a
-              href="/admin/salaries"
-              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-            >
-              <p className="text-sm font-semibold text-zinc-900">Sueldos</p>
-              <p className="mt-1 text-xs text-zinc-500">Liquidaciones por periodo</p>
-            </a>
-          )}
-          {user?.role === "ADMIN" && (
-            <a
-              href="/admin/users"
-              className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
-            >
-              <p className="text-sm font-semibold text-zinc-900">Usuarios</p>
-              <p className="mt-1 text-xs text-zinc-500">Cuentas, roles y vínculo con empleados</p>
-            </a>
-          )}
-        </div>
+          );
+        })}
+      </div>
 
-        <PasswordChangeCard />
+      <hr className="divider" />
+      <PasswordChangeCard />
+    </AdminShell>
+  );
+}
 
-        <p className="mt-6 text-sm text-zinc-400">
-          Cargos, jornadas y sueldos se gestionan desde el detalle de cada empleado.
-        </p>
-      </main>
+function StatCard({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="stat-card">
+      <div className="stat-label">
+        {icon}
+        {label}
+      </div>
+      <div className="stat-value">{value}</div>
     </div>
   );
 }
@@ -245,60 +200,77 @@ function PasswordChangeCard() {
   }
 
   return (
-    <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="text-sm font-semibold text-zinc-900 hover:text-sky-700"
-      >
+    <div className="card card-pad">
+      <button onClick={() => setOpen((v) => !v)} className="link-btn" type="button">
         {open ? "▾" : "▸"} Cambiar mi contraseña
       </button>
       {open && (
-        <form onSubmit={handleSubmit} className="mt-3 grid gap-3 sm:grid-cols-3">
-          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-            Contraseña actual
-            <input
-              type="password"
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-              required
-              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-            Nueva contraseña (mín 8)
-            <input
-              type="password"
-              value={next}
-              onChange={(e) => setNext(e.target.value)}
-              required
-              minLength={8}
-              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-            Confirmar nueva
-            <input
-              type="password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              required
-              minLength={8}
-              className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-            />
-          </label>
-          <div className="sm:col-span-3">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-900 disabled:opacity-50"
-            >
+        <form
+          onSubmit={handleSubmit}
+          style={{ display: "grid", gap: "0.9rem", marginTop: "0.9rem", maxWidth: 560 }}
+        >
+          <div style={{ display: "grid", gap: "0.9rem", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
+            <div>
+              <label className="label">Contraseña actual</label>
+              <input
+                className="input"
+                type="password"
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="label">Nueva contraseña (mín 8)</label>
+              <input
+                className="input"
+                type="password"
+                value={next}
+                onChange={(e) => setNext(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+            <div>
+              <label className="label">Confirmar nueva</label>
+              <input
+                className="input"
+                type="password"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+          </div>
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={busy}>
+              <Wallet size={16} />
               {busy ? "Guardando…" : "Cambiar contraseña"}
             </button>
           </div>
-          {message && <p className="text-sm text-emerald-700 sm:col-span-3">{message}</p>}
-          {error && <p className="text-sm text-red-600 sm:col-span-3">{error}</p>}
+          {message && (
+            <p className="alert alert-success">
+              <CheckIcon />
+              {message}
+            </p>
+          )}
+          {error && (
+            <p className="alert alert-error">
+              <Alert size={15} />
+              {error}
+            </p>
+          )}
         </form>
       )}
     </div>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="m4.5 12.5 5 5 10-11" />
+    </svg>
   );
 }

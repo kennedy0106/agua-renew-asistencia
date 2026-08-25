@@ -1,214 +1,224 @@
 "use client";
 
-import { useState } from "react";
-import {
-  ApiError,
-  attendanceApi,
-  AttendanceRecordOut,
-  IdentifyResponse,
-} from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
+import { Check, Clock, Droplet, Logout, User } from "@/components/Icons";
 
 type Step = "identify" | "employee" | "done";
-
-function formatClock(iso: string): string {
-  const date = new Date(iso);
-  return date.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" });
-}
-
-function formatDuration(minutes: number | null): string {
-  if (minutes === null) return "—";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0) return `${m} min`;
-  return `${h} h ${m} min`;
-}
 
 export default function AsistenciaPage() {
   const [step, setStep] = useState<Step>("identify");
   const [identifier, setIdentifier] = useState("");
-  const [data, setData] = useState<IdentifyResponse | null>(null);
+  const [info, setInfo] = useState<IdentifyResponse | null>(null);
   const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState<Date>(() => new Date());
+  const serverOffsetRef = useRef<number>(0);
+
+  // Reloj: tick local, anclado a la hora del servidor cuando ya se identificó.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (info?.server_time) {
+      serverOffsetRef.current = new Date(info.server_time).getTime() - Date.now();
+    }
+  }, [info]);
+
+  const serverNow = new Date(Date.now() + serverOffsetRef.current);
 
   async function handleIdentify(event: React.FormEvent) {
     event.preventDefault();
-    setLoading(true);
+    const value = identifier.trim();
+    if (!value) return;
+    setBusy(true);
     setError(null);
     try {
-      const result = await attendanceApi.identify(identifier);
-      setData(result);
+      const result = await attendanceApi.identify(value);
+      setInfo(result);
+      serverOffsetRef.current = new Date(result.server_time).getTime() - Date.now();
       setStep("employee");
+      setIdentifier("");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
-  async function handleMark(action: "checkIn" | "checkOut") {
-    if (!data) return;
-    setLoading(true);
+  async function handleMark() {
+    if (!info) return;
+    setBusy(true);
     setError(null);
     try {
-      const result =
-        action === "checkIn"
-          ? await attendanceApi.checkIn(data.employee.id)
-          : await attendanceApi.checkOut(data.employee.id);
+      const result = info.state.has_open_entry
+        ? await attendanceApi.checkOut(info.employee.id)
+        : await attendanceApi.checkIn(info.employee.id);
       setRecord(result);
       setStep("done");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   function reset() {
     setStep("identify");
-    setIdentifier("");
-    setData(null);
+    setInfo(null);
     setRecord(null);
     setError(null);
+    serverOffsetRef.current = 0;
   }
 
+  const timeLabel = serverNow.toLocaleTimeString("es-PE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const dateLabel = serverNow.toLocaleDateString("es-PE", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  const firstName = info?.employee.first_name ?? "";
+  const initials = firstName.charAt(0).toUpperCase() || "?";
+
   return (
-    <div className="flex flex-1 flex-col items-center justify-center bg-zinc-50 px-6 py-10">
-      <main className="w-full max-w-md">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-600 text-3xl">
-            💧
-          </div>
-          <h1 className="text-2xl font-semibold text-zinc-900">Control de asistencia</h1>
-          <p className="text-sm text-zinc-500">Agua ReNew</p>
-        </div>
+    <div className="kiosk">
+      <div className="kiosk-brand">
+        <img src="/brand/logo_color.webp" alt="Agua ReNew" />
+        <span className="tagline">Registro de asistencia</span>
+      </div>
 
-        {error && (
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700">
-            {error}
-          </p>
-        )}
-
+      <div className="kiosk-card">
         {step === "identify" && (
-          <form
-            onSubmit={handleIdentify}
-            className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm"
-          >
-            <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-              DNI o código
+          <>
+            <div className="kiosk-clock">{timeLabel}</div>
+            <div className="kiosk-date">{dateLabel}</div>
+
+            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }}>
+              <label className="label" htmlFor="kiosk-id">
+                DNI o código interno
+              </label>
               <input
+                id="kiosk-id"
+                className="input"
                 type="text"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                required
+                placeholder="Ej. 71112233 o EMP-002"
                 autoFocus
-                placeholder="Ej. 72845632 o EMP-001"
-                className="rounded-lg border border-zinc-300 px-3 py-3 text-center text-lg text-zinc-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                autoComplete="off"
+                style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
               />
-            </label>
-            <button
-              type="submit"
-              disabled={loading || !identifier.trim()}
-              className="rounded-lg bg-sky-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
-            >
-              {loading ? "Buscando…" : "Continuar"}
-            </button>
-          </form>
+              {error && (
+                <p className="alert alert-error" role="alert">
+                  <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                  {error}
+                </p>
+              )}
+              <button type="submit" className="btn btn-primary kiosk-btn" disabled={busy}>
+                <User size={18} />
+                {busy ? "Verificando…" : "Identificarme"}
+              </button>
+            </form>
+          </>
         )}
 
-        {step === "employee" && data && (
-          <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm">
-            <div>
-              <p className="text-lg font-semibold text-zinc-900">
-                {data.employee.first_name} {data.employee.last_name}
-              </p>
-              <p className="text-sm text-zinc-500">{data.employee.job_role_name ?? "—"}</p>
+        {step === "employee" && info && (
+          <>
+            <div className="kiosk-clock" style={{ fontSize: "1.9rem" }}>
+              {timeLabel}
             </div>
-            <div className="rounded-xl bg-zinc-50 py-3">
-              <p className="text-3xl font-bold tabular-nums text-zinc-900">
-                {data.server_time_label}
-              </p>
-              <p className="text-xs text-zinc-400">Hora del servidor (Lima)</p>
+            <div className="kiosk-date">{dateLabel}</div>
+
+            <div className="kiosk-employee">
+              <div className="avatar-lg">{initials}</div>
+              <div>
+                <div className="name">
+                  {info.employee.first_name} {info.employee.last_name}
+                </div>
+                <div className="role">{info.employee.job_role_name ?? "—"}</div>
+              </div>
             </div>
 
-            {data.state.has_open_entry ? (
-              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
-                Entrada registrada:{" "}
-                <span className="font-semibold">{formatClock(data.state.open_check_in_at!)}</span>
-              </div>
+            {error && (
+              <p className="alert alert-error" role="alert">
+                <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                {error}
+              </p>
+            )}
+
+            {info.state.has_open_entry ? (
+              <button
+                className="btn btn-primary kiosk-btn"
+                onClick={handleMark}
+                disabled={busy}
+              >
+                <Logout size={18} />
+                {busy ? "Registrando…" : "MARCAR SALIDA"}
+              </button>
             ) : (
-              data.state.last_record && (
-                <p className="text-xs text-zinc-400">
-                  Última marcación: {data.state.last_record.work_date} ·{" "}
-                  {formatDuration(data.state.last_record.worked_minutes)}
-                </p>
-              )
+              <button className="btn btn-green kiosk-btn" onClick={handleMark} disabled={busy}>
+                <Droplet size={18} />
+                {busy ? "Registrando…" : "MARCAR ENTRADA"}
+              </button>
             )}
-
             <button
-              onClick={() => handleMark(data.state.has_open_entry ? "checkOut" : "checkIn")}
-              disabled={loading}
-              className={`rounded-lg px-4 py-3 text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
-                data.state.has_open_entry
-                  ? "bg-amber-500 hover:bg-amber-600"
-                  : "bg-sky-600 hover:bg-sky-700"
-              }`}
-            >
-              {loading
-                ? "Procesando…"
-                : data.state.has_open_entry
-                  ? "MARCAR SALIDA"
-                  : "MARCAR ENTRADA"}
-            </button>
-            <button
+              className="link-btn"
               onClick={reset}
-              className="text-xs text-zinc-400 hover:text-zinc-600"
+              type="button"
+              style={{ display: "block", margin: "0.8rem auto 0", fontSize: "0.78rem" }}
             >
-              ← Cambiar de trabajador
+              Cambiar de trabajador
+            </button>
+          </>
+        )}
+
+        {step === "done" && record && (
+          <div className="kiosk-done">
+            <div className={`big-icon ${record.status === "OPEN" ? "ok" : "blue"}`}>
+              {record.status === "OPEN" ? <Droplet size={26} /> : <Check size={26} />}
+            </div>
+            <h2>
+              {record.status === "OPEN"
+                ? "Entrada registrada"
+                : "Salida registrada"}
+            </h2>
+            <p className="detail">
+              {record.status === "OPEN"
+                ? `Ingresaste a las ${formatTime(record.check_in_at)}.`
+                : `Saliste a las ${formatTime(record.check_out_at)} · ${fmtMin(record.worked_minutes)} trabajadas.`}
+            </p>
+            <button className="btn btn-outline kiosk-btn" onClick={reset}>
+              <Clock size={17} />
+              Nueva marcación
             </button>
           </div>
         )}
-
-        {step === "done" && record && data && (
-          <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-2xl">
-              ✅
-            </div>
-            <div>
-              <p className="text-lg font-semibold text-zinc-900">
-                {record.status === "OPEN" ? "Entrada registrada" : "Salida registrada"}
-              </p>
-              <p className="text-sm text-zinc-500">
-                {data.employee.first_name} {data.employee.last_name} · {record.work_date}
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-xl bg-zinc-50 py-3">
-                <p className="text-xs text-zinc-400">Entrada</p>
-                <p className="font-semibold text-zinc-900">{formatClock(record.check_in_at)}</p>
-              </div>
-              <div className="rounded-xl bg-zinc-50 py-3">
-                <p className="text-xs text-zinc-400">Salida</p>
-                <p className="font-semibold text-zinc-900">
-                  {record.check_out_at ? formatClock(record.check_out_at) : "—"}
-                </p>
-              </div>
-            </div>
-            {record.worked_minutes !== null && (
-              <p className="text-sm text-zinc-600">
-                Horas trabajadas:{" "}
-                <span className="font-semibold">{formatDuration(record.worked_minutes)}</span>
-              </p>
-            )}
-            <button
-              onClick={reset}
-              className="rounded-lg bg-sky-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
-            >
-              Terminar
-            </button>
-          </div>
-        )}
-      </main>
+      </div>
     </div>
   );
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString("es-PE", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function fmtMin(minutes: number | null): string {
+  if (minutes === null || minutes === undefined) return "—";
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `${h} h ${m} min` : `${m} min`;
 }

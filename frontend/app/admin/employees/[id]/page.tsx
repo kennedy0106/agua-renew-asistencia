@@ -1,11 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
+import AdminShell, { useAdminUser } from "@/components/AdminShell";
+import {
+  Alert,
+  ArrowLeft,
+  Briefcase,
+  Calendar,
+  Check,
+  Clock,
+  Coins,
+  Pencil,
+  Plus,
+  Scale,
+  User,
+  X,
+  Zap,
+} from "@/components/Icons";
 import {
   adjustmentsApi,
   ApiError,
-  authApi,
   Balance,
   employeesApi,
   Employee,
@@ -18,7 +33,6 @@ import {
   SalarySetting,
   scheduleApi,
   SchedulePayload,
-  UserOut,
   WorkSchedule,
 } from "@/lib/api";
 
@@ -62,12 +76,31 @@ function formatHours(minutes: number): string {
   return Number.isInteger(h) ? `${h} h` : `${h.toFixed(1)} h`;
 }
 
+function formatMoney(value: string | null): string {
+  if (value === null) return "—";
+  const num = Number(value);
+  return `S/ ${num.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function signedMinutes(minutes: number): string {
+  const h = Math.floor(Math.abs(minutes) / 60);
+  const m = Math.abs(minutes) % 60;
+  const text = h === 0 ? `${m} min` : `${h} h ${m.toString().padStart(2, "0")}`;
+  return minutes > 0 ? `+${text}` : minutes < 0 ? `−${text}` : "0 min";
+}
+
+const typeLabel: Record<string, string> = {
+  PERMISO: "Permiso",
+  RECUPERACION: "Recuperación",
+  OVERTIME: "Horas extra",
+  OTRO: "Otro",
+};
+
 export default function EmployeeDetailPage() {
   const params = useParams<{ id: string }>();
   const employeeId = params.id;
-  const router = useRouter();
+  const user = useAdminUser();
 
-  const [user, setUser] = useState<UserOut | null>(null);
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [schedule, setSchedule] = useState<WorkSchedule | null>(null);
   const [history, setHistory] = useState<WorkSchedule[]>([]);
@@ -104,10 +137,11 @@ export default function EmployeeDetailPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [savingAdj, setSavingAdj] = useState(false);
 
-  // Horas extra (Fase 10)
   const [detectedDays, setDetectedDays] = useState<OvertimeDetectItem[] | null>(null);
   const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
   const [detecting, setDetecting] = useState(false);
+
+  const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
   function monthRange(): { from: string; to: string } {
     const now = new Date();
@@ -116,13 +150,8 @@ export default function EmployeeDetailPage() {
     return { from, to };
   }
 
-  async function loadOvertime(role?: string) {
-    const canView = role
-      ? MANAGE_ROLES.includes(role)
-      : user
-        ? MANAGE_ROLES.includes(user.role)
-        : false;
-    if (!canView) return;
+  async function loadOvertime() {
+    if (!canManage) return;
     setError(null);
     try {
       const { from, to } = monthRange();
@@ -161,12 +190,8 @@ export default function EmployeeDetailPage() {
     setAdjustments(adj);
   }
 
-  const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
-
   const load = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
       const emp = await employeesApi.get(employeeId);
       setEmployee(emp);
       try {
@@ -177,8 +202,7 @@ export default function EmployeeDetailPage() {
       }
       setHistory(await scheduleApi.history(employeeId));
 
-      // Salario: solo ADMIN/BOSS (el backend rechaza 403 al supervisor).
-      if (MANAGE_ROLES.includes(me.role)) {
+      if (canManage) {
         try {
           setSalary(await salaryApi.get(employeeId));
         } catch (err) {
@@ -188,7 +212,6 @@ export default function EmployeeDetailPage() {
         setSalaryHistory(await salaryApi.history(employeeId));
       }
 
-      // Ajustes y saldo: visibles para cualquier rol autenticado.
       const [bal, adj] = await Promise.all([
         adjustmentsApi.balance(employeeId),
         adjustmentsApi.list(employeeId),
@@ -196,21 +219,16 @@ export default function EmployeeDetailPage() {
       setBalance(bal);
       setAdjustments(adj);
 
-      // Horas extra: solo ADMIN/BOSS (información salarial).
-      if (MANAGE_ROLES.includes(me.role)) {
-        await loadOvertime(me.role);
+      if (canManage) {
+        await loadOvertime();
       }
       setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        router.replace("/admin/login");
-      } else {
-        setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
-      }
+      setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [employeeId, router]);
+  }, [employeeId, canManage]);
 
   useEffect(() => {
     load();
@@ -255,12 +273,6 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  function formatMoney(value: string | null): string {
-    if (value === null) return "—";
-    const num = Number(value);
-    return `S/ ${num.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-
   const overtimeLabel = (s: SalarySetting): string => {
     if (!s.overtime_enabled) return "No configurado";
     if (s.overtime_method === "PERCENTAGE") return `${s.overtime_percentage}% recargo`;
@@ -281,12 +293,7 @@ export default function EmployeeDetailPage() {
         adjustment_type: "RECUPERACION",
         reason: "",
       });
-      const [bal, adj] = await Promise.all([
-        adjustmentsApi.balance(employeeId),
-        adjustmentsApi.list(employeeId),
-      ]);
-      setBalance(bal);
-      setAdjustments(adj);
+      await loadAdjustmentsAndBalance();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el ajuste");
     } finally {
@@ -298,12 +305,7 @@ export default function EmployeeDetailPage() {
     setError(null);
     try {
       await adjustmentsApi.approve(id);
-      const [bal, adj] = await Promise.all([
-        adjustmentsApi.balance(employeeId),
-        adjustmentsApi.list(employeeId),
-      ]);
-      setBalance(bal);
-      setAdjustments(adj);
+      await loadAdjustmentsAndBalance();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo aprobar el ajuste");
     }
@@ -316,702 +318,582 @@ export default function EmployeeDetailPage() {
       await adjustmentsApi.reject(id, rejectReason.trim());
       setRejectingId(null);
       setRejectReason("");
-      const [bal, adj] = await Promise.all([
-        adjustmentsApi.balance(employeeId),
-        adjustmentsApi.list(employeeId),
-      ]);
-      setBalance(bal);
-      setAdjustments(adj);
+      await loadAdjustmentsAndBalance();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rechazar el ajuste");
     }
   }
 
-  function signedMinutes(minutes: number): string {
-    const h = Math.floor(Math.abs(minutes) / 60);
-    const m = Math.abs(minutes) % 60;
-    const text = h === 0 ? `${m} min` : `${h} h ${m.toString().padStart(2, "0")}`;
-    return minutes > 0 ? `+${text}` : minutes < 0 ? `−${text}` : "0 min";
-  }
-
-  const typeLabel: Record<string, string> = {
-    PERMISO: "Permiso",
-    RECUPERACION: "Recuperación",
-    OVERTIME: "Horas extra",
-    OTRO: "Otro",
-  };
-
-  const statusBadge = (status: string) =>
-    status === "APPROVED"
-      ? "bg-emerald-50 text-emerald-700"
-      : status === "REJECTED"
-        ? "bg-red-50 text-red-600"
-        : "bg-amber-50 text-amber-700";
-
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 text-zinc-500">
-        Cargando…
-      </div>
+      <AdminShell title="Detalle de empleado">
+        <p className="muted">Cargando…</p>
+      </AdminShell>
     );
   }
 
   if (!employee) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 text-zinc-500">
-        Empleado no encontrado.
-      </div>
+      <AdminShell title="Detalle de empleado">
+        <p className="muted">Empleado no encontrado.</p>
+      </AdminShell>
     );
   }
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-50">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-600 text-lg">
-            💧
-          </span>
-          <span className="font-semibold text-zinc-900">Agua ReNew</span>
-          <span className="text-sm text-zinc-500">· Detalle de empleado</span>
-        </div>
-        <button
-          onClick={() => router.push("/admin/employees")}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 transition-colors hover:bg-zinc-100"
-        >
-          ← Empleados
-        </button>
-      </header>
+    <AdminShell
+      title={`${employee.first_name} ${employee.last_name}`}
+      subtitle={`${employee.job_role_name ?? "Sin cargo"} · ${employee.dni} · ${employee.employee_code}`}
+    >
+      {error && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          {error}
+        </p>
+      )}
 
-      <main className="mx-auto w-full max-w-4xl flex-1 p-6">
-        {error && (
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-        )}
+      <a href="/admin/employees" className="link-btn" style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", fontSize: "0.8rem", marginBottom: "1rem" }}>
+        <ArrowLeft size={14} />
+        Volver a empleados
+      </a>
 
-        <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.8rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.9rem" }}>
+            <div className="avatar" style={{ width: 48, height: 48, fontSize: "1.15rem" }}>
+              {employee.first_name.charAt(0).toUpperCase()}
+            </div>
             <div>
-              <h1 className="text-2xl font-semibold text-zinc-900">
+              <h1 style={{ fontSize: "1.25rem" }}>
                 {employee.first_name} {employee.last_name}
               </h1>
-              <p className="text-sm text-zinc-500">
-                {employee.job_role_name ?? "Sin cargo"} · {employee.dni} · {employee.employee_code}
+              <p className="muted" style={{ fontSize: "0.82rem" }}>
+                {employee.job_role_name ?? "Sin cargo"} · DNI {employee.dni} · {employee.employee_code}
               </p>
             </div>
-            <span
-              className={
-                employee.active
-                  ? "rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700"
-                  : "rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-500"
-              }
-            >
-              {employee.active ? "Activo" : "Inactivo"}
-            </span>
           </div>
-          {employee.hire_date && (
-            <p className="mt-2 text-xs text-zinc-400">Ingreso: {employee.hire_date}</p>
+          {employee.active ? (
+            <span className="badge badge-green" style={{ fontSize: "0.78rem", padding: "0.3rem 0.8rem" }}>
+              Activo
+            </span>
+          ) : (
+            <span className="badge badge-neutral" style={{ fontSize: "0.78rem", padding: "0.3rem 0.8rem" }}>
+              Inactivo
+            </span>
+          )}
+        </div>
+        {employee.hire_date && (
+          <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.6rem" }}>
+            Ingreso: {employee.hire_date}
+          </p>
+        )}
+      </div>
+
+      {/* Jornada laboral */}
+      <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
+          <div>
+            <h2 className="card-title">Jornada laboral</h2>
+            <p className="card-sub">Minutos pactados por día; el cambio de jornada preserva el historial.</p>
+          </div>
+          {canManage && (
+            <button className="btn btn-outline btn-sm" onClick={() => setShowForm((v) => !v)}>
+              {showForm ? (
+                <>
+                  <X size={14} /> Cancelar
+                </>
+              ) : (
+                <>
+                  <Plus size={14} /> Nueva jornada
+                </>
+              )}
+            </button>
           )}
         </div>
 
-        <div className="mb-6 rounded-2xl border border-zinc-200 bg-white p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-900">Jornada laboral</h2>
-              <p className="text-sm text-zinc-500">
-                Minutos pactados por día; el cambio de jornada preserva el historial.
-              </p>
-            </div>
-            {canManage && (
-              <button
-                onClick={() => setShowForm((v) => !v)}
-                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
-              >
-                {showForm ? "Cancelar" : "Nueva jornada"}
-              </button>
-            )}
-          </div>
-
-          {canManage && showForm && (
-            <form
-              onSubmit={handleSaveSchedule}
-              className="mb-5 grid gap-3 rounded-xl bg-zinc-50 p-4 sm:grid-cols-3 lg:grid-cols-4"
-            >
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700 sm:col-span-2">
-                Vigente desde
-                <input
-                  type="date"
-                  value={form.effective_from}
-                  onChange={(e) => setForm({ ...form, effective_from: e.target.value })}
-                  required
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                />
-              </label>
+        {canManage && showForm && (
+          <form onSubmit={handleSaveSchedule} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+              <div>
+                <label className="label">Vigente desde</label>
+                <input type="date" className="input" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required />
+              </div>
               {DAYS.map((day) => (
-                <label key={day.key} className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                  {day.label} (horas)
+                <div key={day.key}>
+                  <label className="label">{day.label} (horas)</label>
                   <input
                     type="number"
                     min={0}
                     max={24}
                     step={0.5}
+                    className="input"
                     value={form[day.key] / 60}
-                    onChange={(e) =>
-                      setForm({ ...form, [day.key]: Math.round(Number(e.target.value) * 60) })
-                    }
-                    className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                    onChange={(e) => setForm({ ...form, [day.key]: Math.round(Number(e.target.value) * 60) })}
                   />
-                </label>
+                </div>
               ))}
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                Refrigerio (min)
+              <div>
+                <label className="label">Refrigerio (min)</label>
                 <input
                   type="number"
                   min={0}
                   max={1440}
                   step={15}
+                  className="input"
                   value={form.break_minutes}
                   onChange={(e) => setForm({ ...form, break_minutes: Number(e.target.value) })}
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
                 />
-              </label>
-              <div className="sm:col-span-3 lg:col-span-4">
-                <button
-                  type="submit"
-                  disabled={saving || !form.effective_from}
-                  className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
-                >
-                  {saving ? "Guardando…" : "Guardar jornada"}
-                </button>
               </div>
+            </div>
+            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
+              <Check size={15} />
+              {saving ? "Guardando…" : "Guardar jornada"}
+            </button>
+          </form>
+        )}
+
+        {schedule ? (
+          <div className="table-wrap">
+            <table className="table">
+              <tbody>
+                {DAYS.map((day) => (
+                  <tr key={day.key}>
+                    <td style={{ fontWeight: 600, width: 160 }}>{day.label}</td>
+                    <td>{formatHours(schedule[day.key])}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ fontWeight: 600 }}>Refrigerio</td>
+                  <td>{schedule.break_minutes} min</td>
+                </tr>
+                <tr>
+                  <td style={{ fontWeight: 600 }}>Vigente desde</td>
+                  <td>{schedule.effective_from}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            Este empleado aún no tiene jornada configurada.
+            {canManage && " Usa «Nueva jornada» para definirla."}
+          </p>
+        )}
+
+        {history.length > 1 && (
+          <div style={{ marginTop: "1rem", borderTop: "1px solid var(--border)", paddingTop: "0.8rem" }}>
+            <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: "0.4rem" }}>Historial de jornadas</h3>
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.2rem", fontSize: "0.82rem", color: "var(--muted)" }}>
+              {history.map((h) => (
+                <li key={h.id}>
+                  {h.effective_from} → {h.effective_to ?? "vigente"}
+                  <span style={{ marginLeft: "0.5rem", opacity: 0.7 }}>
+                    (L {formatHours(h.monday_minutes)} · S {formatHours(h.saturday_minutes)} · D {formatHours(h.sunday_minutes)})
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Sueldo */}
+      {canManage && (
+        <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
+            <div>
+              <h2 className="card-title">Sueldo</h2>
+              <p className="card-sub">Visible solo para administradores y jefes. El cambio preserva el historial.</p>
+            </div>
+            <button className="btn btn-outline btn-sm" onClick={() => setShowSalaryForm((v) => !v)}>
+              {showSalaryForm ? (
+                <>
+                  <X size={14} /> Cancelar
+                </>
+              ) : (
+                <>
+                  <Coins size={14} /> Configurar sueldo
+                </>
+              )}
+            </button>
+          </div>
+
+          {showSalaryForm && (
+            <form onSubmit={handleSaveSalary} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+              <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
+                <div>
+                  <label className="label">Vigente desde</label>
+                  <input type="date" className="input" value={salaryForm.effective_from} onChange={(e) => setSalaryForm({ ...salaryForm, effective_from: e.target.value })} required />
+                </div>
+                <div>
+                  <label className="label">Sueldo mensual (S/)</label>
+                  <input
+                    type="number"
+                    min={0.01}
+                    step={0.01}
+                    className="input"
+                    value={salaryForm.monthly_salary}
+                    onChange={(e) => setSalaryForm({ ...salaryForm, monthly_salary: e.target.value })}
+                    required
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", paddingTop: "1.4rem" }}>
+                  <input
+                    type="checkbox"
+                    id="overtime-enabled"
+                    checked={salaryForm.overtime_enabled}
+                    onChange={(e) => setSalaryForm({ ...salaryForm, overtime_enabled: e.target.checked })}
+                    style={{ width: 16, height: 16, accentColor: "var(--primary-blue)" }}
+                  />
+                  <label htmlFor="overtime-enabled" style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--gray-600)" }}>
+                    Horas extra habilitadas
+                  </label>
+                </div>
+
+                {salaryForm.overtime_enabled && (
+                  <>
+                    <div>
+                      <label className="label">Método</label>
+                      <select
+                        className="select"
+                        value={salaryForm.overtime_method}
+                        onChange={(e) => setSalaryForm({ ...salaryForm, overtime_method: e.target.value as SalaryPayload["overtime_method"] })}
+                      >
+                        <option value="PERCENTAGE">Porcentaje (%)</option>
+                        <option value="FIXED_RATE">Tarifa fija (S/ / hora)</option>
+                        <option value="MANUAL">Monto manual (en periodo)</option>
+                      </select>
+                    </div>
+                    {salaryForm.overtime_method === "PERCENTAGE" && (
+                      <div>
+                        <label className="label">Recargo (%)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          className="input"
+                          value={salaryForm.overtime_percentage ?? ""}
+                          onChange={(e) => setSalaryForm({ ...salaryForm, overtime_percentage: e.target.value || null })}
+                          required
+                        />
+                      </div>
+                    )}
+                    {salaryForm.overtime_method === "FIXED_RATE" && (
+                      <div>
+                        <label className="label">Tarifa (S/ por hora)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          className="input"
+                          value={salaryForm.overtime_fixed_rate ?? ""}
+                          onChange={(e) => setSalaryForm({ ...salaryForm, overtime_fixed_rate: e.target.value || null })}
+                          required
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{ marginTop: "0.8rem" }}
+                disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
+              >
+                <Check size={15} />
+                {savingSalary ? "Guardando…" : "Guardar sueldo"}
+              </button>
             </form>
           )}
 
-          {schedule ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <tbody className="divide-y divide-zinc-100">
-                  {DAYS.map((day) => (
-                    <tr key={day.key}>
-                      <td className="py-2 pr-4 font-medium text-zinc-700">{day.label}</td>
-                      <td className="py-2 text-zinc-900">{formatHours(schedule[day.key])}</td>
-                    </tr>
-                  ))}
-                  <tr>
-                    <td className="py-2 pr-4 font-medium text-zinc-700">Refrigerio</td>
-                    <td className="py-2 text-zinc-900">{schedule.break_minutes} min</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 pr-4 font-medium text-zinc-700">Vigente desde</td>
-                    <td className="py-2 text-zinc-900">{schedule.effective_from}</td>
-                  </tr>
-                </tbody>
-              </table>
+          {salary ? (
+            <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", marginBottom: 0 }}>
+              <div className="stat-card">
+                <div className="stat-label">Sueldo mensual</div>
+                <div className="stat-value" style={{ fontSize: "1.25rem" }}>{formatMoney(salary.monthly_salary)}</div>
+                <div className="stat-hint">desde {salary.effective_from}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Horas extra</div>
+                <div className="stat-value" style={{ fontSize: "1.05rem" }}>{overtimeLabel(salary)}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Estado</div>
+                <div className="stat-value" style={{ fontSize: "1.05rem", color: "var(--dark-green)" }}>Vigente</div>
+              </div>
             </div>
           ) : (
-            <p className="text-sm text-zinc-400">
-              Este empleado aún no tiene jornada configurada.
-              {canManage && " Usa «Nueva jornada» para definirla."}
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              Este empleado aún no tiene sueldo configurado.
             </p>
           )}
 
-          {history.length > 1 && (
-            <div className="mt-5 border-t border-zinc-100 pt-4">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-700">Historial de jornadas</h3>
-              <ul className="space-y-1 text-sm text-zinc-500">
-                {history.map((h) => (
+          {salaryHistory.length > 1 && (
+            <div style={{ marginTop: "1rem", borderTop: "1px solid var(--border)", paddingTop: "0.8rem" }}>
+              <h3 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: "0.4rem" }}>Historial de sueldos</h3>
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.2rem", fontSize: "0.82rem", color: "var(--muted)" }}>
+                {salaryHistory.map((h) => (
                   <li key={h.id}>
-                    {h.effective_from} → {h.effective_to ?? "vigente"}
-                    <span className="ml-2 text-zinc-400">
-                      (L {formatHours(h.monday_minutes)} · S {formatHours(h.saturday_minutes)} · D{" "}
-                      {formatHours(h.sunday_minutes)})
-                    </span>
+                    {formatMoney(h.monthly_salary)} · {h.effective_from} → {h.effective_to ?? "vigente"}
                   </li>
                 ))}
               </ul>
             </div>
           )}
         </div>
+      )}
 
-        {canManage && (
-          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-zinc-900">Sueldo</h2>
-                <p className="text-sm text-zinc-500">
-                  Visible solo para administradores y jefes. El cambio de sueldo preserva el historial.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowSalaryForm((v) => !v)}
-                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
-              >
-                {showSalaryForm ? "Cancelar" : "Configurar sueldo"}
-              </button>
+      {/* Ajustes de horas y saldo */}
+      <div className="card card-pad">
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
+          <div>
+            <h2 className="card-title">Ajustes de horas y saldo</h2>
+            <p className="card-sub">Saldo = trabajado − esperado + ajustes aprobados. Nada se descuenta solo.</p>
+          </div>
+          {canManage && (
+            <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm((v) => !v)}>
+              {showAdjForm ? (
+                <>
+                  <X size={14} /> Cancelar
+                </>
+              ) : (
+                <>
+                  <Plus size={14} /> Nuevo ajuste
+                </>
+              )}
+            </button>
+          )}
+        </div>
+
+        {balance && (
+          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+            <div className="stat-card">
+              <div className="stat-label">Trabajado</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.worked_minutes)}</div>
             </div>
-
-            {showSalaryForm && (
-              <form
-                onSubmit={handleSaveSalary}
-                className="mb-5 grid gap-3 rounded-xl bg-zinc-50 p-4 sm:grid-cols-3"
-              >
-                <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                  Vigente desde
-                  <input
-                    type="date"
-                    value={salaryForm.effective_from}
-                    onChange={(e) => setSalaryForm({ ...salaryForm, effective_from: e.target.value })}
-                    required
-                    className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                  Sueldo mensual (S/)
-                  <input
-                    type="number"
-                    min={0.01}
-                    step={0.01}
-                    value={salaryForm.monthly_salary}
-                    onChange={(e) => setSalaryForm({ ...salaryForm, monthly_salary: e.target.value })}
-                    required
-                    className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                  />
-                </label>
-                <label className="flex items-end gap-2 pb-2 text-sm font-medium text-zinc-700">
-                  <input
-                    type="checkbox"
-                    checked={salaryForm.overtime_enabled}
-                    onChange={(e) =>
-                      setSalaryForm({ ...salaryForm, overtime_enabled: e.target.checked })
-                    }
-                    className="h-4 w-4 accent-sky-600"
-                  />
-                  Horas extra habilitadas
-                </label>
-
-                {salaryForm.overtime_enabled && (
-                  <>
-                    <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                      Método
-                      <select
-                        value={salaryForm.overtime_method}
-                        onChange={(e) =>
-                          setSalaryForm({
-                            ...salaryForm,
-                            overtime_method: e.target.value as SalaryPayload["overtime_method"],
-                          })
-                        }
-                        className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                      >
-                        <option value="PERCENTAGE">Porcentaje (%)</option>
-                        <option value="FIXED_RATE">Tarifa fija (S/ / hora)</option>
-                        <option value="MANUAL">Monto manual (en periodo)</option>
-                      </select>
-                    </label>
-                    {salaryForm.overtime_method === "PERCENTAGE" && (
-                      <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                        Recargo (%)
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={salaryForm.overtime_percentage ?? ""}
-                          onChange={(e) =>
-                            setSalaryForm({
-                              ...salaryForm,
-                              overtime_percentage: e.target.value || null,
-                            })
-                          }
-                          required
-                          className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                        />
-                      </label>
-                    )}
-                    {salaryForm.overtime_method === "FIXED_RATE" && (
-                      <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                        Tarifa (S/ por hora)
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={salaryForm.overtime_fixed_rate ?? ""}
-                          onChange={(e) =>
-                            setSalaryForm({
-                              ...salaryForm,
-                              overtime_fixed_rate: e.target.value || null,
-                            })
-                          }
-                          required
-                          className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                        />
-                      </label>
-                    )}
-                  </>
-                )}
-
-                <div className="sm:col-span-3">
-                  <button
-                    type="submit"
-                    disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
-                    className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
-                  >
-                    {savingSalary ? "Guardando…" : "Guardar sueldo"}
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {salary ? (
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-xl border border-zinc-100 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                    Sueldo mensual
-                  </p>
-                  <p className="mt-1 text-xl font-semibold text-zinc-900">
-                    {formatMoney(salary.monthly_salary)}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-400">desde {salary.effective_from}</p>
-                </div>
-                <div className="rounded-xl border border-zinc-100 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                    Horas extra
-                  </p>
-                  <p className="mt-1 text-lg font-semibold text-zinc-900">{overtimeLabel(salary)}</p>
-                </div>
-                <div className="rounded-xl border border-zinc-100 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                    Estado
-                  </p>
-                  <p className="mt-1 text-lg font-semibold text-emerald-600">Vigente</p>
-                </div>
+            <div className="stat-card">
+              <div className="stat-label">Esperado</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.expected_minutes)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Ajustes aprobados</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.adjustment_minutes)}</div>
+            </div>
+            <div
+              className="stat-card"
+              style={
+                balance.balance_minutes < 0
+                  ? { borderColor: "#f0d9a8", background: "#fffdf7" }
+                  : { borderColor: "#bfe8cd", background: "#f2fcf6" }
+              }
+            >
+              <div className="stat-label">Saldo del mes</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem", color: balance.balance_minutes < 0 ? "#9a5b00" : "var(--dark-green)" }}>
+                {signedMinutes(balance.balance_minutes)}
               </div>
-            ) : (
-              <p className="text-sm text-zinc-400">
-                Este empleado aún no tiene sueldo configurado.
-              </p>
-            )}
-
-            {salaryHistory.length > 1 && (
-              <div className="mt-5 border-t border-zinc-100 pt-4">
-                <h3 className="mb-2 text-sm font-semibold text-zinc-700">Historial de sueldos</h3>
-                <ul className="space-y-1 text-sm text-zinc-500">
-                  {salaryHistory.map((h) => (
-                    <li key={h.id}>
-                      {formatMoney(h.monthly_salary)} · {h.effective_from} →{" "}
-                      {h.effective_to ?? "vigente"}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            </div>
           </div>
         )}
 
-        <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-900">Ajustes de horas y saldo</h2>
-              <p className="text-sm text-zinc-500">
-                Saldo = trabajado − esperado + ajustes aprobados. Nada se descuenta solo.
-              </p>
-            </div>
-            {canManage && (
+        {canManage && (
+          <div className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--blue-soft)", borderColor: "rgba(0,123,255,0.25)", boxShadow: "none" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", marginBottom: "0.6rem" }}>
+              <div>
+                <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>Horas extra</h3>
+                <p style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                  Detectar ≠ pagar: registrar crea un ajuste pendiente que debe aprobarse.
+                </p>
+              </div>
               <button
-                onClick={() => setShowAdjForm((v) => !v)}
-                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setDetecting(true);
+                  loadOvertime().finally(() => setDetecting(false));
+                }}
+                disabled={detecting}
               >
-                {showAdjForm ? "Cancelar" : "+ Nuevo ajuste"}
+                <Zap size={14} />
+                {detecting ? "Consultando…" : "Detectar sobretiempo del mes"}
               </button>
+            </div>
+
+            {overtimeValue && overtimeValue.overtime_minutes > 0 && (
+              <div className="card" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", boxShadow: "none", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
+                <span className="muted">
+                  Método: <strong style={{ color: "var(--text)" }}>{overtimeValue.method === "PERCENTAGE" ? "Porcentaje" : overtimeValue.method === "FIXED_RATE" ? "Tarifa fija" : "Manual"}</strong>
+                </span>
+                {overtimeValue.hourly_rate && (
+                  <span className="muted">
+                    Tarifa: <strong style={{ color: "var(--text)" }}>S/ {Number(overtimeValue.hourly_rate).toFixed(2)} / h</strong>
+                  </span>
+                )}
+                <span className="muted">
+                  Minutos aprobados: <strong style={{ color: "var(--text)" }}>{overtimeValue.overtime_minutes}</strong>
+                </span>
+                <span className="muted">
+                  Valor: <strong style={{ color: "var(--dark-green)" }}>S/ {Number(overtimeValue.value).toFixed(2)}</strong>
+                </span>
+              </div>
             )}
-          </div>
 
-          {balance && (
-            <div className="mb-5 grid gap-3 sm:grid-cols-4">
-              <div className="rounded-xl border border-zinc-100 p-3">
-                <p className="text-xs text-zinc-400">Trabajado</p>
-                <p className="text-lg font-semibold text-zinc-900">
-                  {signedMinutes(balance.worked_minutes)}
+            {detectedDays !== null &&
+              (detectedDays.length === 0 ? (
+                <p style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+                  Sin sobretiempo detectado este mes (trabajado ≤ esperado todos los días).
                 </p>
-              </div>
-              <div className="rounded-xl border border-zinc-100 p-3">
-                <p className="text-xs text-zinc-400">Esperado</p>
-                <p className="text-lg font-semibold text-zinc-900">
-                  {signedMinutes(balance.expected_minutes)}
-                </p>
-              </div>
-              <div className="rounded-xl border border-zinc-100 p-3">
-                <p className="text-xs text-zinc-400">Ajustes aprobados</p>
-                <p className="text-lg font-semibold text-zinc-900">
-                  {signedMinutes(balance.adjustment_minutes)}
-                </p>
-              </div>
-              <div
-                className={`rounded-xl border p-3 ${
-                  balance.balance_minutes < 0
-                    ? "border-amber-200 bg-amber-50"
-                    : "border-emerald-200 bg-emerald-50"
-                }`}
-              >
-                <p className="text-xs text-zinc-500">Saldo del mes</p>
-                <p
-                  className={`text-lg font-semibold ${
-                    balance.balance_minutes < 0 ? "text-amber-700" : "text-emerald-700"
-                  }`}
-                >
-                  {signedMinutes(balance.balance_minutes)}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {canManage && (
-            <div className="mb-5 rounded-xl border border-sky-100 bg-sky-50/50 p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-zinc-900">Horas extra</h3>
-                  <p className="text-xs text-zinc-500">
-                    Detectar ≠ pagar: registrar crea un ajuste pendiente que debe aprobarse.
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    setDetecting(true);
-                    loadOvertime().finally(() => setDetecting(false));
-                  }}
-                  disabled={detecting}
-                  className="rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-50"
-                >
-                  {detecting ? "Consultando…" : "Detectar sobretiempo del mes"}
-                </button>
-              </div>
-
-              {overtimeValue && overtimeValue.overtime_minutes > 0 && (
-                <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg bg-white px-3 py-2 text-sm">
-                  <span className="text-zinc-500">
-                    Método:{" "}
-                    <span className="font-medium text-zinc-900">
-                      {overtimeValue.method === "PERCENTAGE"
-                        ? "Porcentaje"
-                        : overtimeValue.method === "FIXED_RATE"
-                          ? "Tarifa fija"
-                          : "Manual"}
-                    </span>
-                  </span>
-                  {overtimeValue.hourly_rate && (
-                    <span className="text-zinc-500">
-                      Tarifa:{" "}
-                      <span className="font-medium text-zinc-900">
-                        S/ {Number(overtimeValue.hourly_rate).toFixed(2)} / h
+              ) : (
+                <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.4rem" }}>
+                  {detectedDays.map((day) => (
+                    <li key={day.work_date} className="card" style={{ padding: "0.55rem 0.8rem", boxShadow: "none", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", fontSize: "0.84rem" }}>
+                      <span>
+                        <strong>{day.work_date}</strong>
+                        <span className="muted" style={{ marginLeft: "0.5rem" }}>
+                          trabajado {signedMinutes(day.worked_minutes)} · esperado {signedMinutes(day.expected_minutes)}
+                        </span>
                       </span>
-                    </span>
-                  )}
-                  <span className="text-zinc-500">
-                    Minutos aprobados:{" "}
-                    <span className="font-medium text-zinc-900">
-                      {overtimeValue.overtime_minutes}
-                    </span>
-                  </span>
-                  <span className="text-zinc-500">
-                    Valor:{" "}
-                    <span className="font-semibold text-emerald-700">
-                      S/ {Number(overtimeValue.value).toFixed(2)}
-                    </span>
-                  </span>
-                </div>
-              )}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
+                        <strong style={{ color: "var(--primary-blue)" }}>+{signedMinutes(day.extra_minutes)}</strong>
+                        <button className="btn btn-primary btn-sm" onClick={() => registerOvertime(day)}>
+                          Registrar como HE
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ))}
+          </div>
+        )}
 
-              {detectedDays !== null &&
-                (detectedDays.length === 0 ? (
-                  <p className="text-xs text-zinc-400">
-                    Sin sobretiempo detectado este mes (trabajado ≤ esperado todos los días).
-                  </p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {detectedDays.map((day) => (
-                      <li
-                        key={day.work_date}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-sm"
-                      >
-                        <span className="text-zinc-700">
-                          <span className="font-medium text-zinc-900">{day.work_date}</span>
-                          <span className="ml-2 text-zinc-400">
-                            trabajado {signedMinutes(day.worked_minutes)} · esperado{" "}
-                            {signedMinutes(day.expected_minutes)}
-                          </span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-sky-700">
-                            +{signedMinutes(day.extra_minutes)}
-                          </span>
-                          <button
-                            onClick={() => registerOvertime(day)}
-                            className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700"
-                          >
-                            Registrar como HE
-                          </button>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ))}
-            </div>
-          )}
-
-          {canManage && showAdjForm && (
-            <form
-              onSubmit={handleCreateAdjustment}
-              className="mb-5 grid gap-3 rounded-xl bg-zinc-50 p-4 sm:grid-cols-2 lg:grid-cols-4"
-            >
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                Fecha
-                <input
-                  type="date"
-                  value={adjForm.adjustment_date}
-                  onChange={(e) => setAdjForm({ ...adjForm, adjustment_date: e.target.value })}
-                  required
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                Minutos (±)
+        {canManage && showAdjForm && (
+          <form onSubmit={handleCreateAdjustment} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+              <div>
+                <label className="label">Fecha</label>
+                <input type="date" className="input" value={adjForm.adjustment_date} onChange={(e) => setAdjForm({ ...adjForm, adjustment_date: e.target.value })} required />
+              </div>
+              <div>
+                <label className="label">Minutos (±)</label>
                 <input
                   type="number"
                   min={-1440}
                   max={1440}
+                  className="input"
                   value={adjForm.minutes}
                   onChange={(e) => setAdjForm({ ...adjForm, minutes: Number(e.target.value) })}
                   required
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
                 />
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-                Tipo
+              </div>
+              <div>
+                <label className="label">Tipo</label>
                 <select
+                  className="select"
                   value={adjForm.adjustment_type}
-                  onChange={(e) =>
-                    setAdjForm({
-                      ...adjForm,
-                      adjustment_type: e.target.value as HourAdjustment["adjustment_type"],
-                    })
-                  }
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
+                  onChange={(e) => setAdjForm({ ...adjForm, adjustment_type: e.target.value as HourAdjustment["adjustment_type"] })}
                 >
                   <option value="RECUPERACION">Recuperación</option>
                   <option value="PERMISO">Permiso</option>
                   <option value="OVERTIME">Horas extra</option>
                   <option value="OTRO">Otro</option>
                 </select>
-              </label>
-              <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700 sm:col-span-2 lg:col-span-4">
-                Motivo
+              </div>
+              <div>
+                <label className="label">Motivo</label>
                 <input
                   type="text"
+                  className="input"
                   value={adjForm.reason}
                   onChange={(e) => setAdjForm({ ...adjForm, reason: e.target.value })}
                   required
                   minLength={3}
                   placeholder="Ej. recuperó las horas del sábado 22"
-                  className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
                 />
-              </label>
-              <div className="sm:col-span-2 lg:col-span-4">
-                <button
-                  type="submit"
-                  disabled={savingAdj || adjForm.reason.trim().length < 3}
-                  className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"
-                >
-                  {savingAdj ? "Guardando…" : "Crear ajuste (pendiente)"}
-                </button>
               </div>
-            </form>
-          )}
+            </div>
+            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={savingAdj || adjForm.reason.trim().length < 3}>
+              <Plus size={15} />
+              {savingAdj ? "Guardando…" : "Crear ajuste (pendiente)"}
+            </button>
+          </form>
+        )}
 
-          {adjustments.length === 0 ? (
-            <p className="text-sm text-zinc-400">Sin ajustes registrados.</p>
-          ) : (
-            <ul className="space-y-2">
-              {adjustments.map((adj) => (
-                <li key={adj.id} className="rounded-xl border border-zinc-100 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-medium text-zinc-900">
-                        {typeLabel[adj.adjustment_type] ?? adj.adjustment_type} ·{" "}
-                        <span
-                          className={
-                            adj.minutes < 0 ? "text-amber-600" : "text-emerald-600"
-                          }
-                        >
-                          {signedMinutes(adj.minutes)}
-                        </span>
-                        <span className="ml-2 text-xs font-normal text-zinc-400">
-                          {adj.adjustment_date}
-                        </span>
-                      </p>
-                      <p className="text-xs text-zinc-500">{adj.reason}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusBadge(adj.status)}`}
-                      >
-                        {adj.status === "APPROVED"
-                          ? `Aprobado por ${adj.approved_by_username ?? "—"}`
-                          : adj.status === "REJECTED"
-                            ? "Rechazado"
-                            : "Pendiente"}
+        {adjustments.length === 0 ? (
+          <p className="muted" style={{ fontSize: "0.85rem" }}>Sin ajustes registrados.</p>
+        ) : (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.5rem" }}>
+            {adjustments.map((adj) => (
+              <li key={adj.id} className="card" style={{ padding: "0.7rem 0.9rem", boxShadow: "none" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+                  <div>
+                    <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>
+                      {typeLabel[adj.adjustment_type] ?? adj.adjustment_type} ·{" "}
+                      <span style={{ color: adj.minutes < 0 ? "#9a5b00" : "var(--dark-green)" }}>
+                        {signedMinutes(adj.minutes)}
                       </span>
-                      {canManage && adj.status === "PENDING" && (
-                        <>
-                          <button
-                            onClick={() => handleApproveAdjustment(adj.id)}
-                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
-                          >
-                            Aprobar
-                          </button>
-                          {rejectingId === adj.id ? (
-                            <span className="flex items-center gap-1">
-                              <input
-                                type="text"
-                                value={rejectReason}
-                                onChange={(e) => setRejectReason(e.target.value)}
-                                placeholder="Motivo del rechazo…"
-                                className="w-40 rounded-lg border border-zinc-300 px-2 py-1.5 text-xs text-zinc-900 outline-none focus:border-red-400"
-                              />
-                              <button
-                                onClick={() => handleRejectAdjustment(adj.id)}
-                                disabled={rejectReason.trim().length < 3}
-                                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
-                              >
-                                Confirmar
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setRejectingId(null);
-                                  setRejectReason("");
-                                }}
-                                className="text-xs text-zinc-400"
-                              >
-                                ✕
-                              </button>
-                            </span>
-                          ) : (
+                      <span className="muted" style={{ marginLeft: "0.5rem", fontWeight: 400, fontSize: "0.76rem" }}>
+                        {adj.adjustment_date}
+                      </span>
+                    </p>
+                    <p style={{ fontSize: "0.76rem", color: "var(--muted)" }}>{adj.reason}</p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    {adj.status === "APPROVED" ? (
+                      <span className="badge badge-green">Aprobado por {adj.approved_by_username ?? "—"}</span>
+                    ) : adj.status === "REJECTED" ? (
+                      <span className="badge badge-red">Rechazado</span>
+                    ) : (
+                      <span className="badge badge-amber">Pendiente</span>
+                    )}
+                    {canManage && adj.status === "PENDING" && (
+                      <>
+                        <button className="btn btn-green btn-sm" onClick={() => handleApproveAdjustment(adj.id)}>
+                          <Check size={13} />
+                          Aprobar
+                        </button>
+                        {rejectingId === adj.id ? (
+                          <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
+                            <input
+                              type="text"
+                              className="input"
+                              style={{ width: 150, padding: "0.35rem 0.5rem" }}
+                              value={rejectReason}
+                              onChange={(e) => setRejectReason(e.target.value)}
+                              placeholder="Motivo del rechazo…"
+                            />
+                            <button className="btn btn-danger btn-sm" onClick={() => handleRejectAdjustment(adj.id)} disabled={rejectReason.trim().length < 3}>
+                              Confirmar
+                            </button>
                             <button
+                              className="btn btn-ghost btn-sm"
                               onClick={() => {
-                                setRejectingId(adj.id);
+                                setRejectingId(null);
                                 setRejectReason("");
                               }}
-                              className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                              aria-label="Cancelar"
                             >
-                              Rechazar
+                              <X size={13} />
                             </button>
-                          )}
-                        </>
-                      )}
-                    </div>
+                          </span>
+                        ) : (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            onClick={() => {
+                              setRejectingId(adj.id);
+                              setRejectReason("");
+                            }}
+                          >
+                            Rechazar
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </main>
-    </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </AdminShell>
   );
 }

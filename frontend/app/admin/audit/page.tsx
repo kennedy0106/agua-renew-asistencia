@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ApiError, auditApi, AuditLog, authApi, UserOut } from "@/lib/api";
+import AdminShell from "@/components/AdminShell";
+import { Alert, Shield } from "@/components/Icons";
+import { ApiError, auditApi, AuditLog } from "@/lib/api";
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("es-PE", {
@@ -38,114 +39,90 @@ function prettyValues(values: Record<string, unknown> | null): string {
 }
 
 export default function AdminAuditPage() {
-  const router = useRouter();
-  const [user, setUser] = useState<UserOut | null>(null);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-      if (me.role !== "ADMIN") {
-        setError("Solo los administradores pueden ver la auditoría.");
-        setLogs([]);
-        return;
-      }
       setLogs(await auditApi.list({ limit: 200 }));
       setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        router.replace("/admin/login");
-      } else {
-        setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
-      }
+      setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-50">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-600 text-lg">
-            💧
-          </span>
-          <span className="font-semibold text-zinc-900">Agua ReNew</span>
-          <span className="text-sm text-zinc-500">· Auditoría</span>
-        </div>
-        <button
-          onClick={() => router.push("/admin/dashboard")}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 transition-colors hover:bg-zinc-100"
-        >
-          ← Dashboard
-        </button>
-      </header>
+    <AdminShell
+      title="Auditoría"
+      subtitle={`${logs.length} acción(es) registrada(s) · acceso exclusivo de administradores`}
+    >
+      {error && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          {error}
+        </p>
+      )}
 
-      <main className="mx-auto w-full max-w-5xl flex-1 p-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-zinc-900">Auditoría</h1>
-          <p className="text-sm text-zinc-500">
-            {logs.length} corrección(es) registrada(s). Acceso exclusivo de administradores.
-          </p>
-        </div>
-
-        {error && (
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
-        )}
-
-        <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Usuario</th>
+              <th>Entidad</th>
+              <th>Motivo</th>
+              <th>Cambios</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && (
               <tr>
-                <th className="px-4 py-3">Fecha</th>
-                <th className="px-4 py-3">Usuario</th>
-                <th className="px-4 py-3">Entidad</th>
-                <th className="px-4 py-3">Motivo</th>
-                <th className="px-4 py-3">Cambios</th>
+                <td colSpan={5} className="empty">
+                  Cargando bitácora…
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {logs.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-center text-zinc-400">
-                    {loading ? "Cargando…" : "Sin correcciones registradas."}
-                  </td>
-                </tr>
-              )}
-              {logs.map((log) => (
-                <tr key={log.id}>
-                  <td className="whitespace-nowrap px-4 py-3 text-zinc-500">
-                    {formatDateTime(log.created_at)}
-                  </td>
-                  <td className="px-4 py-3 font-medium text-zinc-900">
-                    {log.performed_by_username ?? "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-600">
-                      {log.entity_type}
-                    </span>
-                    <span className="ml-1 text-xs text-zinc-400">{log.action}</span>
-                  </td>
-                  <td className="max-w-[220px] px-4 py-3 text-zinc-700">{log.reason}</td>
-                  <td className="px-4 py-3 text-xs text-zinc-500">
-                    <div className="text-amber-600 line-through decoration-amber-400">
-                      {prettyValues(log.old_values)}
-                    </div>
-                    <div className="mt-0.5 text-emerald-700">{prettyValues(log.new_values)}</div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </main>
-    </div>
+            )}
+            {!loading && logs.length === 0 && (
+              <tr>
+                <td colSpan={5} className="empty">
+                  <Shield size={26} />
+                  Sin correcciones registradas.
+                </td>
+              </tr>
+            )}
+            {logs.map((log) => (
+              <tr key={log.id}>
+                <td className="num" style={{ whiteSpace: "nowrap", color: "var(--muted)" }}>
+                  {formatDateTime(log.created_at)}
+                </td>
+                <td style={{ fontWeight: 600 }}>{log.performed_by_username ?? "—"}</td>
+                <td>
+                  <span className="badge badge-blue">{log.entity_type}</span>
+                  <span className="muted" style={{ marginLeft: "0.35rem", fontSize: "0.75rem" }}>
+                    {log.action}
+                  </span>
+                </td>
+                <td style={{ maxWidth: 230 }}>{log.reason}</td>
+                <td style={{ fontSize: "0.76rem" }}>
+                  <div style={{ color: "#9a5b00", textDecoration: "line-through", textDecorationColor: "#e8c27a" }}>
+                    {prettyValues(log.old_values)}
+                  </div>
+                  <div style={{ color: "var(--dark-green)", marginTop: "0.15rem" }}>
+                    {prettyValues(log.new_values)}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </AdminShell>
   );
 }

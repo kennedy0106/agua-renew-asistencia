@@ -1,15 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  ApiError,
-  authApi,
-  PayrollPeriod,
-  PayrollRecord,
-  payrollApi,
-  UserOut,
-} from "@/lib/api";
+import AdminShell, { useAdminUser } from "@/components/AdminShell";
+import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
+import { ApiError, PayrollPeriod, PayrollRecord, payrollApi } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
@@ -34,8 +28,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function AdminPayrollPage() {
-  const router = useRouter();
-  const [user, setUser] = useState<UserOut | null>(null);
+  const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -43,11 +36,9 @@ export default function AdminPayrollPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Crear periodo
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", start_date: "", end_date: "" });
 
-  // Ajuste manual
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustNotes, setAdjustNotes] = useState("");
@@ -56,24 +47,15 @@ export default function AdminPayrollPage() {
 
   const load = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-      if (!MANAGE_ROLES.includes(me.role)) {
-        setError("Solo administradores y jefes pueden ver la planilla.");
-        return;
-      }
+      if (!canManage) return;
       setPeriods(await payrollApi.periods());
       setError(null);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        router.replace("/admin/login");
-      } else {
-        setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
-      }
+      setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [canManage]);
 
   useEffect(() => {
     load();
@@ -85,10 +67,7 @@ export default function AdminPayrollPage() {
     setBusy(true);
     setError(null);
     try {
-      const [list, recs] = await Promise.all([
-        payrollApi.periods(),
-        payrollApi.records(periodId),
-      ]);
+      const [list, recs] = await Promise.all([payrollApi.periods(), payrollApi.records(periodId)]);
       setPeriods(list);
       setRecords(recs);
       setSelectedId(periodId);
@@ -157,214 +136,162 @@ export default function AdminPayrollPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 text-zinc-500">
-        Cargando…
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-1 flex-col bg-zinc-50">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-600 text-lg">
-            💧
-          </span>
-          <span className="font-semibold text-zinc-900">Agua ReNew</span>
-          <span className="text-sm text-zinc-500">· Planilla</span>
-        </div>
-        <button
-          onClick={() => router.push("/admin/dashboard")}
-          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 transition-colors hover:bg-zinc-100"
-        >
-          ← Dashboard
-        </button>
-      </header>
+    <AdminShell title="Planilla" subtitle="Calcular → revisar → ajustar con motivo → cerrar (inmutable)">
+      {!canManage && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          Solo administradores y jefes pueden ver la planilla.
+        </p>
+      )}
 
-      <main className="mx-auto w-full max-w-6xl flex-1 p-6">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold text-zinc-900">Planilla</h1>
-            <p className="text-sm text-zinc-500">
-              Calcular → revisar → ajustar con motivo → cerrar (inmutable).
-            </p>
-          </div>
-          {canManage && (
-            <button
-              onClick={() => setShowForm((v) => !v)}
-              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
-            >
-              {showForm ? "Cancelar" : "+ Nuevo periodo"}
-            </button>
-          )}
-        </div>
-
-        {error && (
-          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+      <div className="toolbar">
+        <span className="spacer" />
+        {canManage && (
+          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+            {showForm ? (
+              <>
+                <X size={15} /> Cancelar
+              </>
+            ) : (
+              <>
+                <Plus size={15} /> Nuevo periodo
+              </>
+            )}
+          </button>
         )}
+      </div>
 
-        {canManage && showForm && (
-          <form
-            onSubmit={handleCreatePeriod}
-            className="mb-6 grid gap-3 rounded-2xl border border-zinc-200 bg-white p-4 sm:grid-cols-3"
-          >
-            <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-              Nombre
-              <input
-                type="text"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required
-                placeholder="Agosto 2026"
-                className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-              Desde
-              <input
-                type="date"
-                value={form.start_date}
-                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
-                required
-                className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm font-medium text-zinc-700">
-              Hasta
-              <input
-                type="date"
-                value={form.end_date}
-                onChange={(e) => setForm({ ...form, end_date: e.target.value })}
-                required
-                className="rounded-lg border border-zinc-300 px-3 py-2 text-zinc-900 outline-none focus:border-sky-500"
-              />
-            </label>
-            <div className="sm:col-span-3">
-              <button
-                type="submit"
-                disabled={busy}
-                className="rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
-              >
+      {error && (
+        <p className="alert alert-error" role="alert">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          {error}
+        </p>
+      )}
+
+      {canManage && showForm && (
+        <form onSubmit={handleCreatePeriod} className="card card-pad" style={{ marginBottom: "1.1rem" }}>
+          <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
+            <div>
+              <label className="label">Nombre</label>
+              <input type="text" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required placeholder="Agosto 2026" />
+            </div>
+            <div>
+              <label className="label">Desde</label>
+              <input type="date" className="input" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} required />
+            </div>
+            <div>
+              <label className="label">Hasta</label>
+              <input type="date" className="input" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} required />
+            </div>
+            <div style={{ display: "flex", alignItems: "flex-end" }}>
+              <button type="submit" className="btn btn-primary" disabled={busy}>
+                <Plus size={15} />
                 Crear periodo
               </button>
             </div>
-          </form>
+          </div>
+        </form>
+      )}
+
+      <div style={{ display: "grid", gap: "0.9rem", gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))", marginBottom: "1.3rem" }}>
+        {periods.length === 0 && (
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            Sin periodos. Crea el primero.
+          </p>
         )}
-
-        <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {periods.length === 0 && (
-            <p className="text-sm text-zinc-400">Sin periodos. Crea el primero.</p>
-          )}
-          {periods.map((period) => (
-            <div
-              key={period.id}
-              className={`rounded-2xl border bg-white p-4 ${
-                selectedId === period.id ? "border-sky-400 ring-1 ring-sky-200" : "border-zinc-200"
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <p className="font-semibold text-zinc-900">{period.name}</p>
-                <span
-                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                    period.status === "CLOSED"
-                      ? "bg-zinc-100 text-zinc-500"
-                      : period.status === "CALCULATED"
-                        ? "bg-sky-50 text-sky-700"
-                        : "bg-amber-50 text-amber-700"
-                  }`}
-                >
-                  {STATUS_LABEL[period.status]}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-zinc-400">
-                {period.start_date} → {period.end_date}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={() => loadRecords(period.id)}
-                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100"
-                >
-                  Registros
-                </button>
-                {period.status !== "CLOSED" && (
-                  <button
-                    onClick={() => handleCalculate(period.id)}
-                    disabled={busy}
-                    className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
-                  >
-                    {period.status === "OPEN" ? "Calcular" : "Recalcular"}
-                  </button>
-                )}
-                {period.status === "CALCULATED" && (
-                  <button
-                    onClick={() => handleConfirm(period.id)}
-                    disabled={busy}
-                    className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    Confirmar y cerrar
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {selected && (
-          <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white">
-            <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-              <p className="font-semibold text-zinc-900">
-                Registros de {selected.name}
-                <span className="ml-2 text-xs font-normal text-zinc-400">
-                  {records.length} empleado(s) con sueldo en el periodo
-                </span>
-              </p>
-              {selected.status !== "CLOSED" && (
-                <span className="text-xs text-zinc-400">
-                  Los totales son provisionales hasta cerrar el periodo.
-                </span>
+        {periods.map((period) => (
+          <div
+            key={period.id}
+            className="card card-pad"
+            style={selectedId === period.id ? { borderColor: "var(--secondary-blue)", boxShadow: "0 0 0 3px rgba(0,123,255,0.12)" } : undefined}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+              <p style={{ fontWeight: 600 }}>{period.name}</p>
+              {period.status === "CLOSED" ? (
+                <span className="badge badge-neutral">Cerrado</span>
+              ) : period.status === "CALCULATED" ? (
+                <span className="badge badge-blue">Calculado</span>
+              ) : (
+                <span className="badge badge-amber">Abierto</span>
               )}
             </div>
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-zinc-200 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+            <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.2rem" }}>
+              {period.start_date} → {period.end_date}
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.7rem" }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
+                Registros
+              </button>
+              {period.status !== "CLOSED" && (
+                <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
+                  {period.status === "OPEN" ? "Calcular" : "Recalcular"}
+                </button>
+              )}
+              {period.status === "CALCULATED" && (
+                <button className="btn btn-green btn-sm" onClick={() => handleConfirm(period.id)} disabled={busy}>
+                  Confirmar y cerrar
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {selected && (
+        <div className="card">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.85rem 1.1rem", borderBottom: "1px solid var(--border)" }}>
+            <p style={{ fontWeight: 600 }}>
+              Registros de {selected.name}
+              <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.76rem", fontWeight: 400 }}>
+                {records.length} empleado(s) con sueldo en el periodo
+              </span>
+            </p>
+            {selected.status !== "CLOSED" && (
+              <span className="muted" style={{ fontSize: "0.76rem" }}>
+                Los totales son provisionales hasta cerrar el periodo.
+              </span>
+            )}
+          </div>
+          <div className="table-wrap" style={{ border: "none", borderRadius: 0 }}>
+            <table className="table">
+              <thead>
                 <tr>
-                  <th className="px-4 py-3">Empleado</th>
-                  <th className="px-4 py-3 text-right">Sueldo</th>
-                  <th className="px-4 py-3 text-right">Trabajado</th>
-                  <th className="px-4 py-3 text-right">Esperado</th>
-                  <th className="px-4 py-3 text-right">Horas extra</th>
-                  <th className="px-4 py-3 text-right">Ajuste manual</th>
-                  <th className="px-4 py-3 text-right">Total</th>
+                  <th>Empleado</th>
+                  <th style={{ textAlign: "right" }}>Sueldo</th>
+                  <th style={{ textAlign: "right" }}>Trabajado</th>
+                  <th style={{ textAlign: "right" }}>Esperado</th>
+                  <th style={{ textAlign: "right" }}>Horas extra</th>
+                  <th style={{ textAlign: "right" }}>Ajuste manual</th>
+                  <th style={{ textAlign: "right" }}>Total</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-zinc-100">
+              <tbody>
                 {records.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-6 text-center text-zinc-400">
+                    <td colSpan={7} className="empty">
+                      <Receipt size={26} />
                       Sin registros. Usa «Calcular» para generar el preview.
                     </td>
                   </tr>
                 )}
                 {records.map((record) => (
                   <tr key={record.id}>
-                    <td className="px-4 py-3 font-medium text-zinc-900">
-                      {record.employee_name ?? "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>
+                    <td className="num" style={{ textAlign: "right" }}>
                       {formatMoney(record.base_salary)}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td className="num" style={{ textAlign: "right" }}>
                       {formatMinutes(record.worked_minutes)}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td className="num" style={{ textAlign: "right" }}>
                       {formatMinutes(record.expected_minutes)}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td className="num" style={{ textAlign: "right" }}>
                       {record.overtime_minutes > 0 ? (
                         <>
-                          <span className="text-zinc-700">{formatMinutes(record.overtime_minutes)}</span>
-                          <span className="ml-1 text-emerald-700">
+                          {formatMinutes(record.overtime_minutes)}
+                          <span style={{ color: "var(--dark-green)", marginLeft: "0.3rem" }}>
                             ({formatMoney(record.overtime_amount)})
                           </span>
                         </>
@@ -372,67 +299,44 @@ export default function AdminPayrollPage() {
                         "—"
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
+                    <td className="num" style={{ textAlign: "right" }}>
                       {adjustingId === record.id && selected.status !== "CLOSED" ? (
-                        <span className="flex items-center justify-end gap-1">
-                          <input
-                            type="number"
-                            step={0.01}
-                            value={adjustAmount}
-                            onChange={(e) => setAdjustAmount(e.target.value)}
-                            className="w-24 rounded-lg border border-zinc-300 px-2 py-1 text-xs text-zinc-900 outline-none focus:border-sky-500"
-                          />
-                          <input
-                            type="text"
-                            value={adjustNotes}
-                            onChange={(e) => setAdjustNotes(e.target.value)}
-                            placeholder="motivo"
-                            className="w-28 rounded-lg border border-zinc-300 px-2 py-1 text-xs text-zinc-900 outline-none focus:border-sky-500"
-                          />
-                          <button
-                            onClick={() => handleSaveAdjustment(record.id)}
-                            className="rounded-lg bg-sky-600 px-2 py-1 text-xs font-semibold text-white"
-                          >
+                        <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
+                          <input type="number" step={0.01} className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
+                          <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} placeholder="motivo" />
+                          <button className="btn btn-primary btn-sm" onClick={() => handleSaveAdjustment(record.id)} disabled={busy}>
                             OK
                           </button>
-                          <button
-                            onClick={() => setAdjustingId(null)}
-                            className="text-xs text-zinc-400"
-                          >
-                            ✕
+                          <button className="btn btn-ghost btn-sm" onClick={() => setAdjustingId(null)} aria-label="Cancelar">
+                            <X size={13} />
                           </button>
                         </span>
                       ) : (
                         <>
                           {Number(record.manual_adjustment) !== 0 ? (
-                            <span
-                              className={
-                                Number(record.manual_adjustment) < 0
-                                  ? "text-red-600"
-                                  : "text-emerald-700"
-                              }
-                            >
+                            <span style={{ color: Number(record.manual_adjustment) < 0 ? "var(--red)" : "var(--dark-green)" }}>
                               {formatMoney(record.manual_adjustment)}
                             </span>
                           ) : (
-                            <span className="text-zinc-300">0.00</span>
+                            <span className="muted">0.00</span>
                           )}
                           {selected.status !== "CLOSED" && (
                             <button
+                              className="link-btn"
+                              style={{ marginLeft: "0.4rem", fontSize: "0.74rem" }}
                               onClick={() => {
                                 setAdjustingId(record.id);
                                 setAdjustAmount(record.manual_adjustment);
                                 setAdjustNotes(record.notes ?? "");
                               }}
-                              className="ml-2 text-xs text-sky-600 hover:underline"
                             >
-                              Ajustar
+                              <Pencil size={12} style={{ verticalAlign: "-2px" }} /> Ajustar
                             </button>
                           )}
                         </>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right font-semibold tabular-nums text-zinc-900">
+                    <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>
                       {formatMoney(record.total)}
                     </td>
                   </tr>
@@ -440,8 +344,8 @@ export default function AdminPayrollPage() {
               </tbody>
             </table>
           </div>
-        )}
-      </main>
-    </div>
+        </div>
+      )}
+    </AdminShell>
   );
 }
