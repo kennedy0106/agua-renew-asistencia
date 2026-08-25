@@ -47,3 +47,16 @@ class PayrollRecordOut(BaseModel):
 class ManualAdjustmentRequest(BaseModel):
     amount: Decimal = Field(max_digits=12, decimal_places=2, description="Monto con signo (viáticos, bonos, descuentos)")
     notes: str | None = Field(default=None, max_length=255, description="Motivo (queda en auditoría)")
+
+
+class PayrollSummaryOut(BaseModel):
+    period_id: uuid.UUID
+    name: str
+    start_date: date
+    end_date: date
+    status: str
+    employee_count: int
+    total_base: Decimal
+    total_overtime: Decimal
+    total_manual: Decimal
+    total: Decimal

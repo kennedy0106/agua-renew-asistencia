@@ -17,6 +17,7 @@ from app.modules.payroll.schemas import (
     PayrollPeriodCreate,
     PayrollPeriodOut,
     PayrollRecordOut,
+    PayrollSummaryOut,
 )
 from app.modules.payroll.service import PayrollService
 from app.modules.users.models import User
@@ -100,6 +101,15 @@ def period_records(
     _: object = Depends(require_salary_access),
 ) -> list[PayrollRecordOut]:
     return [_record_out(r) for r in PayrollService(db).list_records(period_id)]
+
+
+@router.get("/periods/{period_id}/summary", response_model=PayrollSummaryOut)
+def period_summary(
+    period_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_salary_access),
+) -> PayrollSummaryOut:
+    return PayrollService(db).summary(period_id)
 
 
 @router.patch("/records/{record_id}/adjustment", response_model=PayrollRecordOut)

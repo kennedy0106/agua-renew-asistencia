@@ -29,6 +29,14 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 12 (pantalla de sueldos)
+
+- [x] `GET /api/v1/payroll/periods/{id}/summary`: totales del periodo calculados por el backend (base, HE, manual, total, empleados)
+- [x] Frontend `/admin/salaries`: selector de periodo, tarjetas de totales, tabla con detalle de liquidación expandible (trabajado/esperado/HE/ajustes/notas)
+- [x] Acceso ADMIN/BOSS (403 supervisor); 404 periodo inexistente
+- [x] Tests: 162 en verde (3 nuevos del resumen con 2 empleados y 2 métodos de HE)
+- [x] Smoke test real contra Neon: resumen del periodo cerrado = 1500 + 9.01 + 50 = 1559.01
+
 ## Estado — Fase 11 (motor de payroll)
 
 - [x] Modelos `payroll_periods` (OPEN/CALCULATED/CLOSED) y `payroll_records` (snapshot completo) + migración `92df4e589f79` en Neon

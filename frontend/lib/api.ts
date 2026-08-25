@@ -483,4 +483,19 @@ export const payrollApi = {
     apiFetch<PayrollPeriod>(`/api/v1/payroll/periods/${periodId}/confirm`, {
       method: "POST",
     }),
+  summary: (periodId: string) =>
+    apiFetch<PayrollSummary>(`/api/v1/payroll/periods/${periodId}/summary`),
+};
+
+export type PayrollSummary = {
+  period_id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  status: "OPEN" | "CALCULATED" | "CLOSED";
+  employee_count: number;
+  total_base: string;
+  total_overtime: string;
+  total_manual: string;
+  total: string;
 };

@@ -150,6 +150,23 @@ class PayrollService:
         self._get_period_or_404(period_id)
         return self.repo.list_records(period_id)
 
+    def summary(self, period_id: uuid.UUID) -> dict:
+        """Totales del periodo (los calcula el backend; el frontend solo muestra)."""
+        period = self._get_period_or_404(period_id)
+        records = self.repo.list_records(period_id)
+        return {
+            "period_id": period.id,
+            "name": period.name,
+            "start_date": period.start_date,
+            "end_date": period.end_date,
+            "status": period.status,
+            "employee_count": len(records),
+            "total_base": sum((r.base_salary for r in records), Decimal("0.00")),
+            "total_overtime": sum((r.overtime_amount for r in records), Decimal("0.00")),
+            "total_manual": sum((r.manual_adjustment for r in records), Decimal("0.00")),
+            "total": sum((r.total for r in records), Decimal("0.00")),
+        }
+
     # --- Ajuste manual y cierre ---
 
     def set_manual_adjustment(
