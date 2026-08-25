@@ -29,6 +29,16 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 6 (marcación de asistencia)
+
+- [x] Modelo `attendance_records` (check_in/out UTC, work_date en America/Lima, worked_minutes, status) + migración `143700847e10` en Neon
+- [x] Endpoints públicos (sin auth): `POST /attendance/identify` (DNI o código), `POST /check-in`, `POST /check-out`
+- [x] Reglas: hora SIEMPRE del servidor (nunca navegador); doble entrada → 409; salida sin entrada → 409; empleado inactivo → 403 (identify incluido); mensaje genérico si no existe
+- [x] `worked_minutes` = duración − refrigerio de la jornada vigente en la fecha, nunca negativo
+- [x] Frontend público `/asistencia`: identificar → marcar entrada/salida → confirmación; hora del servidor en Lima; home enlaza a marcación y panel
+- [x] Tests: 96 en verde (14 nuevos; detectaron y corrigieron 2 bugs: identify no bloqueaba inactivos y tzinfo naive en SQLite)
+- [x] Smoke test real contra Neon: identify (10:42 Lima) → check-in 201 → check-out COMPLETE con worked_minutes clamp correcto
+
 ## Estado — Fase 5 (configuración salarial)
 
 - [x] Modelo `salary_settings` (sueldo NUMERIC(12,2) + horas extra + vigencia) + migración `c22981aa3b4f` en Neon

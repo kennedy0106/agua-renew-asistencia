@@ -14,12 +14,20 @@ export default function Home() {
           </p>
         </div>
         <p className="text-sm leading-6 text-zinc-500">
-          El registro de entrada y salida estará disponible aquí en las
-          próximas fases.
+          Marque su entrada o salida con su DNI o código interno.
         </p>
-        <span className="rounded-full border border-zinc-200 px-4 py-1.5 text-xs font-medium text-zinc-400">
-          Fase 0 — base del proyecto
-        </span>
+        <a
+          href="/asistencia"
+          className="rounded-full bg-sky-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-700"
+        >
+          Marcar asistencia
+        </a>
+        <a
+          href="/admin/login"
+          className="text-xs text-zinc-400 underline-offset-2 hover:text-zinc-600 hover:underline"
+        >
+          Panel administrativo
+        </a>
       </main>
     </div>
   );

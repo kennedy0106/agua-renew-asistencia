@@ -200,3 +200,60 @@ export const salaryApi = {
       body: JSON.stringify(payload),
     }),
 };
+
+// --- Marcación pública (sin autenticación) ---
+
+export type IdentifyResponse = {
+  employee: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    job_role_name: string | null;
+    active: boolean;
+  };
+  state: {
+    has_open_entry: boolean;
+    open_check_in_at: string | null;
+    last_record: {
+      id: string;
+      work_date: string;
+      check_in_at: string;
+      check_out_at: string | null;
+      worked_minutes: number | null;
+      status: string;
+    } | null;
+  };
+  server_time: string;
+  server_time_label: string;
+};
+
+export type AttendanceRecordOut = {
+  id: string;
+  employee_id: string;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  worked_minutes: number | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export const attendanceApi = {
+  identify: (identifier: string) =>
+    apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
+      method: "POST",
+      body: JSON.stringify({ identifier }),
+    }),
+  checkIn: (employeeId: string) =>
+    apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-in", {
+      method: "POST",
+      body: JSON.stringify({ employee_id: employeeId }),
+    }),
+  checkOut: (employeeId: string) =>
+    apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-out", {
+      method: "POST",
+      body: JSON.stringify({ employee_id: employeeId }),
+    }),
+};
