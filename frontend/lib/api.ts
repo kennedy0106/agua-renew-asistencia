@@ -47,3 +47,26 @@ export const authApi = {
   me: () => apiFetch<UserOut>("/api/v1/auth/me"),
   logout: () => apiFetch<{ status: string }>("/api/v1/auth/logout", { method: "POST" }),
 };
+
+export type JobRole = {
+  id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export const jobRolesApi = {
+  list: () => apiFetch<JobRole[]>("/api/v1/job-roles"),
+  create: (name: string, description: string | null) =>
+    apiFetch<JobRole>("/api/v1/job-roles", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    }),
+  update: (id: string, patch: Partial<Pick<JobRole, "name" | "description" | "active">>) =>
+    apiFetch<JobRole>(`/api/v1/job-roles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+};

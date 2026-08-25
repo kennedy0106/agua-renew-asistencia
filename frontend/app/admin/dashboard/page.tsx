@@ -83,8 +83,26 @@ export default function AdminDashboardPage() {
           </div>
         </div>
 
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          <a
+            href="/admin/roles"
+            className="rounded-2xl border border-zinc-200 bg-white p-5 transition-colors hover:border-sky-300 hover:shadow-sm"
+          >
+            <p className="text-sm font-semibold text-zinc-900">Cargos laborales</p>
+            <p className="mt-1 text-xs text-zinc-500">Operario, Chofer, Almacén…</p>
+          </a>
+          <div className="rounded-2xl border border-dashed border-zinc-200 p-5 text-zinc-300">
+            <p className="text-sm font-semibold">Empleados</p>
+            <p className="mt-1 text-xs">Llega en la Fase 3</p>
+          </div>
+          <div className="rounded-2xl border border-dashed border-zinc-200 p-5 text-zinc-300">
+            <p className="text-sm font-semibold">Asistencia</p>
+            <p className="mt-1 text-xs">Llega en la Fase 6</p>
+          </div>
+        </div>
+
         <p className="mt-6 text-sm text-zinc-400">
-          Los módulos de empleados, asistencia y sueldos llegarán en las próximas fases.
+          Los módulos de sueldos y remuneraciones llegarán en fases posteriores.
         </p>
       </main>
     </div>

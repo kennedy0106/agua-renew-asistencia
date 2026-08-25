@@ -29,6 +29,15 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 2 (cargos laborales)
+
+- [x] Modelo `job_roles` + migración `8a415d406af1` aplicada a Neon
+- [x] Endpoints: `GET /api/v1/job-roles` (autenticado), `POST` y `PATCH /{id}` (solo ADMIN)
+- [x] Reglas: nombre obligatorio (post-strip), sin duplicados activos (409), desactivar en vez de borrar, nombre reutilizable tras desactivar
+- [x] Frontend `/admin/roles`: tabla, crear, editar en línea, activar/desactivar (UI de gestión solo para ADMIN)
+- [x] Tests: 38 en verde (incluye 13 nuevos de cargos: permisos, 409, 422, 404, reutilización de nombre)
+- [x] Smoke test real contra Neon: login → crear (UTF-8) → listar
+
 ## Estado — Fase 1 (autenticación y permisos)
 
 - [x] Modelos `system_roles` (ADMIN/BOSS/SUPERVISOR) y `users` — migración `41113f50ab64` aplicada a Neon
