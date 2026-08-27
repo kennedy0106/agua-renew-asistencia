@@ -38,5 +38,6 @@ class EmployeeOut(BaseModel):
     hire_date: date | None
     termination_date: date | None
     active: bool
+    qr_token: str
     created_at: datetime
     updated_at: datetime

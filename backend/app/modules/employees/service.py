@@ -7,6 +7,7 @@
 """
 
 import re
+import secrets
 import uuid
 from datetime import datetime
 
@@ -70,6 +71,9 @@ class EmployeeService:
         self._ensure_unique(dni=dni, employee_code=employee_code)
         self._ensure_job_role_exists(job_role_id)
 
+        # Token QR único (server-side, aleatorio, impredecible).
+        qr_token = secrets.token_urlsafe(32)
+
         return self.repo.create(
             dni=dni,
             employee_code=employee_code,
@@ -77,6 +81,7 @@ class EmployeeService:
             last_name=last_name,
             job_role_id=job_role_id,
             hire_date=hire_date,
+            qr_token=qr_token,
         )
 
     def update(

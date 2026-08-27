@@ -12,6 +12,7 @@ import {
   Check,
   Clock,
   Coins,
+  Download,
   Pencil,
   Plus,
   Scale,
@@ -398,6 +399,48 @@ export default function EmployeeDetailPage() {
             </span>
           )}
         </div>
+
+        {/* QR único del empleado */}
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginTop: "1rem", flexWrap: "wrap" }}>
+          <div
+            style={{
+              width: 120,
+              height: 120,
+              padding: 6,
+              background: "#ffffff",
+              borderRadius: "var(--radius-panel)",
+              border: "1px solid var(--ink-border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="QR único del empleado"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={employeesApi.qrUrl(employee.id)}
+              alt={`QR de ${employee.first_name} ${employee.last_name}`}
+              width={108}
+              height={108}
+              style={{ display: "block" }}
+            />
+          </div>
+          <div style={{ display: "grid", gap: "0.35rem" }}>
+            <p className="muted" style={{ fontSize: "0.78rem", maxWidth: 260 }}>
+              Código QR único para este empleado. Úsalo para marcar asistencia o imprimirlo en su credencial.
+            </p>
+            <a
+              className="btn btn-outline btn-sm"
+              href={employeesApi.qrUrl(employee.id)}
+              download={`qr-${employee.employee_code}.svg`}
+              style={{ width: "fit-content" }}
+            >
+              <Download size={14} />
+              Descargar QR
+            </a>
+          </div>
+        </div>
+
         {employee.hire_date && (
           <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.6rem" }}>
             Ingreso: {employee.hire_date}

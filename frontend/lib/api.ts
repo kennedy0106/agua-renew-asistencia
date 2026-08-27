@@ -86,6 +86,7 @@ export type Employee = {
   hire_date: string | null;
   termination_date: string | null;
   active: boolean;
+  qr_token: string;
   created_at: string;
   updated_at: string;
 };
@@ -127,6 +128,7 @@ export const employeesApi = {
   deactivate: (id: string) =>
     apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, { method: "POST" }),
   get: (id: string) => apiFetch<Employee>(`/api/v1/employees/${id}`),
+  qrUrl: (id: string) => `${API_URL}/api/v1/employees/${id}/qr`,
 };
 
 export type WorkSchedule = {

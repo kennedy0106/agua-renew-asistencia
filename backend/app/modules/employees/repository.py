@@ -57,6 +57,7 @@ class EmployeeRepository:
         last_name: str,
         job_role_id: uuid.UUID,
         hire_date=None,
+        qr_token: str | None = None,
     ) -> Employee:
         employee = Employee(
             dni=dni,
@@ -65,6 +66,7 @@ class EmployeeRepository:
             last_name=last_name,
             job_role_id=job_role_id,
             hire_date=hire_date,
+            qr_token=qr_token,
         )
         self.db.add(employee)
         self.db.commit()

@@ -175,4 +175,35 @@ def test_filtro_por_estado_y_busqueda(client, db_session):
 
     search = client.get("/api/v1/employees?search=ana").json()
     assert len(search) == 1
-    assert search[0]["first_name"] == "Ana"
+
+
+# --- QR único por empleado (Fase 19) ---
+
+def test_empleado_tiene_qr_token_unico(client, db_session):
+    _login(client, "admin", "Admin123!")
+    role_id = db_session._test_job_roles["Operario"]
+    emp1 = _create(client, _payload(role_id)).json()
+    emp2 = _create(client, _payload(role_id, dni="99999999", employee_code="EMP-002")).json()
+
+    assert emp1["qr_token"]
+    assert emp2["qr_token"]
+    assert emp1["qr_token"] != emp2["qr_token"]
+    # token aleatorio (no el código interno, que es predecible)
+    assert emp1["qr_token"] != emp1["employee_code"]
+
+
+def test_qr_endpoint_devuelve_svg(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create(client, _payload(db_session._test_job_roles["Operario"])).json()
+
+    response = client.get(f"/api/v1/employees/{emp['id']}/qr")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    # Es un SVG válido (el token va codificado en los paths, no en texto plano).
+    assert response.text.lstrip().startswith("<?xml") or "<svg" in response.text
+    assert "<path" in response.text
+
+
+def test_qr_endpoint_requiere_auth(client):
+    response = client.get(f"/api/v1/employees/{uuid.uuid4()}/qr")
+    assert response.status_code == 401

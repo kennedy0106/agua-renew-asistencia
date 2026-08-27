@@ -7,9 +7,10 @@ Permisos (decisión de negocio):
   SUPERVISOR solo consulta.
 """
 
+import io
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.permissions import get_current_user, require_any_role
@@ -34,6 +35,7 @@ def _to_out(employee) -> EmployeeOut:
         hire_date=employee.hire_date,
         termination_date=employee.termination_date,
         active=employee.active,
+        qr_token=employee.qr_token,
         created_at=employee.created_at,
         updated_at=employee.updated_at,
     )
@@ -87,3 +89,29 @@ def update_employee(employee_id: uuid.UUID, payload: EmployeeUpdate, db: Session
 @router.post("/{employee_id}/deactivate", response_model=EmployeeOut)
 def deactivate_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(can_manage_employees)) -> EmployeeOut:
     return _to_out(EmployeeService(db).deactivate(employee_id))
+
+
+@router.get("/{employee_id}/qr", response_class=Response)
+def get_employee_qr(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> Response:
+    """QR único del empleado (SVG). Escanea a un identificador estable: AR:<qr_token>.
+
+    El token es aleatorio y único (server-side); la imagen se genera al vuelo
+    a partir de él. No se expone el DNI ni el código interno en el QR.
+    """
+    employee = EmployeeService(db).get(employee_id)
+    payload = f"AR:{employee.qr_token}"
+
+    import qrcode
+    import qrcode.image.svg
+
+    factory = qrcode.image.svg.SvgPathImage
+    img = qrcode.make(payload, image_factory=factory, box_size=10, border=2)
+    buffer = io.BytesIO()
+    img.save(buffer)
+    svg = buffer.getvalue().decode("utf-8")
+
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": f'inline; filename="qr-{employee.employee_code}.svg"'},
+    )

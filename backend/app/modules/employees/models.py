@@ -30,6 +30,11 @@ class Employee(Base):
     hire_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     termination_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # QR único por empleado: token aleatorio (server-side), no el código interno
+    # (que es editable y predecible). Se usa para generar/marcar asistencia.
+    qr_token: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
