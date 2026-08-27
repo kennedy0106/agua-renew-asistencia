@@ -16,14 +16,14 @@
   --brand-muted: #3f5f86;
   --expense-red: #b42318;
 
-  /* Vidrio y lavado */
-  --glass: rgba(255, 255, 255, 0.38);
-  --glass-strong: rgba(255, 255, 255, 0.55);
-  --glass-border: rgba(255, 255, 255, 0.22);
+  /* Vidrio y lavado — opacidad subida para legibilidad (glass-strong donde hay contenido) */
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-strong: rgba(255, 255, 255, 0.78);
+  --glass-border: rgba(21, 67, 153, 0.14);
   --glass-blur: 28px;
-  --field-bg: rgba(255, 255, 255, 0.72);
-  --ink-border: rgba(21, 67, 153, 0.16);
-  --wash: linear-gradient(160deg, #e8f0fe 0%, #d0e3ff 50%, #c5e8f4 100%);
+  --field-bg: rgba(255, 255, 255, 0.88);
+  --ink-border: rgba(21, 63, 134, 0.22);
+  --wash: linear-gradient(160deg, #eef4fe 0%, #e2ecfc 55%, #e8f4fa 100%);
 
   /* Aliases usados por los componentes */
   --primary-blue: var(--brand-blue);
@@ -32,7 +32,7 @@
   --green: var(--brand-green);
   --dark-green: var(--brand-green-deep);
   --text: var(--brand-ink);
-  --muted: var(--brand-muted);
+  --muted: #54749f; /* subido para contraste ≥4.5:1 sobre vidrio blanco */
   --border: var(--ink-border);
   --red: var(--expense-red);
   --bg: transparent;
@@ -47,8 +47,8 @@
   --radius-panel: 0.85rem; /* 14px */
   --radius-login: 0.95rem; /* 15px */
 
-  /* Sombras: vidrio + azul suave, sin sombras duras */
-  --shadow-panel: 0 16px 32px -26px rgba(0, 102, 204, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  /* Sombras: vidrio + azul suave, con inset highlight (Thin-Edge del DESIGN.md) */
+  --shadow-panel: 0 16px 32px -26px rgba(0, 102, 204, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.5);
   --shadow-btn: 0 10px 22px -14px rgba(0, 102, 204, 0.8);
   --shadow-btn-green: 0 10px 22px -14px rgba(0, 200, 83, 0.7);
 
@@ -70,9 +70,9 @@ body {
   line-height: 1.45;
   color: var(--text);
   background:
-    radial-gradient(900px 500px at 88% -10%, rgba(0, 123, 255, 0.14), transparent 60%),
-    radial-gradient(720px 440px at 6% 108%, rgba(0, 200, 83, 0.1), transparent 60%),
-    radial-gradient(620px 420px at 55% 45%, rgba(103, 195, 243, 0.12), transparent 65%),
+    radial-gradient(1000px 540px at 88% -10%, rgba(0, 123, 255, 0.08), transparent 60%),
+    radial-gradient(820px 500px at 6% 108%, rgba(0, 200, 83, 0.06), transparent 60%),
+    radial-gradient(700px 480px at 55% 45%, rgba(103, 195, 243, 0.07), transparent 65%),
     var(--wash);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
@@ -304,7 +304,7 @@ textarea {
   box-shadow: none; /* DESIGN.md: sin anillo de 3px */
 }
 .input::placeholder {
-  color: rgba(63, 95, 134, 0.55);
+  color: rgba(63, 95, 134, 0.72);
 }
 .select {
   appearance: none;
@@ -324,7 +324,7 @@ textarea {
   text-align: left;
 }
 .select-trigger[data-placeholder] {
-  color: rgba(63, 95, 134, 0.55);
+  color: rgba(63, 95, 134, 0.75);
 }
 .select-trigger:focus {
   outline: none;
@@ -339,10 +339,10 @@ textarea {
   opacity: 1;
 }
 .glass-select-content {
-  background: color-mix(in srgb, var(--glass-strong) 85%, #ffffff);
+  background: color-mix(in srgb, var(--glass-strong) 92%, #ffffff);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid var(--glass-border);
+  border: 1px solid rgba(21, 67, 153, 0.18);
   border-radius: var(--radius-panel);
   box-shadow: 0 20px 40px -20px rgba(0, 102, 204, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
   z-index: 60;
@@ -379,7 +379,7 @@ textarea {
   background: var(--glass);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-panel);
 }
@@ -433,7 +433,7 @@ textarea {
 /* --- Tablas --- */
 .table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   background: var(--glass-strong);
   backdrop-filter: blur(20px);
@@ -451,15 +451,15 @@ textarea {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--brand-muted);
-  background: rgba(255, 255, 255, 0.3);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.5);
   padding: 0.7rem 1rem;
-  border-bottom: 1px solid rgba(21, 67, 153, 0.1);
+  border-bottom: 1px solid rgba(21, 67, 153, 0.14);
   white-space: nowrap;
 }
 .table td {
   padding: 0.85rem 1rem;
-  border-bottom: 1px solid rgba(21, 67, 153, 0.07);
+  border-bottom: 1px solid rgba(21, 67, 153, 0.1);
   color: var(--text);
   vertical-align: middle;
 }
@@ -513,10 +513,10 @@ textarea {
 .sidebar {
   width: 18rem;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.6);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
-  border-right: 1px solid var(--glass-border);
+  border-right: 1px solid var(--ink-border);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -542,7 +542,7 @@ textarea {
 .nav-label {
   font-size: 0.66rem;
   font-weight: 700;
-  color: rgba(63, 95, 134, 0.7);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 0.9rem 0.6rem 0.35rem;
@@ -663,10 +663,10 @@ textarea {
   margin-bottom: 1.3rem;
 }
 .stat-card {
-  background: var(--glass);
+  background: var(--glass-strong);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   padding: 1rem 1.1rem;
   box-shadow: var(--shadow-panel);
@@ -679,7 +679,7 @@ textarea {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--brand-muted);
+  color: var(--muted);
   margin-bottom: 0.3rem;
 }
 .stat-card .stat-label svg {
@@ -708,10 +708,10 @@ textarea {
   display: flex;
   align-items: flex-start;
   gap: 0.8rem;
-  background: var(--glass);
+  background: var(--glass-strong);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   padding: 1.05rem 1.1rem;
   box-shadow: var(--shadow-panel);
