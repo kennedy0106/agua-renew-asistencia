@@ -92,7 +92,7 @@ export default function AsistenciaPage() {
   return (
     <div className="kiosk">
       <div className="kiosk-brand">
-        <img src="/brand/logo_color.webp" alt="Agua ReNew" />
+        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
         <span className="tagline">Registro de asistencia</span>
       </div>
 

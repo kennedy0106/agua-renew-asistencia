@@ -4,7 +4,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ApiError, authApi, UserOut } from "@/lib/api";
-import { Skeleton, StatSkeleton } from "./Loading";
 import {
   Briefcase,
   Chart,
@@ -81,26 +80,14 @@ export default function AdminShell({
   if (loading) {
     return (
       <div className="app-shell">
-        <aside className="sidebar">
-          <div className="sidebar-brand">
-            <Skeleton width={120} height={26} round />
+        <div className="main" style={{ alignItems: "center", justifyContent: "center" }}>
+          <div className="drop-loader">
+            <svg className="drop" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 2.7s6 6.4 6 10.6a6 6 0 0 1-12 0C6 9.1 12 2.7 12 2.7Z" />
+              <path d="M9.2 14.6a2.8 2.8 0 0 0 2.2 2.7" />
+            </svg>
+            <span>Cargando sesión…</span>
           </div>
-          <div style={{ padding: "1rem 0.9rem", display: "grid", gap: "0.5rem" }}>
-            {Array.from({ length: 7 }).map((_, i) => (
-              <Skeleton key={i} height={34} round />
-            ))}
-          </div>
-        </aside>
-        <div className="main">
-          <header className="topbar">
-            <Skeleton width={180} height={16} />
-          </header>
-          <main className="page">
-            <Skeleton width={220} height={18} />
-            <div style={{ marginTop: "1rem" }}>
-              <StatSkeleton count={4} />
-            </div>
-          </main>
         </div>
       </div>
     );
@@ -118,7 +105,7 @@ export default function AdminShell({
       <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <img src="/brand/logo_color.webp" alt="Agua ReNew" />
+          <img src="/brand/logo_color.svg" alt="Agua ReNew" />
         </div>
         <nav className="sidebar-nav">
           <p className="nav-label">Operación</p>

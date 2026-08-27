@@ -4,7 +4,7 @@ export default function HomePage() {
   return (
     <div className="kiosk">
       <div className="kiosk-brand">
-        <img src="/brand/logo_color.webp" alt="Agua ReNew" />
+        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
         <span className="tagline">Agua que renueva, superior que transforma</span>
       </div>
 

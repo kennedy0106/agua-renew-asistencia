@@ -31,9 +31,19 @@ export default function AdminLoginPage() {
 
   return (
     <div className="login-wrap">
+      <div className="login-hero">
+        <div className="watermark" aria-hidden />
+        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
+        <h1>Asistencia y planilla</h1>
+        <p>
+          Marcación de entrada y salida, control de horas y cálculo interno de
+          remuneraciones del personal.
+        </p>
+      </div>
+
       <div className="login-card">
         <div className="brand">
-          <img src="/brand/logo_color.webp" alt="Agua ReNew" />
+          <img src="/brand/logo_color.svg" alt="Agua ReNew" />
           <span className="sub">Panel administrativo</span>
         </div>
 
@@ -76,7 +86,7 @@ export default function AdminLoginPage() {
           )}
 
           <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? "Ingresando…" : "Ingresar"}
+            {busy ? "Ingresando…" : "Ingresar al sistema"}
           </button>
         </form>
       </div>
