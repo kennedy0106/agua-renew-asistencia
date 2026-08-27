@@ -97,6 +97,13 @@ function signedMinutes(minutes: number): string {
   return minutes > 0 ? `+${text}` : minutes < 0 ? `−${text}` : "0 min";
 }
 
+/** Fecha ISO (YYYY-MM-DD) del día siguiente a la fecha dada. */
+function dayAfter(isoDate: string): string {
+  const d = new Date(`${isoDate}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 const typeLabel: Record<string, string> = {
   PERMISO: "Permiso",
   RECUPERACION: "Recuperación",
@@ -405,7 +412,15 @@ export default function EmployeeDetailPage() {
             <p className="card-sub">Minutos pactados por día; el cambio de jornada preserva el historial.</p>
           </div>
           {canManage && (
-            <button className="btn btn-outline btn-sm" onClick={() => setShowForm((v) => !v)}>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                if (!showForm && schedule) {
+                  setForm({ ...defaultForm(), effective_from: dayAfter(schedule.effective_from) });
+                }
+                setShowForm((v) => !v);
+              }}
+            >
               {showForm ? (
                 <>
                   <X size={14} /> Cancelar
@@ -513,7 +528,22 @@ export default function EmployeeDetailPage() {
               <h2 className="card-title">Sueldo</h2>
               <p className="card-sub">Visible solo para administradores y jefes. El cambio preserva el historial.</p>
             </div>
-            <button className="btn btn-outline btn-sm" onClick={() => setShowSalaryForm((v) => !v)}>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                if (!showSalaryForm && salary) {
+                  setSalaryForm({
+                    effective_from: dayAfter(salary.effective_from),
+                    monthly_salary: salary.monthly_salary,
+                    overtime_enabled: salary.overtime_enabled,
+                    overtime_method: salary.overtime_method,
+                    overtime_percentage: salary.overtime_percentage,
+                    overtime_fixed_rate: salary.overtime_fixed_rate,
+                  });
+                }
+                setShowSalaryForm((v) => !v);
+              }}
+            >
               {showSalaryForm ? (
                 <>
                   <X size={14} /> Cancelar

@@ -47,7 +47,7 @@ def set_schedule(
     employee_id: uuid.UUID,
     payload: WorkScheduleCreate,
     db: Session = Depends(get_db),
-    _: object = Depends(can_manage_schedules),
+    user: object = Depends(can_manage_schedules),
 ) -> WorkScheduleOut:
     return ScheduleService(db).set_schedule(
         employee_id=employee_id,
@@ -62,4 +62,5 @@ def set_schedule(
             "sunday_minutes": payload.sunday_minutes,
         },
         break_minutes=payload.break_minutes,
+        performed_by=user.id if user is not None else None,
     )

@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.modules.employees.repository import EmployeeRepository
+from app.modules.audit.repository import AuditRepository
 from app.modules.salary.models import SalarySetting
 from app.modules.salary.repository import SalarySettingRepository
 
@@ -59,6 +60,7 @@ class SalaryService:
         overtime_method: str = "PERCENTAGE",
         overtime_percentage: Decimal | None = None,
         overtime_fixed_rate: Decimal | None = None,
+        performed_by: uuid.UUID | None = None,
     ) -> SalarySetting:
         if EmployeeRepository(self.db).get_by_id(employee_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
@@ -67,7 +69,11 @@ class SalaryService:
         if active is not None and active.effective_from >= effective_from:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Ya existe una configuración vigente desde esa fecha o después; elige una fecha posterior",
+                detail=(
+                    f"Ya hay un sueldo vigente desde {active.effective_from.isoformat()}. "
+                    "Para cambiarlo, usa una fecha posterior (la nueva configuración "
+                    "entrará en vigor ese día y la anterior quedará en el historial)."
+                ),
             )
 
         self._validate_overtime(
@@ -80,7 +86,7 @@ class SalaryService:
         if active is not None:
             self.repo.close_active(employee_id, effective_from - timedelta(days=1))
 
-        return self.repo.create(
+        created = self.repo.create(
             employee_id=employee_id,
             monthly_salary=monthly_salary,
             effective_from=effective_from,
@@ -89,6 +95,31 @@ class SalaryService:
             overtime_percentage=overtime_percentage,
             overtime_fixed_rate=overtime_fixed_rate,
         )
+
+        AuditRepository(self.db).create(
+            entity_type="salary",
+            entity_id=created.id,
+            action="set_salary",
+            old_values=self._serialize(active),
+            new_values=self._serialize(created),
+            reason=f"Nuevo sueldo vigente desde {effective_from.isoformat()}",
+            performed_by=performed_by,
+        )
+        return created
+
+    @staticmethod
+    def _serialize(setting: SalarySetting | None) -> dict | None:
+        if setting is None:
+            return None
+        return {
+            "monthly_salary": str(setting.monthly_salary),
+            "overtime_enabled": setting.overtime_enabled,
+            "overtime_method": setting.overtime_method,
+            "overtime_percentage": str(setting.overtime_percentage) if setting.overtime_percentage is not None else None,
+            "overtime_fixed_rate": str(setting.overtime_fixed_rate) if setting.overtime_fixed_rate is not None else None,
+            "effective_from": setting.effective_from.isoformat(),
+            "effective_to": setting.effective_to.isoformat() if setting.effective_to else None,
+        }
 
     @staticmethod
     def _validate_overtime(*, overtime_enabled: bool, overtime_method: str, overtime_percentage: Decimal | None, overtime_fixed_rate: Decimal | None) -> None:

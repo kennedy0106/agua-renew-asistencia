@@ -51,7 +51,7 @@ def set_salary(
     employee_id: uuid.UUID,
     payload: SalarySettingCreate,
     db: Session = Depends(get_db),
-    _: object = Depends(require_salary_access),
+    user: object = Depends(require_salary_access),
 ) -> SalarySettingOut:
     return SalaryService(db).set_salary(
         employee_id=employee_id,
@@ -61,4 +61,5 @@ def set_salary(
         overtime_method=payload.overtime_method,
         overtime_percentage=payload.overtime_percentage,
         overtime_fixed_rate=payload.overtime_fixed_rate,
+        performed_by=user.id if user is not None else None,
     )

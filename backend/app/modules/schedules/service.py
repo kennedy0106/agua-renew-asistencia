@@ -13,6 +13,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.modules.employees.repository import EmployeeRepository
+from app.modules.audit.repository import AuditRepository
 from app.modules.schedules.models import WorkSchedule
 from app.modules.schedules.repository import WorkScheduleRepository
 
@@ -67,6 +68,7 @@ class ScheduleService:
         effective_from: date,
         minutes: dict[str, int],
         break_minutes: int = 0,
+        performed_by: uuid.UUID | None = None,
     ) -> WorkSchedule:
         if EmployeeRepository(self.db).get_by_id(employee_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
@@ -75,16 +77,48 @@ class ScheduleService:
         if active is not None and active.effective_from >= effective_from:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Ya existe una jornada vigente desde esa fecha o después; elige una fecha posterior",
+                detail=(
+                    f"Ya hay una jornada vigente desde {active.effective_from.isoformat()}. "
+                    "Para cambiarla, usa una fecha posterior (la nueva jornada entrará "
+                    "en vigor ese día y la anterior quedará en el historial)."
+                ),
             )
 
         # Cerrar la vigente el día anterior al inicio de la nueva (historial).
         if active is not None:
             self.repo.close_active(employee_id, effective_from - timedelta(days=1))
 
-        return self.repo.create(
+        created = self.repo.create(
             employee_id=employee_id,
             effective_from=effective_from,
             break_minutes=break_minutes,
             **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
         )
+
+        AuditRepository(self.db).create(
+            entity_type="schedule",
+            entity_id=created.id,
+            action="set_schedule",
+            old_values=self._serialize(active),
+            new_values=self._serialize(created),
+            reason=f"Nueva jornada vigente desde {effective_from.isoformat()}",
+            performed_by=performed_by,
+        )
+        return created
+
+    @staticmethod
+    def _serialize(schedule: WorkSchedule | None) -> dict | None:
+        if schedule is None:
+            return None
+        return {
+            "monday_minutes": schedule.monday_minutes,
+            "tuesday_minutes": schedule.tuesday_minutes,
+            "wednesday_minutes": schedule.wednesday_minutes,
+            "thursday_minutes": schedule.thursday_minutes,
+            "friday_minutes": schedule.friday_minutes,
+            "saturday_minutes": schedule.saturday_minutes,
+            "sunday_minutes": schedule.sunday_minutes,
+            "break_minutes": schedule.break_minutes,
+            "effective_from": schedule.effective_from.isoformat(),
+            "effective_to": schedule.effective_to.isoformat() if schedule.effective_to else None,
+        }
