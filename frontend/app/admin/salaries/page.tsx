@@ -226,9 +226,19 @@ function FragmentRow({
           {formatMoney(record.total)}
         </td>
         <td style={{ textAlign: "right" }}>
-          <button className="link-btn" onClick={onToggle} style={{ fontSize: "0.78rem" }}>
-            {expanded ? "Ocultar" : "Ver detalle"}
-          </button>
+          <div style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center" }}>
+            <a
+              className="link-btn"
+              href={`/admin/employees/${record.employee_id}`}
+              style={{ fontSize: "0.78rem" }}
+              title="Editar sueldo y jornada"
+            >
+              Editar
+            </a>
+            <button className="link-btn" onClick={onToggle} style={{ fontSize: "0.78rem" }}>
+              {expanded ? "Ocultar" : "Ver detalle"}
+            </button>
+          </div>
         </td>
       </tr>
       {expanded && (

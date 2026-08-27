@@ -8,13 +8,17 @@
 
 import re
 import uuid
+from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.timezone import lima_tz
 from app.modules.employees.models import Employee
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.job_roles.repository import JobRoleRepository
+from app.modules.salary.repository import SalarySettingRepository
+from app.modules.schedules.repository import WorkScheduleRepository
 
 _DNI_RE = re.compile(r"^\d{8}$")
 
@@ -115,6 +119,18 @@ class EmployeeService:
 
     def deactivate(self, employee_id: uuid.UUID) -> Employee:
         employee = self.get(employee_id)
+        if employee.active:
+            # A4: cerrar la vigencia activa de sueldo y jornada al cesar.
+            # No se borra historial; solo se cierra effective_to = hoy (Lima).
+            today = datetime.now(lima_tz()).date()
+            salary_repo = SalarySettingRepository(self.db)
+            active_salary = salary_repo.get_active(employee_id)
+            if active_salary is not None:
+                salary_repo.close_active(employee_id, today)
+            schedule_repo = WorkScheduleRepository(self.db)
+            active_schedule = schedule_repo.get_active(employee_id)
+            if active_schedule is not None:
+                schedule_repo.close_active(employee_id, today)
         return self.repo.deactivate(employee)
 
     # --- helpers ---

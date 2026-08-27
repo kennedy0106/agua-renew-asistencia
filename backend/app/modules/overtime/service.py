@@ -63,6 +63,8 @@ class OvertimeService:
             if record.status != "COMPLETE" or record.worked_minutes is None:
                 continue
             expected = schedules.expected_minutes(employee_id, record.work_date)
+            if expected <= 0:
+                continue  # A3: sin jornada configurada → no es sobretiempo
             extra = record.worked_minutes - expected
             if extra > 0:
                 detected.append(
