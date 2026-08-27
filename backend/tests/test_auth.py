@@ -50,6 +50,15 @@ def test_login_campos_vacios(client):
     assert client.post("/api/v1/auth/login", json={"username": "", "password": ""}).status_code == 422
 
 
+def test_login_actualiza_last_login(client, db_session):
+    """F2: el login debe actualizar last_login_at del usuario."""
+    from app.modules.users.repository import UserRepository
+
+    _login(client, "boss", "Boss123!")
+    user = UserRepository(db_session).get_by_username("boss")
+    assert user.last_login_at is not None
+
+
 # --- /me ---
 
 def test_me_sin_cookie_401(client):

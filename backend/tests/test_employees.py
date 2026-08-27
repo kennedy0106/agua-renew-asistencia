@@ -154,6 +154,25 @@ def test_deactivate_conserva_historial(client, db_session):
     assert any(e["id"] == created["id"] and e["active"] is False for e in listing)
 
 
+def test_reactivate_empleado(client, db_session):
+    """F1: un empleado cesado puede reactivarse sin perder historial."""
+    _login(client, "admin", "Admin123!")
+    created = _create(client, _payload(db_session._test_job_roles["Operario"])).json()
+    client.post(f"/api/v1/employees/{created['id']}/deactivate")
+
+    response = client.post(f"/api/v1/employees/{created['id']}/activate")
+    assert response.status_code == 200
+    assert response.json()["active"] is True
+
+
+def test_reactivate_requiere_admin_o_boss(client, db_session):
+    _login(client, "admin", "Admin123!")
+    created = _create(client, _payload(db_session._test_job_roles["Operario"])).json()
+    _login(client, "supervisor", "Sup123!")
+    response = client.post(f"/api/v1/employees/{created['id']}/activate")
+    assert response.status_code == 403
+
+
 def test_patch_como_supervisor_forbidden(client, db_session):
     _login(client, "supervisor", "Sup123!")
     response = client.patch(f"/api/v1/employees/{uuid.uuid4()}", json={"first_name": "X"})

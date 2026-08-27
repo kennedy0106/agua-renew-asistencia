@@ -138,6 +138,12 @@ class EmployeeService:
                 schedule_repo.close_active(employee_id, today)
         return self.repo.deactivate(employee)
 
+    def activate(self, employee_id: uuid.UUID) -> Employee:
+        employee = self.get(employee_id)
+        if not employee.active:
+            return self.repo.activate(employee)
+        return employee
+
     # --- helpers ---
 
     def _ensure_unique(self, *, dni: str | None = None, employee_code: str | None = None, exclude_employee_id: uuid.UUID | None = None) -> None:

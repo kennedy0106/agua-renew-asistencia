@@ -110,3 +110,10 @@ class EmployeeRepository:
         self.db.commit()
         self.db.refresh(employee)
         return employee
+
+    def activate(self, employee: Employee) -> Employee:
+        employee.active = True
+        self.db.add(employee)
+        self.db.commit()
+        self.db.refresh(employee)
+        return employee

@@ -10,10 +10,11 @@ Panel administrativo (autenticado; cualquier rol puede consultar):
 import uuid
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.permissions import get_current_user, require_any_role
+from app.core.rate_limit import RateLimiter, client_ip
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
@@ -32,19 +33,44 @@ router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 
 can_correct = require_any_role("ADMIN", "BOSS")
 
+# Rate limiting para marcación pública: 30 peticiones / minuto por IP.
+_public_limiter = RateLimiter(limit=30, window_seconds=60)
+
+
+def _rate_limit_public(request: Request) -> None:
+    """Límite anti-abuso para endpoints sin autenticación."""
+    key = f"public:{client_ip(request)}"
+    if not _public_limiter.allow(key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Demasiadas peticiones. Intente de nuevo en un minuto.",
+        )
+
 
 @router.post("/identify", response_model=IdentifyResponse)
-def identify(payload: IdentifyRequest, db: Session = Depends(get_db)) -> IdentifyResponse:
+def identify(
+    payload: IdentifyRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+) -> IdentifyResponse:
     return AttendanceService(db).identify(payload.identifier)
 
 
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
-def check_in(payload: CheckInRequest, db: Session = Depends(get_db)) -> AttendanceRecordOut:
+def check_in(
+    payload: CheckInRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+) -> AttendanceRecordOut:
     return AttendanceService(db).check_in(payload.employee_id)
 
 
 @router.post("/check-out", response_model=AttendanceRecordOut)
-def check_out(payload: CheckOutRequest, db: Session = Depends(get_db)) -> AttendanceRecordOut:
+def check_out(
+    payload: CheckOutRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+) -> AttendanceRecordOut:
     return AttendanceService(db).check_out(payload.employee_id)
 
 

@@ -1,7 +1,9 @@
 """Configuración central del backend (variables de entorno)."""
 
+import os
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +36,18 @@ class Settings(BaseSettings):
     # En producción frontend (Vercel) y backend (Railway) son cross-site:
     # requerirá "none" + secure. Dev local (mismo sitio) usa "lax".
     session_cookie_samesite: str = "lax"
+
+    @field_validator("secret_key")
+    @classmethod
+    def _reject_insecure_secret_in_production(cls, value: str) -> str:
+        """Fail-fast: en producción nunca arrancar con la clave por defecto."""
+        env = os.getenv("ENVIRONMENT", "development").lower()
+        if env == "production" and value in ("change-me", "", "secret"):
+            raise ValueError(
+                "SECRET_KEY no puede ser el valor por defecto en producción. "
+                "Configura una clave de al menos 32 caracteres."
+            )
+        return value
 
 
 @lru_cache

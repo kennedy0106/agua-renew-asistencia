@@ -2326,3 +2326,34 @@ pendiente de decisión del jefe
 antes que asumir comportamientos salariales no confirmados.
 
 El MVP debe mantenerse **simple para el usuario, modular para el desarrollador y reutilizable para el ERP futuro**.
+
+---
+
+# 37. Fases adicionales (post-MVP) — implementadas
+
+## FASE 18 — Horas extra por tramos legales
+
+Reemplaza los tres métodos de horas extra (porcentaje libre / monto fijo /
+ajuste manual) por **tramos legales diarios** definidos en
+`seccion_horas_extra.md`:
+
+- Primeras 2 horas del día → recargo ≥ **25%**; tercera en adelante → ≥ **35%**.
+- El contador se reinicia cada día.
+- Capas: mínimo legal → `company_overtime_policy` (vigencia + motivo) →
+  excepción por empleado (`salary_settings.use_custom_overtime_rates`).
+- `get_effective_overtime_rates(employee_id, date)` es la única fuente de verdad.
+- Rutas `/api/v1/overtime-policy` (ADMIN/BOSS) + auditoría.
+
+## FASE 19 — QR único por empleado
+
+- `employees.qr_token` (aleatorio server-side, UNIQUE, indexado).
+- `GET /api/v1/employees/{id}/qr` → SVG; payload `AR:<token>`.
+- Frontend: QR en el detalle del empleado + botón de descarga.
+
+## Robustez post-MVP
+
+- Endpoint `POST /api/v1/employees/{id}/activate` (reactivar un empleado
+  cesado sin perder historial).
+- Rate limiting ligero en los endpoints públicos de marcación.
+- `SECRET_KEY` con guard fail-fast en producción (nunca el valor por defecto).
+- `server_time` de `/identify` en America/Lima (no UTC).

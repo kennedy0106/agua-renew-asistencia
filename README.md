@@ -29,9 +29,27 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 19 (QR único por empleado) ✅
+
+- [x] `employees.qr_token`: token aleatorio server-side (`secrets.token_urlsafe(32)`), UNIQUE + indexado; generado automáticamente al crear el empleado
+- [x] Migración `3e6aff77cfa9` (rellena filas existentes con tokens únicos)
+- [x] `GET /api/v1/employees/{id}/qr` → QR en SVG (qrcode sin pillow); payload `AR:<token>` (sin DNI/código expuesto)
+- [x] Frontend: QR visible en el detalle del empleado + botón "Descargar QR"
+- [x] **203 tests en verde**
+
+## Estado — Fase 18 (horas extra por tramos) ✅
+
+- [x] **Rediseño completo según `seccion_horas_extra.md`**: tramos legales diarios — primeras 2 h ≥25%, tercera+ ≥35%; el contador se reinicia cada día
+- [x] Nueva tabla `company_overtime_policy` (vigencia histórica + motivo + CHECK ≥25/≥35)
+- [x] `salary_settings` reemplaza FIXED_RATE/MANUAL por override por empleado (`use_custom_overtime_rates` + 2 tasas personalizadas, CHECK en BD)
+- [x] `get_effective_overtime_rates(employee_id, date)` — fuente única de verdad: override > política general > mínimos legales
+- [x] Rutas `/api/v1/overtime-policy` (GET/POST/history/effective) ADMIN/BOSS + auditoría `UPDATE_OVERTIME_POLICY`
+- [x] Frontend: página `/admin/overtime-policy` + override por empleado en el detalle
+- [x] **200 tests en verde**
+
 ## Estado — Fase 17 (estabilización: escenarios A–I) ✅ MVP COMPLETO
 
-- [x] **194 tests en verde** (9 nuevos de escenarios end-to-end por la API)
+- [x] **203 tests en verde** (9 nuevos de escenarios end-to-end por la API + horas extra por tramos + QR + reactivación + rate limiting)
 - [x] Escenario A (jornada normal → saldo 0, payroll = sueldo) ✓
 - [x] Escenario B (llega tarde → −30 min, sin descuento automático) ✓
 - [x] Escenario C (sale antes → −30 min) ✓

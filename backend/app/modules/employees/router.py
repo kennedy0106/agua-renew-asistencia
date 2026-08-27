@@ -91,6 +91,12 @@ def deactivate_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _
     return _to_out(EmployeeService(db).deactivate(employee_id))
 
 
+@router.post("/{employee_id}/activate", response_model=EmployeeOut)
+def activate_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(can_manage_employees)) -> EmployeeOut:
+    """Reactivar un empleado cesado (no borra historial; solo active = True)."""
+    return _to_out(EmployeeService(db).activate(employee_id))
+
+
 @router.get("/{employee_id}/qr", response_class=Response)
 def get_employee_qr(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> Response:
     """QR único del empleado (SVG). Escanea a un identificador estable: AR:<qr_token>.

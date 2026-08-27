@@ -817,60 +817,37 @@ El jefe decide.
 
 # 21. Configuración de horas extra
 
-Debe ser configurable.
+> **Decisión de negocio (agosto 2026):** se reemplazaron los tres métodos
+> (porcentaje libre, monto fijo, ajuste manual) por un modelo de **tramos
+> legales diarios** definido en `seccion_horas_extra.md`:
+>
+> - Primeras 2 horas del día → recargo ≥ **25%**.
+> - Tercera hora en adelante → recargo ≥ **35%**.
+> - El contador de horas extra **se reinicia cada día** (no acumula semanal).
+> - Tres capas de resolución: mínimo legal → política general de empresa
+>   (`company_overtime_policy`, con vigencia histórica y motivo) → excepción
+>   por empleado (`salary_settings.use_custom_overtime_rates`).
+> - El valor de la hora ordinaria se deriva del sueldo mensual entre los
+>   minutos esperados del mes (no se ingresa manualmente).
+>
+> La función central es `get_effective_overtime_rates(employee_id, date)`;
+> todo el cálculo de horas extra pasa por ella.
 
-## Opción 1 — Porcentaje
-
-Ejemplo:
-
-```text
-Recargo: 25 %
-```
-
-Si el valor base interno de la hora fuera:
-
-```text
-S/ 8.00
-```
-
-la hora extra será:
-
-```text
-8 × 1.25 = S/ 10
-```
-
----
-
-## Opción 2 — Monto fijo
-
-Ejemplo:
-
-```text
-Hora extra = S/ 12
-```
-
----
-
-## Opción 3 — Ajuste manual
-
-El jefe puede ingresar directamente:
-
-```text
-Monto horas extra = S/ 90
-```
-
----
-
-## Configuración sugerida
+### Configuración sugerida (actual)
 
 ```text
 overtime_enabled: bool
 
-overtime_method:
-PERCENTAGE
-FIXED_RATE
-MANUAL
+# Excepción por empleado (opcional; si no, aplica la política general)
+use_custom_overtime_rates: bool
+custom_first_two_hours_rate: numeric   # >= 25
+custom_additional_hours_rate: numeric  # >= 35
+```
 
+### Configuración histórica (reemplazada)
+
+```text
+overtime_method: PERCENTAGE | FIXED_RATE | MANUAL
 overtime_percentage
 overtime_fixed_rate
 ```

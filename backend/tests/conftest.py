@@ -20,6 +20,15 @@ from app.modules.users.repository import UserRepository
 from scripts.seed_roles import ROLES
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiters():
+    """Resetea los limiters globales entre tests (evita que se agote el límite)."""
+    import app.modules.attendance.router as attendance_router
+
+    attendance_router._public_limiter.reset()
+    yield
+
+
 # Rutas de prueba para verificar el gating por rol (solo existen en tests).
 @app.get("/test/admin-only")
 def _test_admin_only(user=Depends(require_admin)) -> dict:

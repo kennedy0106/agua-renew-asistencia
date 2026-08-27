@@ -78,6 +78,7 @@ class AttendanceService:
         open_record = self.repo.get_open(employee.id)
         last_record = self.repo.get_last(employee.id)
         now = datetime.now(timezone.utc)
+        now_lima = now.astimezone(lima_tz())
         return {
             "employee": {
                 "id": employee.id,
@@ -102,8 +103,8 @@ class AttendanceService:
                     else None
                 ),
             },
-            "server_time": now.isoformat(),
-            "server_time_label": now.astimezone(lima_tz()).strftime("%H:%M"),
+            "server_time": now_lima.isoformat(),
+            "server_time_label": now_lima.strftime("%H:%M"),
         }
 
     def check_in(self, employee_id: uuid.UUID) -> AttendanceRecord:

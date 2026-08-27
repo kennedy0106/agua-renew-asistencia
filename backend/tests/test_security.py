@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 
 import jwt as pyjwt
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -87,3 +88,45 @@ def test_seed_roles_idempotente():
     finally:
         session.close()
         Base.metadata.drop_all(engine)
+
+
+# --- Rate limiter (F5) ---
+
+def test_rate_limiter_permite_hasta_el_limite():
+    from app.core.rate_limit import RateLimiter
+
+    limiter = RateLimiter(limit=3, window_seconds=60)
+    assert limiter.allow("ip1") is True
+    assert limiter.allow("ip1") is True
+    assert limiter.allow("ip1") is True
+    assert limiter.allow("ip1") is False  # supera el límite
+
+
+def test_rate_limiter_independiente_por_ip():
+    from app.core.rate_limit import RateLimiter
+
+    limiter = RateLimiter(limit=1, window_seconds=60)
+    assert limiter.allow("ip1") is True
+    assert limiter.allow("ip2") is True  # otra IP no se ve afectada
+    assert limiter.allow("ip1") is False
+
+
+# --- Validación de SECRET_KEY (F6) ---
+
+def test_secret_key_default_rechazado_en_produccion(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "change-me")
+
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)
+
+
+def test_secret_key_valida_en_produccion(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "una-clave-secreta-de-al-menos-32-caracteres-123456")
+    settings = Settings(_env_file=None)
+    assert settings.secret_key == "una-clave-secreta-de-al-menos-32-caracteres-123456"
