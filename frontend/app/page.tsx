@@ -5,7 +5,6 @@ export default function HomePage() {
     <div className="kiosk">
       <div className="kiosk-brand">
         <img src="/brand/logo_color.svg" alt="Agua ReNew" />
-        <span className="tagline">Agua que renueva, superior que transforma</span>
       </div>
 
       <div className="kiosk-card">

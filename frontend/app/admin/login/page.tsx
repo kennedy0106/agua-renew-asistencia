@@ -44,7 +44,6 @@ export default function AdminLoginPage() {
       <div className="login-card">
         <div className="brand">
           <img src="/brand/logo_color.svg" alt="Agua ReNew" />
-          <span className="sub">Panel administrativo</span>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: "grid", gap: "0.9rem" }}>
