@@ -470,8 +470,8 @@ textarea {
   border-bottom: 1px solid rgba(21, 67, 153, 0.1);
 }
 .sidebar-brand img {
-  height: 2.1rem;
-  width: auto;
+  width: min(100%, 210px);
+  height: auto;
   display: block;
 }
 .sidebar-nav {
@@ -769,8 +769,8 @@ textarea {
   z-index: 1;
 }
 .kiosk-brand img {
-  height: 3.1rem;
-  width: auto;
+  width: min(84%, 400px);
+  height: auto;
 }
 .kiosk-brand .tagline {
   font-size: 0.82rem;
@@ -914,8 +914,8 @@ textarea {
   margin-bottom: 1.5rem;
 }
 .login-card .brand img {
-  height: 2.8rem;
-  width: auto;
+  width: min(82%, 340px);
+  height: auto;
 }
 .login-card .brand .sub {
   font-size: 0.78rem;
@@ -938,8 +938,8 @@ textarea {
     z-index: 1;
   }
   .login-hero img {
-    height: 4.2rem;
-    width: auto;
+    width: min(100%, 400px);
+    height: auto;
   }
   .login-hero h1 {
     font-size: clamp(1.65rem, 3vw, 2.2rem);
@@ -980,7 +980,8 @@ textarea {
     padding: 0.9rem 0.4rem;
   }
   .sidebar-brand img {
-    height: 1.7rem;
+    width: 46px;
+    height: auto;
   }
   .nav-label,
   .nav-link span,
