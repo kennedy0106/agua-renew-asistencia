@@ -1,15 +1,15 @@
-"""Servicio de horas extra (Fase 10).
+"""Servicio de horas extra (tramos diarios — seccion_horas_extra.md).
 
-- DETECTAR ≠ PAGAR: la detección solo propone los días con sobretiempo; el
-  JEFE clasifica creando un ajuste OVERTIME (aprobación explícita).
-- El valor monetario se calcula SOLO sobre ajustes OVERTIME APROBADOS, con
-  el método del salary_settings vigente en la fecha del ajuste:
-    PERCENTAGE → minutos × tarifa/min × (1 + recargo%)
-    FIXED_RATE  → horas × tarifa fija
-    MANUAL      → 0 (el monto se ingresa a mano en el periodo)
-  Si overtime_enabled = false → 0 (no se paga horas extra).
-- La tarifa por hora se deriva: sueldo mensual / minutos esperados del mes
-  (jornada vigente); sin jornada → fallback documentado de 240 h (30×8).
+- DETECTAR ≠ PAGAR: la detección solo propone días con sobretiempo; el JEFE
+  clasifica creando un ajuste OVERTIME (aprobación explícita).
+- El valor monetario se calcula SOLO sobre ajustes OVERTIME APROBADOS.
+- Tramos DIARIOS (el contador se reinicia cada día):
+    minutos 0–120   → first_two_hours_rate
+    minutos 120+    → additional_hours_rate
+- Tasas efectivas resueltas por get_effective_overtime_rates (política general
+  o override por empleado). No se duplica la decisión.
+- Si overtime_enabled = false en el salary vigente → no se paga horas extra.
+- Tarifa por hora derivada: sueldo mensual / minutos esperados del mes.
 - Dinero SIEMPRE en Decimal.
 """
 
@@ -21,16 +21,18 @@ from decimal import Decimal, ROUND_HALF_UP
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.modules.adjustments.models import ADJUSTMENT_APPROVED, ADJUSTMENT_TYPES
+from app.modules.adjustments.models import ADJUSTMENT_APPROVED
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.employees.repository import EmployeeRepository
+from app.modules.overtime_policy.service import OvertimePolicyService
 from app.modules.salary.service import SalaryService
 from app.modules.schedules.service import ScheduleService
 
-_FALLBACK_MONTH_MINUTES = 14400  # 240 h (30 días × 8 h), Perú: tarifa mensual estándar.
+_FALLBACK_MONTH_MINUTES = 14400  # 240 h (30 días × 8 h), Perú.
 _CENTS = Decimal("0.01")
 _RATE = Decimal("0.0001")
+_FIRST_TWO_MINUTES = 120  # primeras 2 horas del día
 
 
 class OvertimeService:
@@ -74,7 +76,6 @@ class OvertimeService:
         return detected
 
     def _expected_month_minutes(self, employee_id: uuid.UUID, ref: date) -> int:
-        """Minutos esperados del mes (jornada vigente día a día)."""
         schedules = ScheduleService(self.db)
         _, last_day = monthrange(ref.year, ref.month)
         total = 0
@@ -93,7 +94,7 @@ class OvertimeService:
         return (salary.monthly_salary * Decimal(60) / Decimal(expected)).quantize(_RATE, rounding=ROUND_HALF_UP)
 
     def value(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict:
-        """Valor monetario de las horas extra APROBADAS en el rango."""
+        """Valor monetario de las horas extra APROBADAS en el rango, por tramos diarios."""
         self._get_employee(employee_id)
         if date_from > date_to:
             raise HTTPException(
@@ -109,40 +110,55 @@ class OvertimeService:
             and date_from <= a.adjustment_date <= date_to
         ]
 
+        # Agrupar minutos aprobados por día (el tramo se reinicia cada día).
+        by_day: dict[date, int] = {}
+        for adj in adjustments:
+            by_day[adj.adjustment_date] = by_day.get(adj.adjustment_date, 0) + adj.minutes
+
         salaries = SalaryService(self.db)
+        policy = OvertimePolicyService(self.db)
+
         total = Decimal("0.00")
-        method: str | None = None
-        rate: Decimal | None = None
         breakdown = []
 
-        for adj in adjustments:
-            salary = salaries.get_for_date(employee_id, adj.adjustment_date)
+        for day, total_minutes in sorted(by_day.items()):
+            salary = salaries.get_for_date(employee_id, day)
             if salary is None or not salary.overtime_enabled:
                 continue  # sin configuración o deshabilitado → no se paga
 
-            method = salary.overtime_method
-            if method == "MANUAL":
-                continue  # el monto se define a mano en el periodo (payroll)
+            first_two = min(total_minutes, _FIRST_TWO_MINUTES)
+            additional = max(total_minutes - _FIRST_TWO_MINUTES, 0)
 
-            hourly = self.hourly_rate(employee_id, adj.adjustment_date)
-            rate = hourly
-            minutes = Decimal(adj.minutes)
+            rates = policy.get_effective_overtime_rates(employee_id, day)
+            hourly = self.hourly_rate(employee_id, day)
 
-            if method == "PERCENTAGE":
-                percentage = salary.overtime_percentage or Decimal("0")
-                per_minute = hourly / Decimal(60) * (Decimal("1") + percentage / Decimal(100))
-                item_value = (minutes * per_minute).quantize(_CENTS, rounding=ROUND_HALF_UP)
-            else:  # FIXED_RATE
-                fixed = salary.overtime_fixed_rate or Decimal("0")
-                item_value = (minutes / Decimal(60) * fixed).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            first_value = (
+                Decimal(first_two)
+                * hourly
+                / Decimal(60)
+                * (Decimal("1") + rates["first_two_hours_rate"] / Decimal(100))
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
+            additional_value = (
+                Decimal(additional)
+                * hourly
+                / Decimal(60)
+                * (Decimal("1") + rates["additional_hours_rate"] / Decimal(100))
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+            item_value = first_value + additional_value
             total += item_value
+
             breakdown.append(
                 {
-                    "adjustment_id": adj.id,
-                    "adjustment_date": adj.adjustment_date,
-                    "minutes": adj.minutes,
-                    "rate": hourly,
+                    "adjustment_date": day,
+                    "minutes": total_minutes,
+                    "first_two_minutes": first_two,
+                    "additional_minutes": additional,
+                    "first_two_hours_rate": rates["first_two_hours_rate"],
+                    "additional_hours_rate": rates["additional_hours_rate"],
+                    "source": rates["source"],
+                    "hourly_rate": hourly,
                     "value": item_value,
                 }
             )
@@ -150,9 +166,7 @@ class OvertimeService:
         return {
             "date_from": date_from,
             "date_to": date_to,
-            "method": method,
             "overtime_minutes": sum(a.minutes for a in adjustments),
-            "hourly_rate": rate,
             "value": total.quantize(_CENTS, rounding=ROUND_HALF_UP),
             "breakdown": breakdown,
         }

@@ -10,6 +10,7 @@ from app.modules.attendance.models import AttendanceRecord  # noqa: F401
 from app.modules.audit.models import AuditLog  # noqa: F401
 from app.modules.employees.models import Employee  # noqa: F401
 from app.modules.job_roles.models import JobRole  # noqa: F401
+from app.modules.overtime_policy.models import CompanyOvertimePolicy  # noqa: F401
 from app.modules.payroll.models import PayrollPeriod, PayrollRecord  # noqa: F401
 from app.modules.salary.models import SalarySetting  # noqa: F401
 from app.modules.schedules.models import WorkSchedule  # noqa: F401

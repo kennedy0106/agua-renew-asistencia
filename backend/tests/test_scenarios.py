@@ -56,9 +56,6 @@ def _set_salary(client, employee_id: str, amount: str, effective_from: str, **ov
         "effective_from": effective_from,
         "monthly_salary": amount,
         "overtime_enabled": True,
-        "overtime_method": "PERCENTAGE",
-        "overtime_percentage": "25.00",
-        "overtime_fixed_rate": None,
     }
     payload.update(overrides)
     response = client.post(f"/api/v1/employees/{employee_id}/salary-settings", json=payload)

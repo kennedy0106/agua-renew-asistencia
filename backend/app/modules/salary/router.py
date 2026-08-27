@@ -58,8 +58,8 @@ def set_salary(
         monthly_salary=payload.monthly_salary,
         effective_from=payload.effective_from,
         overtime_enabled=payload.overtime_enabled,
-        overtime_method=payload.overtime_method,
-        overtime_percentage=payload.overtime_percentage,
-        overtime_fixed_rate=payload.overtime_fixed_rate,
+        use_custom_overtime_rates=payload.use_custom_overtime_rates,
+        custom_first_two_hours_rate=payload.custom_first_two_hours_rate,
+        custom_additional_hours_rate=payload.custom_additional_hours_rate,
         performed_by=user.id if user is not None else None,
     )

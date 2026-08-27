@@ -1,4 +1,4 @@
-"""Schemas de horas extra."""
+"""Schemas de horas extra (tramos diarios, seccion_horas_extra.md)."""
 
 import uuid
 from datetime import date
@@ -15,18 +15,20 @@ class OvertimeDetectItem(BaseModel):
 
 
 class OvertimeValueItem(BaseModel):
-    adjustment_id: uuid.UUID
     adjustment_date: date
     minutes: int
-    rate: Decimal | None
+    first_two_minutes: int
+    additional_minutes: int
+    first_two_hours_rate: Decimal
+    additional_hours_rate: Decimal
+    source: str
+    hourly_rate: Decimal
     value: Decimal
 
 
 class OvertimeValueOut(BaseModel):
     date_from: date
     date_to: date
-    method: str | None
     overtime_minutes: int
-    hourly_rate: Decimal | None
     value: Decimal
     breakdown: list[OvertimeValueItem]

@@ -2,10 +2,10 @@
 
 - El sueldo se guarda con vigencia: cambiar S/1300 → S/1500 crea una nueva
   configuración y cierra la anterior (el historial no se altera).
-- Validación cruzada de horas extra: PERCENTAGE exige overtime_percentage;
-  FIXED_RATE exige overtime_fixed_rate.
-- La tarifa por hora se deriva internamente (Fase 11, payroll); nunca se
-  ingresa como dato principal.
+- Horas extra por tramos (seccion_horas_extra.md): las tasas se resuelven vía
+  política general o override por empleado. Aquí solo se configuran los datos
+  del override (si use_custom_overtime_rates).
+- La tarifa por hora se deriva internamente (payroll); nunca se ingresa.
 """
 
 import uuid
@@ -15,8 +15,8 @@ from decimal import Decimal
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.modules.employees.repository import EmployeeRepository
 from app.modules.audit.repository import AuditRepository
+from app.modules.employees.repository import EmployeeRepository
 from app.modules.salary.models import SalarySetting
 from app.modules.salary.repository import SalarySettingRepository
 
@@ -57,9 +57,9 @@ class SalaryService:
         monthly_salary: Decimal,
         effective_from: date,
         overtime_enabled: bool = False,
-        overtime_method: str = "PERCENTAGE",
-        overtime_percentage: Decimal | None = None,
-        overtime_fixed_rate: Decimal | None = None,
+        use_custom_overtime_rates: bool = False,
+        custom_first_two_hours_rate: Decimal | None = None,
+        custom_additional_hours_rate: Decimal | None = None,
         performed_by: uuid.UUID | None = None,
     ) -> SalarySetting:
         if EmployeeRepository(self.db).get_by_id(employee_id) is None:
@@ -76,11 +76,10 @@ class SalaryService:
                 ),
             )
 
-        self._validate_overtime(
-            overtime_enabled=overtime_enabled,
-            overtime_method=overtime_method,
-            overtime_percentage=overtime_percentage,
-            overtime_fixed_rate=overtime_fixed_rate,
+        self._validate_custom_rates(
+            use_custom_overtime_rates=use_custom_overtime_rates,
+            custom_first_two_hours_rate=custom_first_two_hours_rate,
+            custom_additional_hours_rate=custom_additional_hours_rate,
         )
 
         if active is not None:
@@ -91,9 +90,9 @@ class SalaryService:
             monthly_salary=monthly_salary,
             effective_from=effective_from,
             overtime_enabled=overtime_enabled,
-            overtime_method=overtime_method,
-            overtime_percentage=overtime_percentage,
-            overtime_fixed_rate=overtime_fixed_rate,
+            use_custom_overtime_rates=use_custom_overtime_rates,
+            custom_first_two_hours_rate=custom_first_two_hours_rate,
+            custom_additional_hours_rate=custom_additional_hours_rate,
         )
 
         AuditRepository(self.db).create(
@@ -114,24 +113,38 @@ class SalaryService:
         return {
             "monthly_salary": str(setting.monthly_salary),
             "overtime_enabled": setting.overtime_enabled,
-            "overtime_method": setting.overtime_method,
-            "overtime_percentage": str(setting.overtime_percentage) if setting.overtime_percentage is not None else None,
-            "overtime_fixed_rate": str(setting.overtime_fixed_rate) if setting.overtime_fixed_rate is not None else None,
+            "use_custom_overtime_rates": setting.use_custom_overtime_rates,
+            "custom_first_two_hours_rate": str(setting.custom_first_two_hours_rate)
+            if setting.custom_first_two_hours_rate is not None
+            else None,
+            "custom_additional_hours_rate": str(setting.custom_additional_hours_rate)
+            if setting.custom_additional_hours_rate is not None
+            else None,
             "effective_from": setting.effective_from.isoformat(),
             "effective_to": setting.effective_to.isoformat() if setting.effective_to else None,
         }
 
     @staticmethod
-    def _validate_overtime(*, overtime_enabled: bool, overtime_method: str, overtime_percentage: Decimal | None, overtime_fixed_rate: Decimal | None) -> None:
-        if not overtime_enabled:
+    def _validate_custom_rates(
+        *,
+        use_custom_overtime_rates: bool,
+        custom_first_two_hours_rate: Decimal | None,
+        custom_additional_hours_rate: Decimal | None,
+    ) -> None:
+        if not use_custom_overtime_rates:
             return
-        if overtime_method == "PERCENTAGE" and overtime_percentage is None:
+        if custom_first_two_hours_rate is None or custom_additional_hours_rate is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="El método PERCENTAGE requiere overtime_percentage",
+                detail="use_custom_overtime_rates requiere ambas tasas personalizadas",
             )
-        if overtime_method == "FIXED_RATE" and overtime_fixed_rate is None:
+        if custom_first_two_hours_rate < Decimal("25"):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="El método FIXED_RATE requiere overtime_fixed_rate",
+                detail="custom_first_two_hours_rate no puede ser menor al 25%",
+            )
+        if custom_additional_hours_rate < Decimal("35"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="custom_additional_hours_rate no puede ser menor al 35%",
             )

@@ -16,6 +16,7 @@ import {
   Receipt,
   Shield,
   Users,
+  Zap,
 } from "./Icons";
 
 const NAV = [
@@ -24,6 +25,7 @@ const NAV = [
   { href: "/admin/employees", label: "Empleados", icon: Users, roles: null },
   { href: "/admin/roles", label: "Cargos", icon: Briefcase, roles: null },
   { href: "/admin/payroll", label: "Planilla", icon: Receipt, roles: ["ADMIN", "BOSS"] },
+  { href: "/admin/overtime-policy", label: "Horas extra", icon: Zap, roles: ["ADMIN", "BOSS"] },
   { href: "/admin/salaries", label: "Sueldos", icon: Coins, roles: ["ADMIN", "BOSS"] },
   { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"] },
   { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"] },

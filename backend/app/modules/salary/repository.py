@@ -50,18 +50,18 @@ class SalarySettingRepository:
         monthly_salary: Decimal,
         effective_from: date,
         overtime_enabled: bool = False,
-        overtime_method: str = "PERCENTAGE",
-        overtime_percentage: Decimal | None = None,
-        overtime_fixed_rate: Decimal | None = None,
+        use_custom_overtime_rates: bool = False,
+        custom_first_two_hours_rate: Decimal | None = None,
+        custom_additional_hours_rate: Decimal | None = None,
     ) -> SalarySetting:
         setting = SalarySetting(
             employee_id=employee_id,
             monthly_salary=monthly_salary,
             effective_from=effective_from,
             overtime_enabled=overtime_enabled,
-            overtime_method=overtime_method,
-            overtime_percentage=overtime_percentage,
-            overtime_fixed_rate=overtime_fixed_rate,
+            use_custom_overtime_rates=use_custom_overtime_rates,
+            custom_first_two_hours_rate=custom_first_two_hours_rate,
+            custom_additional_hours_rate=custom_additional_hours_rate,
         )
         self.db.add(setting)
         self.db.commit()

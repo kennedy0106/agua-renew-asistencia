@@ -175,9 +175,9 @@ export type SalarySetting = {
   employee_id: string;
   monthly_salary: string;
   overtime_enabled: boolean;
-  overtime_method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL";
-  overtime_percentage: string | null;
-  overtime_fixed_rate: string | null;
+  use_custom_overtime_rates: boolean;
+  custom_first_two_hours_rate: string | null;
+  custom_additional_hours_rate: string | null;
   effective_from: string;
   effective_to: string | null;
   created_at: string;
@@ -188,9 +188,9 @@ export type SalaryPayload = {
   effective_from: string;
   monthly_salary: string;
   overtime_enabled: boolean;
-  overtime_method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL";
-  overtime_percentage: string | null;
-  overtime_fixed_rate: string | null;
+  use_custom_overtime_rates: boolean;
+  custom_first_two_hours_rate: string | null;
+  custom_additional_hours_rate: string | null;
 };
 
 export const salaryApi = {
@@ -402,15 +402,17 @@ export type OvertimeDetectItem = {
 export type OvertimeValue = {
   date_from: string;
   date_to: string;
-  method: "PERCENTAGE" | "FIXED_RATE" | "MANUAL" | null;
   overtime_minutes: number;
-  hourly_rate: string | null;
   value: string;
   breakdown: {
-    adjustment_id: string;
     adjustment_date: string;
     minutes: number;
-    rate: string | null;
+    first_two_minutes: number;
+    additional_minutes: number;
+    first_two_hours_rate: string;
+    additional_hours_rate: string;
+    source: string;
+    hourly_rate: string;
     value: string;
   }[];
 };
@@ -430,6 +432,34 @@ export const overtimeApi = {
         date_to: dateTo,
       })}`,
     ),
+};
+
+// --- Política general de horas extra (seccion_horas_extra.md) ---
+
+export type OvertimePolicy = {
+  id: string;
+  first_two_hours_rate: string;
+  additional_hours_rate: string;
+  effective_from: string;
+  effective_to: string | null;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export const overtimePolicyApi = {
+  active: () => apiFetch<OvertimePolicy | null>("/api/v1/overtime-policy"),
+  history: () => apiFetch<OvertimePolicy[]>("/api/v1/overtime-policy/history"),
+  create: (payload: {
+    effective_from: string;
+    first_two_hours_rate: string;
+    additional_hours_rate: string;
+    reason: string;
+  }) =>
+    apiFetch<OvertimePolicy>("/api/v1/overtime-policy", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
 
 // --- Planilla (Fase 11, solo ADMIN/BOSS) ---

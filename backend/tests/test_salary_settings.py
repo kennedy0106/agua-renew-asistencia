@@ -76,6 +76,7 @@ def test_set_salary_como_admin(client, db_session):
     body = response.json()
     assert body["monthly_salary"] == "1500.50"  # Decimal serializado sin perder precisión
     assert body["overtime_enabled"] is False
+    assert body["use_custom_overtime_rates"] is False
     assert body["effective_to"] is None
 
 
@@ -99,45 +100,62 @@ def test_sueldo_con_mas_de_2_decimales_rechazado(client, db_session):
     assert response.status_code == 422
 
 
-def test_metodo_horas_extra_invalido_rechazado(client, db_session):
+# --- Override por empleado (seccion_horas_extra.md §5-6) ---
+
+def test_override_requiere_ambas_tasas(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     response = client.post(
         f"/api/v1/employees/{emp}/salary-settings",
-        json=_salary_payload(overtime_enabled=True, overtime_method="DESCUENTO"),
+        json=_salary_payload(use_custom_overtime_rates=True, custom_first_two_hours_rate="50.00"),
     )
     assert response.status_code == 422
 
 
-def test_percentage_requiere_porcentaje(client, db_session):
+def test_override_first_two_bajo_minimo_rechazado(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     response = client.post(
         f"/api/v1/employees/{emp}/salary-settings",
-        json=_salary_payload(overtime_enabled=True, overtime_method="PERCENTAGE"),
+        json=_salary_payload(
+            use_custom_overtime_rates=True,
+            custom_first_two_hours_rate="20.00",
+            custom_additional_hours_rate="35.00",
+        ),
     )
     assert response.status_code == 422
 
 
-def test_fixed_rate_requiere_tarifa(client, db_session):
+def test_override_additional_bajo_minimo_rechazado(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     response = client.post(
         f"/api/v1/employees/{emp}/salary-settings",
-        json=_salary_payload(overtime_enabled=True, overtime_method="FIXED_RATE"),
+        json=_salary_payload(
+            use_custom_overtime_rates=True,
+            custom_first_two_hours_rate="25.00",
+            custom_additional_hours_rate="30.00",
+        ),
     )
     assert response.status_code == 422
 
 
-def test_porcentaje_valido(client, db_session):
+def test_override_valido(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     response = client.post(
         f"/api/v1/employees/{emp}/salary-settings",
-        json=_salary_payload(overtime_enabled=True, overtime_method="PERCENTAGE", overtime_percentage="25.00"),
+        json=_salary_payload(
+            use_custom_overtime_rates=True,
+            custom_first_two_hours_rate="50.00",
+            custom_additional_hours_rate="60.00",
+        ),
     )
     assert response.status_code == 201
-    assert response.json()["overtime_percentage"] == "25.00"
+    body = response.json()
+    assert body["use_custom_overtime_rates"] is True
+    assert body["custom_first_two_hours_rate"] == "50.00"
+    assert body["custom_additional_hours_rate"] == "60.00"
 
 
 # --- Vigencia histórica ---
@@ -159,12 +177,10 @@ def test_cambio_de_sueldo_preserva_historial(client, db_session):
     assert by_from["2026-09-01"]["monthly_salary"] == "1500.00"
     assert by_from["2026-09-01"]["effective_to"] is None
 
-    # El servicio resuelve el sueldo vigente en cada fecha.
     service = SalaryService(db_session)
     assert service.get_for_date_or_404(emp_uuid, date(2026, 8, 15)).monthly_salary == 1300
     assert service.get_for_date_or_404(emp_uuid, date(2026, 9, 15)).monthly_salary == 1500
 
-    # Consulta por fecha en la API.
     old = client.get(f"/api/v1/employees/{emp}/salary-settings?date=2026-08-15").json()
     assert old["monthly_salary"] == "1300.00"
 

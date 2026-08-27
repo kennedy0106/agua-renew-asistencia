@@ -133,9 +133,9 @@ export default function EmployeeDetailPage() {
     effective_from: "",
     monthly_salary: "",
     overtime_enabled: false,
-    overtime_method: "PERCENTAGE",
-    overtime_percentage: null,
-    overtime_fixed_rate: null,
+    use_custom_overtime_rates: false,
+    custom_first_two_hours_rate: null,
+    custom_additional_hours_rate: null,
   });
   const [savingSalary, setSavingSalary] = useState(false);
 
@@ -276,9 +276,9 @@ export default function EmployeeDetailPage() {
         effective_from: "",
         monthly_salary: "",
         overtime_enabled: false,
-        overtime_method: "PERCENTAGE",
-        overtime_percentage: null,
-        overtime_fixed_rate: null,
+        use_custom_overtime_rates: false,
+        custom_first_two_hours_rate: null,
+        custom_additional_hours_rate: null,
       });
       await load();
     } catch (err) {
@@ -290,9 +290,10 @@ export default function EmployeeDetailPage() {
 
   const overtimeLabel = (s: SalarySetting): string => {
     if (!s.overtime_enabled) return "No configurado";
-    if (s.overtime_method === "PERCENTAGE") return `${s.overtime_percentage}% recargo`;
-    if (s.overtime_method === "FIXED_RATE") return `S/ ${s.overtime_fixed_rate} / hora`;
-    return "Monto manual (en periodo)";
+    if (s.use_custom_overtime_rates) {
+      return `Personalizado: ${s.custom_first_two_hours_rate}% / ${s.custom_additional_hours_rate}%`;
+    }
+    return "Política general";
   };
 
   async function handleCreateAdjustment(event: React.FormEvent) {
@@ -536,9 +537,9 @@ export default function EmployeeDetailPage() {
                     effective_from: dayAfter(salary.effective_from),
                     monthly_salary: salary.monthly_salary,
                     overtime_enabled: salary.overtime_enabled,
-                    overtime_method: salary.overtime_method,
-                    overtime_percentage: salary.overtime_percentage,
-                    overtime_fixed_rate: salary.overtime_fixed_rate,
+                    use_custom_overtime_rates: salary.use_custom_overtime_rates,
+                    custom_first_two_hours_rate: salary.custom_first_two_hours_rate,
+                    custom_additional_hours_rate: salary.custom_additional_hours_rate,
                   });
                 }
                 setShowSalaryForm((v) => !v);
@@ -590,46 +591,52 @@ export default function EmployeeDetailPage() {
 
                 {salaryForm.overtime_enabled && (
                   <>
-                    <div>
-                      <label className="label">Método</label>
-                      <Select value={salaryForm.overtime_method} onValueChange={(v) => setSalaryForm({ ...salaryForm, overtime_method: v as SalaryPayload["overtime_method"] })}>
-                        <SelectTrigger aria-label="Método de horas extra">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="PERCENTAGE">Porcentaje (%)</SelectItem>
-                          <SelectItem value="FIXED_RATE">Tarifa fija (S/ / hora)</SelectItem>
-                          <SelectItem value="MANUAL">Monto manual (en periodo)</SelectItem>
-                        </SelectContent>
-                      </Select>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", paddingTop: "1.4rem" }}>
+                      <input
+                        type="checkbox"
+                        id="use-custom-overtime"
+                        checked={salaryForm.use_custom_overtime_rates}
+                        onChange={(e) =>
+                          setSalaryForm({ ...salaryForm, use_custom_overtime_rates: e.target.checked })
+                        }
+                        style={{ width: 16, height: 16, accentColor: "var(--primary-blue)" }}
+                      />
+                      <label htmlFor="use-custom-overtime" style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--gray-600)" }}>
+                        Usar política personalizada
+                      </label>
                     </div>
-                    {salaryForm.overtime_method === "PERCENTAGE" && (
-                      <div>
-                        <label className="label">Recargo (%)</label>
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          className="input"
-                          value={salaryForm.overtime_percentage ?? ""}
-                          onChange={(e) => setSalaryForm({ ...salaryForm, overtime_percentage: e.target.value || null })}
-                          required
-                        />
-                      </div>
-                    )}
-                    {salaryForm.overtime_method === "FIXED_RATE" && (
-                      <div>
-                        <label className="label">Tarifa (S/ por hora)</label>
-                        <input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          className="input"
-                          value={salaryForm.overtime_fixed_rate ?? ""}
-                          onChange={(e) => setSalaryForm({ ...salaryForm, overtime_fixed_rate: e.target.value || null })}
-                          required
-                        />
-                      </div>
+                    <p style={{ fontSize: "0.72rem", color: "var(--muted)", margin: 0, gridColumn: "1 / -1" }}>
+                      Si no activas esto, se usa la política general de la empresa (mínimos legales 25% / 35%).
+                    </p>
+                    {salaryForm.use_custom_overtime_rates && (
+                      <>
+                        <div>
+                          <label className="label">Primeras 2 h (%)</label>
+                          <input
+                            type="number"
+                            min={25}
+                            step={0.01}
+                            className="input"
+                            value={salaryForm.custom_first_two_hours_rate ?? ""}
+                            onChange={(e) => setSalaryForm({ ...salaryForm, custom_first_two_hours_rate: e.target.value || null })}
+                            required
+                          />
+                          <p style={{ fontSize: "0.68rem", color: "var(--muted)", margin: "0.2rem 0 0" }}>Mínimo 25%</p>
+                        </div>
+                        <div>
+                          <label className="label">Tercera hora en adelante (%)</label>
+                          <input
+                            type="number"
+                            min={35}
+                            step={0.01}
+                            className="input"
+                            value={salaryForm.custom_additional_hours_rate ?? ""}
+                            onChange={(e) => setSalaryForm({ ...salaryForm, custom_additional_hours_rate: e.target.value || null })}
+                            required
+                          />
+                          <p style={{ fontSize: "0.68rem", color: "var(--muted)", margin: "0.2rem 0 0" }}>Mínimo 35%</p>
+                        </div>
+                      </>
                     )}
                   </>
                 )}
@@ -759,14 +766,6 @@ export default function EmployeeDetailPage() {
 
             {overtimeValue && overtimeValue.overtime_minutes > 0 && (
               <div className="card" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", boxShadow: "none", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
-                <span className="muted">
-                  Método: <strong style={{ color: "var(--text)" }}>{overtimeValue.method === "PERCENTAGE" ? "Porcentaje" : overtimeValue.method === "FIXED_RATE" ? "Tarifa fija" : "Manual"}</strong>
-                </span>
-                {overtimeValue.hourly_rate && (
-                  <span className="muted">
-                    Tarifa: <strong style={{ color: "var(--text)" }}>S/ {Number(overtimeValue.hourly_rate).toFixed(2)} / h</strong>
-                  </span>
-                )}
                 <span className="muted">
                   Minutos aprobados: <strong style={{ color: "var(--text)" }}>{overtimeValue.overtime_minutes}</strong>
                 </span>

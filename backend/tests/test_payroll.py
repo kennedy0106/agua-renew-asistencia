@@ -31,9 +31,6 @@ def _set_salary(client, employee_id: str, **overrides):
         "effective_from": "2026-08-01",
         "monthly_salary": "1500.00",
         "overtime_enabled": True,
-        "overtime_method": "PERCENTAGE",
-        "overtime_percentage": "25.00",
-        "overtime_fixed_rate": None,
     }
     payload.update(overrides)
     response = client.post(f"/api/v1/employees/{employee_id}/salary-settings", json=payload)
@@ -268,9 +265,9 @@ def test_summary_totales_del_periodo(client, db_session):
     emp1 = _create_employee(client, str(db_session._test_job_roles["Operario"]), "72845632", "EMP-001")
     emp2 = _create_employee(client, str(db_session._test_job_roles["Chofer"]), "71112233", "EMP-002")
     _set_salary(client, emp1, monthly_salary="1500.00")
-    _set_salary(client, emp2, monthly_salary="1100.00", overtime_method="FIXED_RATE", overtime_percentage=None, overtime_fixed_rate="10.00")
-    _add_approved_overtime(client, emp1, minutes=60)  # PERCENTAGE → 7.81
-    _add_approved_overtime(client, emp2, minutes=30)  # FIXED_RATE → 5.00
+    _set_salary(client, emp2, monthly_salary="1100.00")
+    _add_approved_overtime(client, emp1, minutes=60)  # 1er tramo → 7.81
+    _add_approved_overtime(client, emp2, minutes=30)  # 1er tramo → 2.86
 
     period = _create_period(client)
     client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
@@ -283,9 +280,9 @@ def test_summary_totales_del_periodo(client, db_session):
     summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
     assert summary["employee_count"] == 2
     assert summary["total_base"] == "2600.00"  # 1500 + 1100
-    assert summary["total_overtime"] == "12.81"  # 7.81 + 5.00
+    assert summary["total_overtime"] == "10.67"  # 7.81 + 2.86
     assert summary["total_manual"] == "50.00"
-    assert summary["total"] == "2662.81"  # 2600 + 12.81 + 50
+    assert summary["total"] == "2660.67"  # 2600 + 10.67 + 50
 
 
 def test_summary_supervisor_forbidden(client, db_session):
