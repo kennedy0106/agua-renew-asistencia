@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import AdminShell, { useAdminUser } from "@/components/AdminShell";
+import AdminShell from "@/components/AdminShell";
+import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { ApiError, PayrollPeriod, PayrollRecord, payrollApi } from "@/lib/api";

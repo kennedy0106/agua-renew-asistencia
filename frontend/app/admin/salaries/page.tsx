@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import AdminShell, { useAdminUser } from "@/components/AdminShell";
+import AdminShell from "@/components/AdminShell";
+import { useAdminUser } from "@/components/AdminSession";
 import { Alert, ChevronRight, Coins, Download } from "@/components/Icons";
 import { StatSkeleton, TableSkeleton } from "@/components/Loading";
 import {

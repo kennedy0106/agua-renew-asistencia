@@ -1,9 +1,10 @@
 // Shell del panel administrativo — sidebar con la marca + navegación por rol.
+// La sesión la provee app/admin/layout.tsx (AdminSessionContext); este shell
+// solo la consume, así el rol está disponible desde el primer render.
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ApiError, authApi, UserOut } from "@/lib/api";
+import { useAdminSession } from "./AdminSession";
 import {
   Briefcase,
   Chart,
@@ -16,13 +17,6 @@ import {
   Shield,
   Users,
 } from "./Icons";
-
-export const AdminUserContext = createContext<UserOut | null>(null);
-
-/** Rol del usuario autenticado dentro del shell (null si no cargó). */
-export function useAdminUser(): UserOut | null {
-  return useContext(AdminUserContext);
-}
 
 const NAV = [
   { href: "/admin/dashboard", label: "Dashboard", icon: Home, roles: null },
@@ -46,30 +40,11 @@ export default function AdminShell({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [user, setUser] = useState<UserOut | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    try {
-      const me = await authApi.me();
-      setUser(me);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        router.replace("/admin/login");
-        return;
-      }
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [router]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const { user, ready } = useAdminSession();
 
   async function handleLogout() {
     try {
+      const { authApi } = await import("@/lib/api");
       await authApi.logout();
     } catch {
       /* la cookie se limpia igualmente */
@@ -77,7 +52,7 @@ export default function AdminShell({
     router.replace("/admin/login");
   }
 
-  if (loading) {
+  if (!ready) {
     return (
       <div className="app-shell">
         <div className="main" style={{ alignItems: "center", justifyContent: "center" }}>
@@ -101,8 +76,7 @@ export default function AdminShell({
   const sectionSub = subtitle ?? (user ? `Sesión de ${user.username}` : "");
 
   return (
-    <AdminUserContext.Provider value={user}>
-      <div className="app-shell">
+    <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
           <img src="/brand/logo_color.svg" alt="Agua ReNew" />
@@ -155,8 +129,7 @@ export default function AdminShell({
         </header>
         <main className="page page-enter">{children}</main>
       </div>
-      </div>
-    </AdminUserContext.Provider>
+    </div>
   );
 }
 
