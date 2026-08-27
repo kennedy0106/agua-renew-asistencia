@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
   ApiError,
@@ -143,22 +144,32 @@ export default function AdminAttendancePage() {
       )}
 
       <div className="toolbar">
-        <select className="select" value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} style={{ maxWidth: 220 }}>
-          <option value="">Todos los empleados</option>
-          {employees.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.first_name} {e.last_name}
-            </option>
-          ))}
-        </select>
+        <Select value={employeeFilter} onValueChange={(v) => setEmployeeFilter(v)}>
+          <SelectTrigger aria-label="Empleado" style={{ maxWidth: 220 }}>
+            <SelectValue placeholder="Todos los empleados" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">Todos los empleados</SelectItem>
+            {employees.map((e) => (
+              <SelectItem key={e.id} value={e.id}>
+                {e.first_name} {e.last_name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ maxWidth: 150 }} />
         <span className="muted" style={{ fontSize: "0.8rem" }}>a</span>
         <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ maxWidth: 150 }} />
-        <select className="select" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ maxWidth: 160 }}>
-          <option value="">Todos los estados</option>
-          <option value="OPEN">Entrada abierta</option>
-          <option value="COMPLETE">Completado</option>
-        </select>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v)}>
+          <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
+            <SelectValue placeholder="Todos los estados" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">Todos los estados</SelectItem>
+            <SelectItem value="OPEN">Entrada abierta</SelectItem>
+            <SelectItem value="COMPLETE">Completado</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="spacer" />
         <button className="btn btn-outline btn-sm" onClick={exportCsv}>
           <Download size={15} />

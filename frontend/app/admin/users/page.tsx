@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Key, Plus, Refresh, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AdminUser,
   ApiError,
@@ -191,24 +192,34 @@ export default function AdminUsersPage() {
             </div>
             <div>
               <label className="label">Rol</label>
-              <select className="select" value={form.system_role_id} onChange={(e) => setForm({ ...form, system_role_id: e.target.value })} required>
-                {roles.map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.name}
-                  </option>
-                ))}
-              </select>
+              <Select value={form.system_role_id} onValueChange={(v) => setForm({ ...form, system_role_id: v })}>
+                <SelectTrigger aria-label="Rol">
+                  <SelectValue placeholder="Seleccionar rol" />
+                </SelectTrigger>
+                <SelectContent>
+                  {roles.map((role) => (
+                    <SelectItem key={role.id} value={role.id}>
+                      {role.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="label">Empleado (opcional)</label>
-              <select className="select" value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })}>
-                <option value="">— Sin vincular —</option>
-                {employees.map((emp) => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.first_name} {emp.last_name} ({emp.dni})
-                  </option>
-                ))}
-              </select>
+              <Select value={form.employee_id} onValueChange={(v) => setForm({ ...form, employee_id: v })}>
+                <SelectTrigger aria-label="Empleado">
+                  <SelectValue placeholder="— Sin vincular —" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">— Sin vincular —</SelectItem>
+                  {employees.map((emp) => (
+                    <SelectItem key={emp.id} value={emp.id}>
+                      {emp.first_name} {emp.last_name} ({emp.dni})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="submit" className="btn btn-primary" disabled={busy}>
@@ -254,27 +265,37 @@ export default function AdminUsersPage() {
                 </td>
                 <td>
                   {isAdmin ? (
-                    <select className="select" style={{ padding: "0.3rem 1.7rem 0.3rem 0.5rem" }} value={item.system_role_id} onChange={(e) => handleRoleChange(item, e.target.value)}>
-                      {roles.map((role) => (
-                        <option key={role.id} value={role.id}>
-                          {role.name}
-                        </option>
-                      ))}
-                    </select>
+                    <Select value={item.system_role_id} onValueChange={(v) => handleRoleChange(item, v)}>
+                      <SelectTrigger aria-label="Rol" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {roles.map((role) => (
+                          <SelectItem key={role.id} value={role.id}>
+                            {role.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   ) : (
                     roleName(item.system_role_id)
                   )}
                 </td>
                 <td>
                   {isAdmin ? (
-                    <select className="select" style={{ padding: "0.3rem 1.7rem 0.3rem 0.5rem" }} value={item.employee_id ?? ""} onChange={(e) => handleEmployeeLink(item, e.target.value)}>
-                      <option value="">— Sin vincular —</option>
-                      {employees.map((emp) => (
-                        <option key={emp.id} value={emp.id}>
-                          {emp.first_name} {emp.last_name}
-                        </option>
-                      ))}
-                    </select>
+                    <Select value={item.employee_id ?? ""} onValueChange={(v) => handleEmployeeLink(item, v)}>
+                      <SelectTrigger aria-label="Empleado" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
+                        <SelectValue placeholder="— Sin vincular —" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">— Sin vincular —</SelectItem>
+                        {employees.map((emp) => (
+                          <SelectItem key={emp.id} value={emp.id}>
+                            {emp.first_name} {emp.last_name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   ) : (
                     item.employee_name ?? "—"
                   )}

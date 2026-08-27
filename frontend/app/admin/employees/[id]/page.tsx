@@ -20,6 +20,13 @@ import {
   Zap,
 } from "@/components/Icons";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   adjustmentsApi,
   ApiError,
   Balance,
@@ -555,15 +562,16 @@ export default function EmployeeDetailPage() {
                   <>
                     <div>
                       <label className="label">Método</label>
-                      <select
-                        className="select"
-                        value={salaryForm.overtime_method}
-                        onChange={(e) => setSalaryForm({ ...salaryForm, overtime_method: e.target.value as SalaryPayload["overtime_method"] })}
-                      >
-                        <option value="PERCENTAGE">Porcentaje (%)</option>
-                        <option value="FIXED_RATE">Tarifa fija (S/ / hora)</option>
-                        <option value="MANUAL">Monto manual (en periodo)</option>
-                      </select>
+                      <Select value={salaryForm.overtime_method} onValueChange={(v) => setSalaryForm({ ...salaryForm, overtime_method: v as SalaryPayload["overtime_method"] })}>
+                        <SelectTrigger aria-label="Método de horas extra">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PERCENTAGE">Porcentaje (%)</SelectItem>
+                          <SelectItem value="FIXED_RATE">Tarifa fija (S/ / hora)</SelectItem>
+                          <SelectItem value="MANUAL">Monto manual (en periodo)</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                     {salaryForm.overtime_method === "PERCENTAGE" && (
                       <div>
@@ -787,16 +795,17 @@ export default function EmployeeDetailPage() {
               </div>
               <div>
                 <label className="label">Tipo</label>
-                <select
-                  className="select"
-                  value={adjForm.adjustment_type}
-                  onChange={(e) => setAdjForm({ ...adjForm, adjustment_type: e.target.value as HourAdjustment["adjustment_type"] })}
-                >
-                  <option value="RECUPERACION">Recuperación</option>
-                  <option value="PERMISO">Permiso</option>
-                  <option value="OVERTIME">Horas extra</option>
-                  <option value="OTRO">Otro</option>
-                </select>
+                <Select value={adjForm.adjustment_type} onValueChange={(v) => setAdjForm({ ...adjForm, adjustment_type: v as HourAdjustment["adjustment_type"] })}>
+                  <SelectTrigger aria-label="Tipo de ajuste">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="RECUPERACION">Recuperación</SelectItem>
+                    <SelectItem value="PERMISO">Permiso</SelectItem>
+                    <SelectItem value="OVERTIME">Horas extra</SelectItem>
+                    <SelectItem value="OTRO">Otro</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <label className="label">Motivo</label>

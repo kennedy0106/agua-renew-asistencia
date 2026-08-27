@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, employeesApi, Employee, jobRolesApi, JobRole } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"]; // crear/editar/desactivar: ADMIN y JEFE
@@ -139,16 +140,16 @@ export default function AdminEmployeesPage() {
             style={{ paddingLeft: "2.1rem" }}
           />
         </div>
-        <select
-          className="select"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as "" | "active" | "inactive")}
-          style={{ maxWidth: 160 }}
-        >
-          <option value="">Todos los estados</option>
-          <option value="active">Activos</option>
-          <option value="inactive">Inactivos</option>
-        </select>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "" | "active" | "inactive")}>
+          <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
+            <SelectValue placeholder="Todos los estados" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">Todos los estados</SelectItem>
+            <SelectItem value="active">Activos</SelectItem>
+            <SelectItem value="inactive">Inactivos</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="spacer" />
         {canManage && (
           <button className="btn btn-primary" onClick={() => setShowCreate((v) => !v)}>
@@ -185,16 +186,20 @@ export default function AdminEmployeesPage() {
             </div>
             <div>
               <label className="label">Cargo laboral</label>
-              <select className="select" value={form.job_role_id} onChange={(e) => setForm({ ...form, job_role_id: e.target.value })} required>
-                <option value="">Seleccionar…</option>
-                {jobRoles
-                  .filter((r) => r.active)
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-              </select>
+              <Select value={form.job_role_id} onValueChange={(v) => setForm({ ...form, job_role_id: v })}>
+                <SelectTrigger aria-label="Cargo laboral">
+                  <SelectValue placeholder="Seleccionar…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {jobRoles
+                    .filter((r) => r.active)
+                    .map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="label">Nombres</label>
@@ -255,13 +260,18 @@ export default function AdminEmployeesPage() {
                       <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={edit.employee_code} onChange={(e) => setEdit({ ...edit, employee_code: e.target.value })} />
                     </td>
                     <td>
-                      <select className="select" style={{ padding: "0.3rem 0.5rem" }} value={edit.job_role_id} onChange={(e) => setEdit({ ...edit, job_role_id: e.target.value })}>
-                        {jobRoles.map((r) => (
-                          <option key={r.id} value={r.id}>
-                            {r.name}
-                          </option>
-                        ))}
-                      </select>
+                      <Select value={edit.job_role_id} onValueChange={(v) => setEdit({ ...edit, job_role_id: v })}>
+                        <SelectTrigger aria-label="Cargo" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {jobRoles.map((r) => (
+                            <SelectItem key={r.id} value={r.id}>
+                              {r.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </td>
                     <td>
                       <span className="badge badge-neutral">{employee.active ? "Activo" : "Inactivo"}</span>

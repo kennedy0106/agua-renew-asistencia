@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, ChevronRight, Coins, Download } from "@/components/Icons";
 import { StatSkeleton, TableSkeleton } from "@/components/Loading";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
   ApiError,
@@ -95,14 +96,19 @@ export default function AdminSalariesPage() {
       )}
 
       <div className="toolbar">
-        <select className="select" value={selectedId} onChange={(e) => setSelectedId(e.target.value)} style={{ maxWidth: 260 }}>
-          {periods.length === 0 && <option value="">Sin periodos</option>}
-          {periods.map((period) => (
-            <option key={period.id} value={period.id}>
-              {period.name} ({period.status})
-            </option>
-          ))}
-        </select>
+        <Select value={selectedId} onValueChange={(v) => setSelectedId(v)}>
+          <SelectTrigger aria-label="Periodo" style={{ maxWidth: 260 }}>
+            <SelectValue placeholder={periods.length === 0 ? "Sin periodos" : "Seleccionar periodo"} />
+          </SelectTrigger>
+          <SelectContent>
+            {periods.length === 0 && <SelectItem value="">Sin periodos</SelectItem>}
+            {periods.map((period) => (
+              <SelectItem key={period.id} value={period.id}>
+                {period.name} ({period.status})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <span className="spacer" />
         {selectedId && (
           <button

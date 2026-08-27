@@ -314,6 +314,66 @@ textarea {
   padding-right: 2rem;
 }
 
+/* --- Select Radix de vidrio líquido (DESIGN.md: glass-select-content) --- */
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-right: 0.7rem;
+  text-align: left;
+}
+.select-trigger[data-placeholder] {
+  color: rgba(63, 95, 134, 0.55);
+}
+.select-trigger:focus {
+  outline: none;
+  border-color: var(--secondary-blue);
+}
+.select-chevron {
+  color: var(--brand-ink);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.select-trigger:hover .select-chevron {
+  opacity: 1;
+}
+.glass-select-content {
+  background: color-mix(in srgb, var(--glass-strong) 85%, #ffffff);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 20px 40px -20px rgba(0, 102, 204, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  z-index: 60;
+  overflow: hidden;
+  min-width: var(--radix-select-trigger-width);
+}
+.glass-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text);
+  cursor: pointer;
+  outline: none;
+}
+.glass-select-item[data-highlighted] {
+  background: rgba(0, 102, 204, 0.12);
+  color: var(--brand-blue);
+  font-weight: 600;
+}
+.glass-select-item[data-state="checked"] {
+  color: var(--brand-blue);
+  font-weight: 600;
+}
+.select-item-indicator {
+  color: var(--brand-blue);
+  flex-shrink: 0;
+}
+
 /* --- Paneles de vidrio (sin bordes blancos gruesos) --- */
 .card {
   background: var(--glass);
