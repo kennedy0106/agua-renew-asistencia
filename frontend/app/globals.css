@@ -16,10 +16,11 @@
   --brand-muted: #3f5f86;
   --expense-red: #b42318;
 
-  /* Vidrio y lavado — punto medio (decisión Kennedy): balance look/legibilidad.
-     GUIA-DISENO.md dice 38/55; el feedback anterior pedía más opaco; quedó 50/65. */
-  --glass: rgba(255, 255, 255, 0.50);
-  --glass-strong: rgba(255, 255, 255, 0.65);
+  /* Vidrio y lavado — "algo que pueda verse" (decisión Kennedy ago 2026).
+     La guía pide 38/55 (look 'vidrio puro') pero las tablas con texto se
+     pierden; 42/60 es un balance visible y legible. */
+  --glass: rgba(255, 255, 255, 0.42);
+  --glass-strong: rgba(255, 255, 255, 0.60);
   --glass-border: rgba(255, 255, 255, 0.22);
   --glass-blur: 28px;
   --field-fill: rgba(255, 255, 255, 0.72);
@@ -72,13 +73,44 @@ body {
   line-height: 1.45;
   color: var(--text);
   background:
-    radial-gradient(1000px 540px at 88% -10%, rgba(0, 123, 255, 0.08), transparent 60%),
-    radial-gradient(820px 500px at 6% 108%, rgba(0, 200, 83, 0.06), transparent 60%),
-    radial-gradient(700px 480px at 55% 45%, rgba(103, 195, 243, 0.07), transparent 65%),
+    /* 3 orbes (GUIA-DISENO.md §9: azul 18%, verde 12%, soft 28%).
+       El orbe azul y el verde son los principales; el soft es acento. */
+    radial-gradient(620px 460px at 88% -10%, rgba(0, 123, 255, 0.18), transparent 60%),
+    radial-gradient(560px 440px at 6% 108%, rgba(0, 200, 83, 0.12), transparent 60%),
+    radial-gradient(520px 420px at 55% 55%, rgba(103, 195, 243, 0.22), transparent 65%),
     var(--wash);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Orbes animados del fondo — se mueven muy lento (15-20s) para no distraer.
+   Están debajo del contenido (z-index -1) y no bloquean interacción. */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: -1;
+  filter: blur(110px);
+  opacity: 0.55;
+}
+body::before {
+  width: 360px;
+  height: 360px;
+  top: 6%;
+  left: 8%;
+  background: radial-gradient(circle, rgba(0, 123, 255, 0.32) 0%, transparent 70%);
+  animation: orb-drift 18s ease-in-out infinite alternate;
+}
+body::after {
+  width: 320px;
+  height: 320px;
+  bottom: 8%;
+  right: 6%;
+  background: radial-gradient(circle, rgba(0, 200, 83, 0.25) 0%, transparent 70%);
+  animation: orb-drift 22s ease-in-out infinite alternate-reverse;
 }
 
 h1,
@@ -233,15 +265,17 @@ textarea {
 }
 
 .btn-outline {
-  background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(0, 102, 204, 0.3);
-  color: var(--brand-ink);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(0, 102, 204, 0.45);
+  color: var(--brand-blue);
   height: 2.5rem;
+  font-weight: 600;
 }
 .btn-outline:hover:not(:disabled) {
-  background: rgba(0, 102, 204, 0.08);
+  background: #ffffff;
   border-color: var(--brand-blue);
-  color: var(--brand-blue);
+  color: var(--secondary-blue);
+  transform: translateY(-1px);
 }
 
 .btn-ghost {
