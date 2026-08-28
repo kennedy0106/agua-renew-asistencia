@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -211,7 +212,7 @@ export default function AdminEmployeesPage() {
             </div>
             <div>
               <label className="label">Fecha de ingreso</label>
-              <input type="date" className="input" value={form.hire_date} onChange={(e) => setForm({ ...form, hire_date: e.target.value })} />
+              <DateField value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
             </div>
           </div>
           <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={creating}>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import DateField from "@/components/DateField";
 import { Alert, Check, Plus, X } from "@/components/Icons";
 import { ApiError, OvertimePolicy, overtimePolicyApi } from "@/lib/api";
 import { TableSkeleton } from "@/components/Loading";
@@ -124,7 +125,7 @@ export default function OvertimePolicyPage() {
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
               <div>
                 <label className="label">Vigente desde</label>
-                <input type="date" className="input" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required />
+                <DateField value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
               </div>
               <div>
                 <label className="label">Primeras 2 h (%)</label>

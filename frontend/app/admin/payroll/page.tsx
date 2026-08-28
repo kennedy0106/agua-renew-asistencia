@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { ApiError, PayrollPeriod, PayrollRecord, payrollApi } from "@/lib/api";
@@ -180,11 +181,11 @@ export default function AdminPayrollPage() {
             </div>
             <div>
               <label className="label">Desde</label>
-              <input type="date" className="input" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} required />
+              <DateField value={form.start_date} onChange={(v) => setForm({ ...form, start_date: v })} required placeholder="Seleccionar" />
             </div>
             <div>
               <label className="label">Hasta</label>
-              <input type="date" className="input" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} required />
+              <DateField value={form.end_date} onChange={(v) => setForm({ ...form, end_date: v })} required placeholder="Seleccionar" />
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="submit" className="btn btn-primary" disabled={busy}>

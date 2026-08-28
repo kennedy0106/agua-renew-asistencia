@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import DateField from "@/components/DateField";
 import {
   Alert,
   ArrowLeft,
@@ -548,7 +549,7 @@ export default function EmployeeDetailPage() {
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
               <div>
                 <label className="label">Vigente desde</label>
-                <input type="date" className="input" value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} required />
+                <DateField value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
               </div>
               {DAYS.map((day) => (
                 <div key={day.key}>
@@ -670,7 +671,7 @@ export default function EmployeeDetailPage() {
               <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
                 <div>
                   <label className="label">Vigente desde</label>
-                  <input type="date" className="input" value={salaryForm.effective_from} onChange={(e) => setSalaryForm({ ...salaryForm, effective_from: e.target.value })} required />
+                  <DateField value={salaryForm.effective_from} onChange={(v) => setSalaryForm({ ...salaryForm, effective_from: v })} required placeholder="Seleccionar" />
                 </div>
                 <div>
                   <label className="label">Sueldo mensual (S/)</label>
@@ -916,7 +917,7 @@ export default function EmployeeDetailPage() {
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
                 <label className="label">Fecha</label>
-                <input type="date" className="input" value={adjForm.adjustment_date} onChange={(e) => setAdjForm({ ...adjForm, adjustment_date: e.target.value })} required />
+                <DateField value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
               </div>
               <div>
                 <label className="label">Minutos (±)</label>

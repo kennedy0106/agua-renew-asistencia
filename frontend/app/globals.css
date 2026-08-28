@@ -16,11 +16,13 @@
   --brand-muted: #3f5f86;
   --expense-red: #b42318;
 
-  /* Vidrio y lavado — opacidad subida para legibilidad (glass-strong donde hay contenido) */
-  --glass: rgba(255, 255, 255, 0.62);
-  --glass-strong: rgba(255, 255, 255, 0.78);
-  --glass-border: rgba(21, 67, 153, 0.14);
+  /* Vidrio y lavado — punto medio (decisión Kennedy): balance look/legibilidad.
+     GUIA-DISENO.md dice 38/55; el feedback anterior pedía más opaco; quedó 50/65. */
+  --glass: rgba(255, 255, 255, 0.50);
+  --glass-strong: rgba(255, 255, 255, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.22);
   --glass-blur: 28px;
+  --field-fill: rgba(255, 255, 255, 0.72);
   --field-bg: rgba(255, 255, 255, 0.88);
   --ink-border: rgba(21, 63, 134, 0.22);
   --wash: linear-gradient(160deg, #eef4fe 0%, #e2ecfc 55%, #e8f4fa 100%);
@@ -801,7 +803,7 @@ textarea {
   background: rgba(0, 123, 255, 0.35);
   top: -120px;
   right: -100px;
-  animation: orb-drift 26s ease-in-out infinite alternate;
+  animation: orb-drift 10s ease-in-out infinite alternate;
 }
 .kiosk::after {
   width: 380px;
@@ -809,7 +811,7 @@ textarea {
   background: rgba(0, 200, 83, 0.28);
   bottom: -110px;
   left: -90px;
-  animation: orb-drift 32s ease-in-out infinite alternate-reverse;
+  animation: orb-drift 12s ease-in-out infinite alternate-reverse;
 }
 @keyframes orb-drift {
   from {
@@ -1023,7 +1025,7 @@ textarea {
     top: -60px;
     left: -70px;
     z-index: -1;
-    animation: orb-drift 30s ease-in-out infinite alternate;
+    animation: orb-drift 11s ease-in-out infinite alternate;
   }
   /* El logo vive en el hero; la tarjeta queda limpia */
   .login-card .brand {
@@ -1154,4 +1156,149 @@ textarea {
   .login-hero .watermark {
     animation: none !important;
   }
+}
+
+/* ============================================================
+   Calendario Renew (GUIA-DISENO.md §7) — reemplaza <input type=date>
+   ============================================================ */
+.datefield {
+  display: inline-block;
+}
+.datefield-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.75rem;
+  padding: 0 0.75rem;
+  border-radius: var(--radius-control);
+  background: var(--field-fill);
+  border: 1px solid color-mix(in srgb, #0066cc 16%, white);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+  white-space: nowrap;
+}
+.datefield-trigger:hover {
+  border-color: color-mix(in srgb, #0066cc 28%, white);
+  background: #fff;
+}
+.datefield-trigger:focus-visible {
+  outline: 2px solid var(--brand-blue-bright);
+  outline-offset: 1px;
+}
+.datefield-placeholder {
+  color: var(--muted);
+}
+
+.datefield-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 18.25rem;
+  padding: 0.8rem;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid color-mix(in srgb, #0066cc 14%, white);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 18px 36px -24px rgba(0, 102, 204, 0.5);
+  animation: datefield-open 200ms ease;
+}
+@keyframes datefield-open {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.datefield-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.datefield-month {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--brand-ink);
+}
+.datefield-nav {
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: transparent;
+  border-radius: 0.35rem;
+  color: var(--brand-blue);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+.datefield-nav:hover {
+  background: rgba(0, 102, 204, 0.1);
+}
+
+.datefield-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.datefield-weekdays {
+  margin-bottom: 4px;
+}
+.datefield-weekday {
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 0.2rem 0;
+}
+
+.datefield-day {
+  aspect-ratio: 1;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-control);
+  color: var(--brand-ink);
+  font-family: var(--font);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.datefield-day:hover:not(:disabled) {
+  background: rgba(0, 102, 204, 0.12);
+}
+.datefield-day.is-selected {
+  background: var(--brand-blue);
+  color: #fff;
+  font-weight: 700;
+}
+.datefield-day.is-today {
+  box-shadow: inset 0 0 0 2px var(--brand-blue-bright);
+}
+.datefield-day.is-outside {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.datefield-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(21, 67, 153, 0.12);
+}
+.datefield-clear {
+  border: none;
+  background: transparent;
+  color: var(--brand-blue);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+}
+.datefield-clear:hover {
+  text-decoration: underline;
 }

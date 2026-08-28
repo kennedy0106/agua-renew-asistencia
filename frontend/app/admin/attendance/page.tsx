@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import DateField from "@/components/DateField";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -157,9 +158,9 @@ export default function AdminAttendancePage() {
             ))}
           </SelectContent>
         </Select>
-        <input type="date" className="input" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} style={{ maxWidth: 150 }} />
+        <DateField value={dateFrom} onChange={setDateFrom} aria-label="Fecha desde" placeholder="Desde" />
         <span className="muted" style={{ fontSize: "0.8rem" }}>a</span>
-        <input type="date" className="input" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ maxWidth: 150 }} />
+        <DateField value={dateTo} onChange={setDateTo} aria-label="Fecha hasta" placeholder="Hasta" />
         <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v)}>
           <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
             <SelectValue placeholder="Todos los estados" />
