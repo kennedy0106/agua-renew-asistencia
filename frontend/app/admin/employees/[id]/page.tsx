@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import AdminShell from "@/components/AdminShell";
-import { useAdminUser } from "@/components/AdminSession";
+import { useAdminSession } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import {
   Alert,
@@ -116,7 +116,7 @@ const typeLabel: Record<string, string> = {
 export default function EmployeeDetailPage() {
   const params = useParams<{ id: string }>();
   const employeeId = params.id;
-  const user = useAdminUser();
+  const { user, ready } = useAdminSession();
 
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [schedule, setSchedule] = useState<WorkSchedule | null>(null);
@@ -224,15 +224,10 @@ export default function EmployeeDetailPage() {
       }
       setHistory(await scheduleApi.history(employeeId));
 
-      if (canManage) {
-        try {
-          setSalary(await salaryApi.get(employeeId));
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 404) setSalary(null);
-          else throw err;
-        }
-        setSalaryHistory(await salaryApi.history(employeeId));
-      }
+      // Las llamadas que requieren rol (sueldo, horas extra) se hacen
+      // cuando sepamos si el usuario puede. Se ejecutan en paralelo con
+      // el resto para no bloquear el primer render del detalle.
+      const canManageNow = MANAGE_ROLES.includes(user?.role ?? "");
 
       const [bal, adj] = await Promise.all([
         adjustmentsApi.balance(employeeId),
@@ -241,20 +236,29 @@ export default function EmployeeDetailPage() {
       setBalance(bal);
       setAdjustments(adj);
 
-      if (canManage) {
+      if (canManageNow) {
+        try {
+          setSalary(await salaryApi.get(employeeId));
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) setSalary(null);
+          else throw err;
+        }
+        setSalaryHistory(await salaryApi.history(employeeId));
         await loadOvertime();
       }
+
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [employeeId, canManage]);
+  }, [employeeId, user]);
 
   useEffect(() => {
+    if (!ready) return;
     load();
-  }, [load]);
+  }, [load, ready]);
 
   // Cargar el QR (SVG) con credenciales cuando el empleado ya está disponible.
   // No usamos <img src=...> porque el navegador NO envía la cookie cross-origin.
@@ -403,7 +407,7 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  if (loading) {
+  if (!ready || loading) {
     return (
       <AdminShell title="Detalle de empleado">
         <p className="muted">Cargando…</p>
