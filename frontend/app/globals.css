@@ -167,7 +167,7 @@ textarea {
     border-color 0.2s ease,
     color 0.2s ease,
     box-shadow 0.2s ease,
-    transform 0.1s ease;
+    transform 0.4s ease;
   white-space: nowrap;
   position: relative;
   overflow: hidden;
@@ -182,20 +182,27 @@ textarea {
   box-shadow: none;
 }
 
-/* Sheen de agua suave al hover (solo primarios) */
+/* Sheen de agua (GUIA-DISENO.md §8): UNA sola pasada de 1.8s, sin loop.
+   Se quita la propiedad al final para que NO quede "listo" para el siguiente
+   hover (que era el comportamiento tosco anterior). */
 .btn-primary::after,
 .btn-green::after {
   content: "";
   position: absolute;
-  inset: 0;
-  transform: translateX(-120%);
-  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.28) 50%, transparent 70%);
-  transition: transform 0.6s ease;
+  top: 0;
+  left: 0;
+  width: 42%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.32) 50%, transparent 70%);
+  transform: translateX(-160%) skewX(-12deg);
   pointer-events: none;
 }
 .btn-primary:hover:not(:disabled)::after,
 .btn-green:hover:not(:disabled)::after {
-  transform: translateX(120%);
+  animation: btn-sheen 1.8s ease-out 1;
+}
+@keyframes btn-sheen {
+  to { transform: translateX(260%) skewX(-12deg); }
 }
 
 .btn-primary {
@@ -207,6 +214,11 @@ textarea {
 .btn-primary:hover:not(:disabled) {
   background: var(--secondary-blue);
   color: #ffffff;
+  transform: translateY(-1px);
+}
+.btn-primary:focus-visible {
+  outline: 2px solid var(--brand-blue-bright);
+  outline-offset: 2px;
 }
 
 .btn-green {
@@ -303,7 +315,13 @@ textarea {
 .select:focus {
   outline: none;
   border-color: var(--secondary-blue);
-  box-shadow: none; /* DESIGN.md: sin anillo de 3px */
+  box-shadow: none; /* DESIGN.md: sin anillo de 3px permanente */
+}
+/* Solo cuando se navega con teclado: outline visible (a11y). */
+.input:focus-visible,
+.select:focus-visible {
+  outline: 2px solid var(--brand-blue-bright);
+  outline-offset: 1px;
 }
 .input::placeholder {
   color: rgba(63, 95, 134, 0.72);
@@ -951,6 +969,11 @@ textarea {
   padding: 2rem 1.25rem;
   position: relative;
   overflow: hidden;
+  animation: login-up 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes login-up {
+  from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
 }
 .login-hero {
   display: none;
@@ -1082,29 +1105,29 @@ textarea {
   width: 46px;
   height: 46px;
   color: var(--brand-blue);
-  animation: drop-bob 1.6s ease-in-out infinite;
+  /* GUIA-DISENO.md: hero no late eternamente. Pulso lento y suave, 1 ciclo
+     largo que se asienta y se queda quieto (3s × 1). */
+  animation: drop-bob 3s ease-in-out 1 both;
   filter: drop-shadow(0 6px 14px rgba(0, 102, 204, 0.35));
 }
 @keyframes drop-bob {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-7px);
-  }
+  0%   { transform: translateY(6px); opacity: 0.4; }
+  35%  { transform: translateY(-2px); opacity: 1; }
+  65%  { transform: translateY(-2px); opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+/* Spinner: se reemplaza por un fade+pulse muy suave. Sin arco iris. */
+@keyframes fade-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
 }
 .spin {
-  animation: spin 0.9s linear infinite;
+  animation: fade-pulse 1.2s ease-in-out infinite;
 }
 
-/* --- Skeletons (shimmer) --- */
+/* Skeletons: GUIA-DISENO.md prohíbe parpadeos constantes. UNA sola
+   pasada del shimmer (no loop), lenta y muy sutil. */
 .skeleton {
   position: relative;
   overflow: hidden;
@@ -1117,27 +1140,27 @@ textarea {
   inset: 0;
   transform: translateX(-100%);
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
-  animation: shimmer 1.4s ease-in-out infinite;
+  animation: shimmer 2.4s ease-in-out 1 both;
 }
 @keyframes shimmer {
-  100% {
-    transform: translateX(100%);
-  }
+  0%   { transform: translateX(-100%); }
+  60%  { transform: translateX(100%); }
+  100% { transform: translateX(100%); }
 }
 
-/* --- Transición de entrada por página --- */
+/* Entrada de página (GUIA-DISENO.md §8): 520ms, translateY(4px → 0) + fade. */
 .page-enter {
-  animation: vt-fade-in 0.28s ease both;
+  animation: page-enter 520ms ease both;
 }
-@keyframes vt-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Reveal: bloque dependiente (GUIA-DISENO.md §7): 200ms, fade + translateY. */
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* --- Respeto a prefers-reduced-motion --- */

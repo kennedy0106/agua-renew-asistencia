@@ -128,10 +128,9 @@ export default function AdminDashboardPage() {
       <div className="module-grid">
         {modules.map((m) => {
           const Icon = m.icon;
-          const green = m.href === "/admin/payroll" || m.href === "/admin/salaries";
           return (
             <a key={m.href} href={m.href} className="module-card">
-              <div className={`icon-tile${green ? " tile-green" : ""}`}>
+              <div className="icon-tile">
                 <Icon size={20} />
               </div>
               <div>
@@ -202,13 +201,20 @@ function PasswordChangeCard() {
 
   return (
     <div className="card card-pad">
-      <button onClick={() => setOpen((v) => !v)} className="link-btn" type="button">
-        {open ? "▾" : "▸"} Cambiar mi contraseña
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="link-btn"
+        type="button"
+        aria-expanded={open}
+        style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+      >
+        <Chevron open={open} />
+        Cambiar mi contraseña
       </button>
       {open && (
         <form
           onSubmit={handleSubmit}
-          style={{ display: "grid", gap: "0.9rem", marginTop: "0.9rem", maxWidth: 560 }}
+          style={{ display: "grid", gap: "0.9rem", marginTop: "0.9rem", maxWidth: 560, animation: "reveal 200ms ease both" }}
         >
           <div style={{ display: "grid", gap: "0.9rem", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
             <div>
@@ -272,6 +278,29 @@ function CheckIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
       <path d="m4.5 12.5 5 5 10-11" />
+    </svg>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  // Chevron SVG (no caracteres ▸▾) — rota al expandir (200ms ease).
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{
+        transform: open ? "rotate(90deg)" : "rotate(0deg)",
+        transition: "transform 200ms ease",
+      }}
+    >
+      <path d="m9 6 6 6-6 6" />
     </svg>
   );
 }
