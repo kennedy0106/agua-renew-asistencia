@@ -213,44 +213,59 @@ export default function EmployeeDetailPage() {
   }
 
   const load = useCallback(async () => {
-    try {
-      const emp = await employeesApi.get(employeeId);
-      setEmployee(emp);
-      try {
-        setSchedule(await scheduleApi.get(employeeId));
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 404) setSchedule(null);
-        else throw err;
-      }
-      setHistory(await scheduleApi.history(employeeId));
-
-      // Las llamadas que requieren rol (sueldo, horas extra) se hacen
-      // cuando sepamos si el usuario puede. Se ejecutan en paralelo con
-      // el resto para no bloquear el primer render del detalle.
-      const canManageNow = MANAGE_ROLES.includes(user?.role ?? "");
-
-      const [bal, adj] = await Promise.all([
-        adjustmentsApi.balance(employeeId),
-        adjustmentsApi.list(employeeId),
+    // Time-bound: ningún bloque puede colgar la UI más de 25s (cold start).
+    const TIMEOUT_MS = 25_000;
+    const withTimeout = <T,>(p: Promise<T>): Promise<T> =>
+      Promise.race([
+        p,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error("Tiempo agotado")), TIMEOUT_MS),
+        ),
       ]);
-      setBalance(bal);
-      setAdjustments(adj);
 
-      if (canManageNow) {
-        try {
-          setSalary(await salaryApi.get(employeeId));
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 404) setSalary(null);
-          else throw err;
-        }
-        setSalaryHistory(await salaryApi.history(employeeId));
-        await loadOvertime();
+    try {
+      const emp = await withTimeout(employeesApi.get(employeeId));
+      setEmployee(emp);
+
+      // Bajamos loading temprano para que la página pinte el detalle básico
+      // aunque las llamadas secundarias sigan en curso. Esto evita el
+      // "Cargando…" eterno si una llamada (p. ej. cold start) cuelga.
+      setLoading(false);
+
+      // Llamadas secundarias en paralelo (no bloquean el primer render).
+      const tasks: Promise<void>[] = [
+        withTimeout(scheduleApi.get(employeeId))
+          .then((s) => setSchedule(s))
+          .catch((err) => {
+            if (err instanceof ApiError && err.status === 404) setSchedule(null);
+            else throw err;
+          }),
+        withTimeout(scheduleApi.history(employeeId)).then(setHistory),
+        withTimeout(adjustmentsApi.balance(employeeId)).then(setBalance),
+        withTimeout(adjustmentsApi.list(employeeId)).then(setAdjustments),
+      ];
+
+      if (user && MANAGE_ROLES.includes(user.role)) {
+        tasks.push(
+          withTimeout(salaryApi.get(employeeId))
+            .then((s) => setSalary(s))
+            .catch((err) => {
+              if (err instanceof ApiError && err.status === 404) setSalary(null);
+              else throw err;
+            }),
+        );
+        tasks.push(withTimeout(salaryApi.history(employeeId)).then(setSalaryHistory));
+        tasks.push(withTimeout(loadOvertime()));
       }
 
-      setError(null);
+      try {
+        await Promise.all(tasks);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Algunas secciones no pudieron cargar");
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
-    } finally {
       setLoading(false);
     }
   }, [employeeId, user]);
