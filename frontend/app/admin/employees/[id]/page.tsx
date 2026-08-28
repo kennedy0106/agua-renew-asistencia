@@ -157,6 +157,11 @@ export default function EmployeeDetailPage() {
   const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
   const [detecting, setDetecting] = useState(false);
 
+  // QR del empleado: se obtiene vía fetch con credenciales (no <img> cross-origin,
+  // que no envía la cookie y devolvía "No autenticado"). Se guarda como object URL.
+  const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [downloadingQr, setDownloadingQr] = useState(false);
+
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
   function monthRange(): { from: string; to: string } {
@@ -249,6 +254,62 @@ export default function EmployeeDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Cargar el QR (SVG) con credenciales cuando el empleado ya está disponible.
+  // No usamos <img src=...> porque el navegador NO envía la cookie cross-origin.
+  useEffect(() => {
+    if (!employee) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(employeesApi.qrUrl(employee.id), {
+          credentials: "include",
+        });
+        if (!res.ok) return;
+        const svg = await res.text();
+        const blob = new Blob([svg], { type: "image/svg+xml" });
+        const url = URL.createObjectURL(blob);
+        if (!cancelled) setQrUrl(url);
+      } catch {
+        // silencioso: el QR es un extra, no debe romper la página
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [employee]);
+
+  async function handleDownloadQr() {
+    if (!employee) return;
+    setDownloadingQr(true);
+    try {
+      // Descargar el archivo real (SVG), no un link. El atributo `download`
+      // de un <a> cross-origin es ignorado por el navegador; por eso se baja
+      // vía fetch + blob + <a> local.
+      const res = await fetch(employeesApi.qrUrl(employee.id), {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        setError(body.includes("No autenticado") ? "Sesión expirada: vuelve a iniciar sesión" : "No se pudo descargar el QR");
+        return;
+      }
+      const svg = await res.text();
+      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `qr-${employee.employee_code}.svg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("No se pudo descargar el QR");
+    } finally {
+      setDownloadingQr(false);
+    }
+  }
 
   async function handleSaveSchedule(event: React.FormEvent) {
     event.preventDefault();
@@ -416,28 +477,32 @@ export default function EmployeeDetailPage() {
             }}
             title="QR único del empleado"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={employeesApi.qrUrl(employee.id)}
-              alt={`QR de ${employee.first_name} ${employee.last_name}`}
-              width={108}
-              height={108}
-              style={{ display: "block" }}
-            />
+            {qrUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={qrUrl}
+                alt={`QR de ${employee.first_name} ${employee.last_name}`}
+                width={108}
+                height={108}
+                style={{ display: "block" }}
+              />
+            ) : (
+              <span className="muted" style={{ fontSize: "0.72rem" }}>Cargando…</span>
+            )}
           </div>
           <div style={{ display: "grid", gap: "0.35rem" }}>
             <p className="muted" style={{ fontSize: "0.78rem", maxWidth: 260 }}>
               Código QR único para este empleado. Úsalo para marcar asistencia o imprimirlo en su credencial.
             </p>
-            <a
+            <button
               className="btn btn-outline btn-sm"
-              href={employeesApi.qrUrl(employee.id)}
-              download={`qr-${employee.employee_code}.svg`}
+              onClick={handleDownloadQr}
+              disabled={downloadingQr}
               style={{ width: "fit-content" }}
             >
               <Download size={14} />
-              Descargar QR
-            </a>
+              {downloadingQr ? "Descargando…" : "Descargar QR"}
+            </button>
           </div>
         </div>
 
