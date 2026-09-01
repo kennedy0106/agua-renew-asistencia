@@ -25,7 +25,7 @@ import {
 } from "./Icons";
 
 const NAV = [
-  { href: "/admin/dashboard", label: "Dashboard", icon: Home, roles: null },
+  { href: "/admin/dashboard", label: "Resumen", icon: Home, roles: null },
   { href: "/admin/attendance", label: "Asistencia", icon: ClipboardCheck, roles: null },
   { href: "/admin/employees", label: "Empleados", icon: Users, roles: null },
   { href: "/admin/roles", label: "Cargos", icon: Briefcase, roles: null },
@@ -35,6 +35,17 @@ const NAV = [
   { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"] },
   { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"] },
 ];
+
+const ROLE_LABELS: Record<string, string> = {
+  ADMIN: "Administrador",
+  BOSS: "Jefe",
+  SUPERVISOR: "Supervisor",
+};
+
+const GLASS_SIDEBAR_STYLE: React.CSSProperties = {
+  backdropFilter: "blur(30px) saturate(165%)",
+  WebkitBackdropFilter: "blur(30px) saturate(165%)",
+};
 
 export default function AdminShell({
   children,
@@ -108,6 +119,11 @@ export default function AdminShell({
 
   return (
     <div className="app-shell">
+      <div className="water-orbs" aria-hidden>
+        <span className="water-orb water-orb--blue" />
+        <span className="water-orb water-orb--green" />
+        <span className="water-orb water-orb--cyan" />
+      </div>
       <header className="mobile-header">
         <button
           type="button"
@@ -133,7 +149,7 @@ export default function AdminShell({
         tabIndex={menuOpen ? 0 : -1}
       />
 
-      <aside id="admin-sidebar" className={`sidebar${menuOpen ? " is-open" : ""}`} aria-label="Navegación del sistema">
+      <aside id="admin-sidebar" className={`sidebar${menuOpen ? " is-open" : ""}`} style={GLASS_SIDEBAR_STYLE} aria-label="Navegación del sistema">
         <div className="sidebar-brand">
           <Link href="/admin/dashboard" aria-label="Ir al dashboard">
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
@@ -154,18 +170,20 @@ export default function AdminShell({
         </nav>
         {user && (
           <div className="sidebar-user">
-            <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
-            <div className="meta">
-              <div className="name">{user.username}</div>
-              <div className="role">{user.role}</div>
-            </div>
+            <Link href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta">
+              <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
+              <div className="meta">
+                <div className="name">{user.username}</div>
+                <div className="role">{ROLE_LABELS[user.role] ?? user.role}</div>
+              </div>
+            </Link>
             <button
               onClick={handleLogout}
-              title="Cerrar sesión"
-              className="btn btn-ghost btn-sm"
+              className="btn btn-danger sidebar-logout"
               aria-label="Cerrar sesión"
             >
               <Logout size={16} />
+              <span>Salir</span>
             </button>
           </div>
         )}
@@ -187,7 +205,7 @@ export default function AdminShell({
               href="/asistencia"
               target="_blank"
               rel="noreferrer"
-              className="btn btn-outline btn-sm"
+              className="btn btn-primary topbar-action"
             >
               <Chart size={15} /> <span>Marcación pública</span>
             </Link>
