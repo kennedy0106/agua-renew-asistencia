@@ -1,22 +1,24 @@
 import { ClipboardCheck, Key } from "@/components/Icons";
+import Image from "next/image";
+import Link from "next/link";
 
 export default function HomePage() {
   return (
     <div className="kiosk">
       <div className="kiosk-brand">
-        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
+        <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
       </div>
 
       <div className="kiosk-card">
         <div style={{ display: "grid", gap: "0.8rem" }}>
-          <a href="/asistencia" className="btn btn-green kiosk-btn">
+          <Link href="/asistencia" className="btn btn-primary kiosk-btn">
             <ClipboardCheck size={18} />
             Marcar asistencia
-          </a>
-          <a href="/admin/login" className="btn btn-primary kiosk-btn">
+          </Link>
+          <Link href="/admin/login" className="btn btn-outline kiosk-btn">
             <Key size={18} />
             Panel administrativo
-          </a>
+          </Link>
         </div>
       </div>
     </div>

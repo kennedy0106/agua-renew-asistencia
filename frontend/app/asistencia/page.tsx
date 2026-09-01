@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import Image from "next/image";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
 import { Check, Clock, Droplet, Logout, User } from "@/components/Icons";
+import { Spinner } from "@/components/Loading";
 
 type Step = "identify" | "employee" | "done";
 
@@ -14,7 +16,7 @@ export default function AsistenciaPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState<Date>(() => new Date());
-  const serverOffsetRef = useRef<number>(0);
+  const [serverOffset, setServerOffset] = useState(0);
 
   // Reloj: tick local, anclado a la hora del servidor cuando ya se identificó.
   useEffect(() => {
@@ -22,13 +24,7 @@ export default function AsistenciaPage() {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (info?.server_time) {
-      serverOffsetRef.current = new Date(info.server_time).getTime() - Date.now();
-    }
-  }, [info]);
-
-  const serverNow = new Date(Date.now() + serverOffsetRef.current);
+  const serverNow = new Date(now.getTime() + serverOffset);
 
   async function handleIdentify(event: React.FormEvent) {
     event.preventDefault();
@@ -39,7 +35,7 @@ export default function AsistenciaPage() {
     try {
       const result = await attendanceApi.identify(value);
       setInfo(result);
-      serverOffsetRef.current = new Date(result.server_time).getTime() - Date.now();
+      setServerOffset(new Date(result.server_time).getTime() - Date.now());
       setStep("employee");
       setIdentifier("");
     } catch (err) {
@@ -55,8 +51,8 @@ export default function AsistenciaPage() {
     setError(null);
     try {
       const result = info.state.has_open_entry
-        ? await attendanceApi.checkOut(info.employee.id)
-        : await attendanceApi.checkIn(info.employee.id);
+        ? await attendanceApi.checkOut(info.marking_token)
+        : await attendanceApi.checkIn(info.marking_token);
       setRecord(result);
       setStep("done");
     } catch (err) {
@@ -71,7 +67,7 @@ export default function AsistenciaPage() {
     setInfo(null);
     setRecord(null);
     setError(null);
-    serverOffsetRef.current = 0;
+    setServerOffset(0);
   }
 
   const timeLabel = serverNow.toLocaleTimeString("es-PE", {
@@ -92,7 +88,7 @@ export default function AsistenciaPage() {
   return (
     <div className="kiosk">
       <div className="kiosk-brand">
-        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
+        <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
       </div>
 
       <div className="kiosk-card">
@@ -123,7 +119,7 @@ export default function AsistenciaPage() {
                 </p>
               )}
               <button type="submit" className="btn btn-primary kiosk-btn" disabled={busy}>
-                <User size={18} />
+                {busy ? <Spinner size={18} /> : <User size={18} />}
                 {busy ? "Verificando…" : "Identificarme"}
               </button>
             </form>
@@ -160,20 +156,20 @@ export default function AsistenciaPage() {
                 onClick={handleMark}
                 disabled={busy}
               >
-                <Logout size={18} />
+                {busy ? <Spinner size={18} /> : <Logout size={18} />}
                 {busy ? "Registrando…" : "MARCAR SALIDA"}
               </button>
             ) : (
               <button className="btn btn-green kiosk-btn" onClick={handleMark} disabled={busy}>
-                <Droplet size={18} />
+                {busy ? <Spinner size={18} /> : <Droplet size={18} />}
                 {busy ? "Registrando…" : "MARCAR ENTRADA"}
               </button>
             )}
             <button
-              className="link-btn"
+              className="btn btn-outline btn-sm"
               onClick={reset}
               type="button"
-              style={{ display: "block", margin: "0.8rem auto 0", fontSize: "0.78rem" }}
+              style={{ display: "flex", margin: "0.8rem auto 0" }}
             >
               Cambiar de trabajador
             </button>

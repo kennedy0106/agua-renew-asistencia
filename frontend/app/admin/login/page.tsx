@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { ApiError, authApi } from "@/lib/api";
-import { Droplet } from "@/components/Icons";
+import { Check, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
+import { Spinner } from "@/components/Loading";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -11,6 +13,7 @@ export default function AdminLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -31,50 +34,86 @@ export default function AdminLoginPage() {
 
   return (
     <div className="login-wrap">
-      <div className="login-hero">
-        <div className="watermark" aria-hidden />
-        <img src="/brand/logo_color.svg" alt="Agua ReNew" />
-        <h1>Asistencia y planilla</h1>
+      <section className="login-hero" aria-labelledby="login-hero-title">
+        <div className="login-caustic" aria-hidden />
+        <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+        <h1 id="login-hero-title">El tiempo del equipo, claro y en orden</h1>
         <p>
-          Marcación de entrada y salida, control de horas y cálculo interno de
-          remuneraciones del personal.
+          Registra jornadas, revisa incidencias y calcula remuneraciones con la
+          misma precisión con la que Agua Renew cuida cada operación.
         </p>
-      </div>
+        <ul className="login-features">
+          <li><Clock size={17} /><span>Marcaciones y jornadas en hora Lima</span></li>
+          <li><Check size={17} /><span>Horas extra y diferencias visibles</span></li>
+          <li><Shield size={17} /><span>Planilla y auditoría según tu rol</span></li>
+        </ul>
+        <p className="login-motto">
+          <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} aria-hidden />
+          Agua que renueva · Espíritu que transforma
+        </p>
+      </section>
 
-      <div className="login-card">
+      <section className="login-card" aria-labelledby="login-title">
         <div className="brand">
-          <img src="/brand/logo_color.svg" alt="Agua ReNew" />
+          <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "0.9rem" }}>
+        <div className="login-card-heading">
+          <div className="login-drop" aria-hidden>
+            <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
+          </div>
+          <div>
+            <h2 id="login-title">Iniciar sesión</h2>
+            <p>Entra con tu usuario de Agua Renew para administrar la asistencia.</p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="login-form">
           <div>
             <label className="label" htmlFor="login-user">
               Usuario
             </label>
-            <input
-              id="login-user"
-              className="input"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              autoFocus
-              required
-            />
+            <div className="login-input-wrap">
+              <User size={18} />
+              <input
+                id="login-user"
+                className="input"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                placeholder="tu.usuario"
+                autoFocus
+                required
+              />
+            </div>
           </div>
           <div>
             <label className="label" htmlFor="login-pass">
               Contraseña
             </label>
-            <input
-              id="login-pass"
-              className="input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
+            <div className="login-input-wrap">
+              <Key size={18} />
+              <input
+                id="login-pass"
+                className="input"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                placeholder="Tu contraseña"
+                required
+              />
+              <button
+                type="button"
+                className="login-password-toggle"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -84,11 +123,16 @@ export default function AdminLoginPage() {
             </p>
           )}
 
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+          <button type="submit" className="btn btn-primary login-submit" disabled={busy}>
+            {busy && <Spinner />}
             {busy ? "Ingresando…" : "Ingresar al sistema"}
           </button>
         </form>
-      </div>
+        <p className="login-security">
+          <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} aria-hidden />
+          Acceso solo para el equipo Agua Renew.
+        </p>
+      </section>
     </div>
   );
 }

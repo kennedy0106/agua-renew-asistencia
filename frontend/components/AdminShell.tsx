@@ -3,6 +3,9 @@
 // solo la consume, así el rol está disponible desde el primer render.
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAdminSession } from "./AdminSession";
 import {
@@ -13,9 +16,11 @@ import {
   Home,
   Key,
   Logout,
+  Menu,
   Receipt,
   Shield,
   Users,
+  X,
   Zap,
 } from "./Icons";
 
@@ -43,6 +48,25 @@ export default function AdminShell({
   const router = useRouter();
   const pathname = usePathname();
   const { user, ready } = useAdminSession();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuOpen]);
 
   async function handleLogout() {
     try {
@@ -59,10 +83,15 @@ export default function AdminShell({
       <div className="app-shell">
         <div className="main" style={{ alignItems: "center", justifyContent: "center" }}>
           <div className="drop-loader">
-            <svg className="drop" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 2.7s6 6.4 6 10.6a6 6 0 0 1-12 0C6 9.1 12 2.7 12 2.7Z" />
-              <path d="M9.2 14.6a2.8 2.8 0 0 0 2.2 2.7" />
-            </svg>
+            <Image
+              className="drop"
+              src="/brand/logo_gotita.svg"
+              alt=""
+              width={754}
+              height={1065}
+              aria-hidden
+              priority
+            />
             <span>Cargando sesión…</span>
           </div>
         </div>
@@ -79,11 +108,41 @@ export default function AdminShell({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <header className="mobile-header">
+        <button
+          type="button"
+          className="mobile-menu-button"
+          onClick={() => setMenuOpen(true)}
+          aria-label="Abrir menú"
+          aria-expanded={menuOpen}
+          aria-controls="admin-sidebar"
+        >
+          <Menu size={19} />
+        </button>
+        <Link href="/admin/dashboard" className="mobile-brand" aria-label="Ir al dashboard">
+          <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+        </Link>
+        <span className="mobile-product">Asistencia</span>
+      </header>
+
+      <button
+        type="button"
+        className={`sidebar-scrim${menuOpen ? " is-open" : ""}`}
+        onClick={() => setMenuOpen(false)}
+        aria-label="Cerrar menú"
+        tabIndex={menuOpen ? 0 : -1}
+      />
+
+      <aside id="admin-sidebar" className={`sidebar${menuOpen ? " is-open" : ""}`} aria-label="Navegación del sistema">
         <div className="sidebar-brand">
-          <img src="/brand/logo_color.svg" alt="Agua ReNew" />
+          <Link href="/admin/dashboard" aria-label="Ir al dashboard">
+            <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+          </Link>
+          <button type="button" className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Cerrar menú">
+            <X size={18} />
+          </button>
         </div>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label="Principal">
           <p className="nav-label">Operación</p>
           {visibleNav.slice(0, 4).map((item) => (
             <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} />
@@ -114,19 +173,24 @@ export default function AdminShell({
 
       <div className="main">
         <header className="topbar">
-          <div>
-            <div className="topbar-title">{sectionTitle}</div>
-            {sectionSub && <div className="topbar-sub">{sectionSub}</div>}
+          <div className="topbar-copy">
+            <span className="topbar-drop" aria-hidden>
+              <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
+            </span>
+            <div>
+              <h1 className="topbar-title">{sectionTitle}</h1>
+              {sectionSub && <div className="topbar-sub">{sectionSub}</div>}
+            </div>
           </div>
           {user && (
-            <a
+            <Link
               href="/asistencia"
               target="_blank"
               rel="noreferrer"
               className="btn btn-outline btn-sm"
             >
-              <Chart size={15} /> Marcación pública
-            </a>
+              <Chart size={15} /> <span>Marcación pública</span>
+            </Link>
           )}
         </header>
         <main className="page page-enter">{children}</main>
@@ -144,9 +208,13 @@ function NavLink({
 }) {
   const Icon = item.icon;
   return (
-    <a href={item.href} className={`nav-link${active ? " active" : ""}`}>
+    <Link
+      href={item.href}
+      className={`nav-link${active ? " active" : ""}`}
+      aria-current={active ? "page" : undefined}
+    >
       <Icon size={17} />
       <span>{item.label}</span>
-    </a>
+    </Link>
   );
 }

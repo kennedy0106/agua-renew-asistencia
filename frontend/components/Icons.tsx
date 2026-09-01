@@ -129,6 +129,25 @@ export const X = (p: IconProps) => (
   </svg>
 );
 
+export const Menu = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </svg>
+);
+
+export const Eye = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+    <circle cx="12" cy="12" r="2.5" />
+  </svg>
+);
+
+export const EyeOff = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="m3 3 18 18M10.6 6.2A9.7 9.7 0 0 1 12 6c6 0 9.5 6 9.5 6a15 15 0 0 1-2.1 2.8M6.3 6.3C3.9 8 2.5 12 2.5 12s3.5 6 9.5 6a9 9 0 0 0 3.1-.5M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  </svg>
+);
+
 export const Alert = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M12 3.5 22 20H2Z" />

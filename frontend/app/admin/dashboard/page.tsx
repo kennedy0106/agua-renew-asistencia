@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAdminUser } from "@/components/AdminSession";
 import { StatSkeleton } from "@/components/Loading";
 import {
   Alert,
@@ -15,8 +17,9 @@ import {
   Shield,
   Users,
   Wallet,
+  ChevronRight,
 } from "@/components/Icons";
-import { ApiError, attendanceAdminApi, AttendanceSummary, authApi, usersApi, UserOut } from "@/lib/api";
+import { ApiError, attendanceAdminApi, AttendanceSummary, usersApi } from "@/lib/api";
 
 const MODULES = [
   {
@@ -71,15 +74,12 @@ const MODULES = [
 ];
 
 export default function AdminDashboardPage() {
-  const [user, setUser] = useState<UserOut | null>(null);
+  const user = useAdminUser();
   const [summary, setSummary] = useState<AttendanceSummary | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const me = await authApi.me();
-      setUser(me);
-      const [resumen] = await Promise.all([attendanceAdminApi.summary()]);
-      setSummary(resumen);
+      setSummary(await attendanceAdminApi.summary());
     } catch {
       /* AdminShell redirige si la sesión expiró */
     }
@@ -92,57 +92,48 @@ export default function AdminDashboardPage() {
   const modules = MODULES.filter((m) => !m.roles || (user && m.roles.includes(user.role)));
 
   return (
-    <AdminShell title="Dashboard" subtitle={user ? `Bienvenido, ${user.username}` : undefined}>
+    <AdminShell title="Control de asistencia" subtitle={user ? `Hoy · sesión de ${user.username}` : "Resumen operativo de hoy"}>
       {summary ? (
-        <div className="stat-grid">
-          <StatCard
-            label="Empleados activos"
-            value={summary.employees_active}
-            icon={<Users size={15} />}
-          />
-          <StatCard
-            label="Presentes hoy"
-            value={summary.present_today}
-            icon={<Clock size={15} />}
-          />
-          <StatCard
-            label="Sin entrada hoy"
-            value={summary.no_entry_today}
-            icon={<Alert size={15} />}
-          />
-          <StatCard
-            label="Entradas abiertas"
-            value={summary.open_entries}
-            icon={<ClipboardCheck size={15} />}
-          />
-          <StatCard
-            label="Con salida hoy"
-            value={summary.checked_out_today}
-            icon={<Chart size={15} />}
-          />
-        </div>
+        <section className="dashboard-summary" aria-label="Indicadores de asistencia de hoy">
+          <div className="dashboard-section-head">
+            <div>
+              <h2>Estado del equipo</h2>
+              <p>Marcaciones y presencia registradas durante la jornada.</p>
+            </div>
+          </div>
+          <div className="stat-grid">
+            <StatCard label="Empleados activos" value={summary.employees_active} icon={<Users size={15} />} tone="blue" />
+            <StatCard label="Presentes hoy" value={summary.present_today} icon={<Clock size={15} />} tone="green" />
+            <StatCard label="Sin entrada hoy" value={summary.no_entry_today} icon={<Alert size={15} />} tone="red" />
+            <StatCard label="Entradas abiertas" value={summary.open_entries} icon={<ClipboardCheck size={15} />} tone="blue" />
+            <StatCard label="Con salida hoy" value={summary.checked_out_today} icon={<Chart size={15} />} tone="green" />
+          </div>
+        </section>
       ) : (
         <StatSkeleton count={5} />
       )}
 
-      <div className="module-grid">
-        {modules.map((m) => {
-          const Icon = m.icon;
-          return (
-            <a key={m.href} href={m.href} className="module-card">
-              <div className="icon-tile">
-                <Icon size={20} />
-              </div>
-              <div>
-                <h3>{m.title}</h3>
-                <p>{m.desc}</p>
-              </div>
-            </a>
-          );
-        })}
-      </div>
+      <section className="dashboard-modules" aria-labelledby="modules-title">
+        <div className="dashboard-section-head">
+          <div>
+            <h2 id="modules-title">Áreas de trabajo</h2>
+            <p>Entra directamente a la tarea que necesitas resolver.</p>
+          </div>
+        </div>
+        <div className="module-grid">
+          {modules.map((m) => {
+            const Icon = m.icon;
+            return (
+              <Link key={m.href} href={m.href} className="module-card">
+                <div className="icon-tile"><Icon size={20} /></div>
+                <div className="module-card-copy"><h3>{m.title}</h3><p>{m.desc}</p></div>
+                <span className="module-card-action">Abrir <ChevronRight size={14} /></span>
+              </Link>
+            );
+          })}
+        </div>
+      </section>
 
-      <hr className="divider" />
       <PasswordChangeCard />
     </AdminShell>
   );
@@ -152,19 +143,21 @@ function StatCard({
   label,
   value,
   icon,
+  tone,
 }: {
   label: string;
   value: number;
   icon: React.ReactNode;
+  tone: "blue" | "green" | "red";
 }) {
   return (
-    <div className="stat-card">
+    <article className={`stat-card stat-card--${tone}`}>
       <div className="stat-label">
         {icon}
         {label}
       </div>
       <div className="stat-value">{value}</div>
-    </div>
+    </article>
   );
 }
 
@@ -200,10 +193,17 @@ function PasswordChangeCard() {
   }
 
   return (
-    <div className="card card-pad">
+    <section className="card card-pad security-card" aria-labelledby="security-title">
+      <div className="security-card-copy">
+        <Shield size={19} />
+        <div>
+          <h2 id="security-title" className="card-title">Seguridad de la cuenta</h2>
+          <p className="card-sub">Actualiza tu contraseña cuando lo necesites.</p>
+        </div>
+      </div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="link-btn"
+        className="btn btn-outline btn-sm"
         type="button"
         aria-expanded={open}
         style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
@@ -270,7 +270,7 @@ function PasswordChangeCard() {
           )}
         </form>
       )}
-    </div>
+    </section>
   );
 }
 
