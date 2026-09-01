@@ -51,8 +51,8 @@ export default function AsistenciaPage() {
     setError(null);
     try {
       const result = info.state.has_open_entry
-        ? await attendanceApi.checkOut(info.marking_token)
-        : await attendanceApi.checkIn(info.marking_token);
+        ? await attendanceApi.checkOut(info.employee.id)
+        : await attendanceApi.checkIn(info.employee.id);
       setRecord(result);
       setStep("done");
     } catch (err) {
