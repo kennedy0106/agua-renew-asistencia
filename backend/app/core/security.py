@@ -84,16 +84,17 @@ def create_attendance_token(
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_terminal_token(device_id: str, token_version: int, *, days: int = 180) -> str:
+def create_terminal_token(device_id: str, token_version: int, *, days: int | None = None) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
+    lifetime = days if days is not None else settings.terminal_token_days
     return jwt.encode(
         {
             "sub": device_id,
             "type": "terminal",
             "ver": token_version,
             "iat": now,
-            "exp": now + timedelta(days=days),
+            "exp": now + timedelta(days=lifetime),
         },
         settings.secret_key,
         algorithm=settings.jwt_algorithm,
@@ -115,6 +116,7 @@ def terminal_cookie_kwargs() -> dict[str, Any]:
         "samesite": settings.session_cookie_samesite,
         "secure": settings.session_cookie_secure,
         "path": "/",
+        "max_age": settings.terminal_token_days * 24 * 60 * 60,
     }
 
 

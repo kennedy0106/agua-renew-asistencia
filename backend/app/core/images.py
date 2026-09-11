@@ -6,16 +6,21 @@ import hashlib
 from io import BytesIO
 
 from fastapi import HTTPException, status
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
+import warnings
 
 MIN_WIDTH = 320
 MIN_HEIGHT = 240
 MAX_WIDTH = 4000
 MAX_HEIGHT = 4000
+MAX_PIXELS = MAX_WIDTH * MAX_HEIGHT
 MAX_INPUT_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_SIDE = 1280
 JPEG_QUALITY = 80
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
+
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 
 def verify_and_normalize(raw: bytes) -> tuple[bytes, str, str]:
@@ -27,7 +32,6 @@ def verify_and_normalize(raw: bytes) -> tuple[bytes, str, str]:
         )
     try:
         image = Image.open(BytesIO(raw))
-        image.load()
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -45,12 +49,20 @@ def verify_and_normalize(raw: bytes) -> tuple[bytes, str, str]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="La foto es demasiado pequeña para usarse como evidencia",
         )
-    if width > MAX_WIDTH or height > MAX_HEIGHT:
+    if width > MAX_WIDTH or height > MAX_HEIGHT or width * height > MAX_PIXELS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="La foto supera las dimensiones permitidas",
         )
-    rgb = image.convert("RGB")
+    try:
+        image.load()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El archivo no es una imagen válida",
+        ) from exc
+    transposed = ImageOps.exif_transpose(image) or image
+    rgb = transposed.convert("RGB")
     longest = max(rgb.size)
     if longest > MAX_OUTPUT_SIDE:
         scale = MAX_OUTPUT_SIDE / longest

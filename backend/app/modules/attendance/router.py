@@ -31,6 +31,7 @@ from app.modules.attendance.schemas import (
     EvidenceRequest,
     IdentifyRequest,
     IdentifyResponse,
+    AttemptStatusRequest,
 )
 from app.modules.attendance.service import AttendanceService, _MISSING
 from app.modules.devices.schemas import PairingRequest
@@ -122,6 +123,18 @@ def store_evidence(
         device_id=device.id if device else None,
     )
     return {"id": str(evidence.id), "content_type": evidence.content_type}
+
+
+@router.post("/attempt/status", response_model=AttendanceRecordOut)
+def attempt_status(
+    payload: AttemptStatusRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+    device=Depends(require_terminal),
+) -> dict:
+    return AttendanceService(db).attempt_status(
+        payload.marking_token, device_id=device.id if device else None
+    )
 
 
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)

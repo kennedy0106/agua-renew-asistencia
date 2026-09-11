@@ -37,6 +37,7 @@ class DeviceService:
         return self.repo.save(device), code
 
     def rotate_pairing_code(self, device_id: uuid.UUID) -> tuple[AttendanceDevice, str]:
+        """Emite un código nuevo. No revoca la cookie vigente; para eso está revoke()."""
         device = self._get_active_or_any(device_id)
         if not device.active:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El terminal está revocado")
@@ -60,10 +61,12 @@ class DeviceService:
             expires = expires.replace(tzinfo=timezone.utc)
         if device is None or not device.active or expires is None or expires < now:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Código de emparejamiento inválido o vencido")
-        device.pairing_code_hash = None
-        device.pairing_expires_at = None
-        device.last_sync_at = now
-        return self.repo.save(device)
+        if not self.repo.consume_pairing_code(device.id, digest, last_sync_at=now):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Código de emparejamiento inválido o vencido")
+        paired = self.repo.get(device.id)
+        if paired is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Código de emparejamiento inválido o vencido")
+        return paired
 
     def get_active(self, device_id: uuid.UUID, token_version: int | None = None) -> AttendanceDevice:
         device = self.repo.get(device_id)

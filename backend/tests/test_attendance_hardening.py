@@ -314,3 +314,164 @@ def test_purge_no_borra_evidencia_confirmada(client, db_session):
     remaining = list(db_session.scalars(select(AttendanceEvidence)))
     assert len(remaining) == 1
     assert remaining[0].attendance_record_id is not None
+
+
+def test_reenvio_misma_foto_tras_confirmar_devuelve_evidencia(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    photo = valid_jpeg_b64(color=(11, 22, 33))
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    first = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert first.status_code == 201
+    marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    assert marked.status_code == 201
+    replay = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    other = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(200, 1, 1)), "content_type": "image/jpeg"},
+    )
+    assert other.status_code == 409
+
+
+def test_attempt_status_devuelve_resultado_congelado(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert pending.status_code == 404
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    status = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert status.status_code == 200
+    assert status.json()["id"] == marked.json()["id"]
+    assert status.json()["event_type"] == "CHECK_IN"
+
+    other = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": "71119999",
+            "employee_code": "EMP-009",
+            "first_name": "Luis",
+            "last_name": "Paz",
+            "job_role_id": str(db_session._test_job_roles["Operario"]),
+        },
+    )
+    assert other.status_code == 201
+    other_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-009"}).json()["marking_token"]
+    isolated = client.post("/api/v1/attendance/attempt/status", json={"marking_token": other_token})
+    assert isolated.status_code == 404
+
+
+def test_attempt_status_exige_terminal_en_produccion(client, db_session, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "una-clave-secreta-de-al-menos-32-caracteres-123456")
+    get_settings.cache_clear()
+    try:
+        denied = client.post("/api/v1/attendance/attempt/status", json={"marking_token": "x"})
+        assert denied.status_code == 401
+    finally:
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
+
+
+def test_doble_canje_de_codigo_emparejamiento(client, db_session):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_db
+
+    _login(client)
+    created = client.post("/api/v1/devices", json={"name": "Tablet única"})
+    code = created.json()["pairing_code"]
+    first = client.post("/api/v1/attendance/terminal/pair", json={"pairing_code": code})
+    assert first.status_code == 200
+    cookie = first.headers.get("set-cookie", "")
+    assert "Max-Age=" in cookie
+    from app.core.config import get_settings
+
+    assert str(get_settings().terminal_token_days * 24 * 60 * 60) in cookie
+
+    other = TestClient(app)
+
+    def _override():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        second = other.post("/api/v1/attendance/terminal/pair", json={"pairing_code": code})
+        assert second.status_code == 401
+        assert "set-cookie" not in {k.lower() for k in second.headers.keys()} or "agua_renew_terminal=" not in second.headers.get("set-cookie", "")
+    finally:
+        other.close()
+
+
+def test_codigo_emparejamiento_vencido(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    import uuid
+    from app.modules.attendance.models import AttendanceDevice
+
+    _login(client)
+    created = client.post("/api/v1/devices", json={"name": "Tablet vencida"})
+    device = db_session.get(AttendanceDevice, uuid.UUID(created.json()["id"]))
+    device.pairing_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    db_session.add(device)
+    db_session.commit()
+    denied = client.post("/api/v1/attendance/terminal/pair", json={"pairing_code": created.json()["pairing_code"]})
+    assert denied.status_code == 401
+
+
+def test_revocacion_invalida_cookie_vigente(client, db_session, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "una-clave-secreta-de-al-menos-32-caracteres-123456")
+    get_settings.cache_clear()
+    try:
+        _login(client)
+        _employee(client, db_session)
+        created = client.post("/api/v1/devices", json={"name": "Tablet revocable"})
+        paired = client.post("/api/v1/attendance/terminal/pair", json={"pairing_code": created.json()["pairing_code"]})
+        assert paired.status_code == 200
+        ok = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
+        assert ok.status_code == 200
+        client.post(f"/api/v1/devices/{created.json()['id']}/revoke")
+        revoked = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
+        assert revoked.status_code == 401
+    finally:
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
+
+
+def test_imagen_exif_conserva_orientacion(client, db_session):
+    from io import BytesIO
+    from PIL import Image
+    from tests.image_helpers import jpeg_exif_orientation_6_b64
+
+    _login(client)
+    _employee(client, db_session)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo = jpeg_exif_orientation_6_b64()
+    stored = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert stored.status_code == 201
+    marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    meta = client.get(f"/api/v1/attendance/{marked.json()['id']}/evidence")
+    image_id = meta.json()["check_in"]["id"]
+    image = client.get(f"/api/v1/attendance/evidence/{image_id}/image")
+    assert image.status_code == 200
+    decoded = Image.open(BytesIO(image.content))
+    assert decoded.size[1] > decoded.size[0]

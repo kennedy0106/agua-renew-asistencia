@@ -384,6 +384,7 @@ class PayrollService:
         record = self.repo.get_record(record_id, for_update=True)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+        # Revalidar tras los bloqueos: populate_existing descarta el estado cacheado.
         if period.status == PERIOD_CLOSED:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

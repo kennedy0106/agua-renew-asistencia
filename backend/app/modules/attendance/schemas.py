@@ -44,6 +44,10 @@ class EvidenceRequest(BaseModel):
     content_type: str = Field(default="image/jpeg", max_length=40)
 
 
+class AttemptStatusRequest(BaseModel):
+    marking_token: str
+
+
 class IdentifyResponse(BaseModel):
     employee: dict
     state: dict

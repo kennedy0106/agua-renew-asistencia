@@ -28,7 +28,7 @@ class PayrollRepository:
     def get_period(self, period_id: uuid.UUID, *, for_update: bool = False) -> PayrollPeriod | None:
         query = select(PayrollPeriod).where(PayrollPeriod.id == period_id)
         if for_update:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         return self.db.scalar(query)
 
     def find_overlap(self, start_date: date, end_date: date, exclude_id: uuid.UUID | None = None) -> PayrollPeriod | None:
@@ -65,13 +65,13 @@ class PayrollRepository:
         return list(self.db.scalars(query.order_by(PayrollRecord.employee_id)))
 
     def get_record(self, record_id: uuid.UUID, *, for_update: bool = False) -> PayrollRecord | None:
-        query = (
-            select(PayrollRecord)
-            .options(joinedload(PayrollRecord.payroll_period))
-            .where(PayrollRecord.id == record_id)
-        )
+        query = select(PayrollRecord).where(PayrollRecord.id == record_id)
         if for_update:
-            query = query.with_for_update()
+            # Sin joinedload: PostgreSQL rechaza FOR UPDATE sobre el lado
+            # anulable de un LEFT OUTER JOIN (relación payroll_period).
+            query = query.with_for_update().execution_options(populate_existing=True)
+        else:
+            query = query.options(joinedload(PayrollRecord.payroll_period))
         return self.db.scalar(query)
 
     def create_record(

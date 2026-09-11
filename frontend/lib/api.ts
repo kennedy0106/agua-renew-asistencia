@@ -283,6 +283,11 @@ export const attendanceApi = {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),
+  attemptStatus: (markingToken: string) =>
+    apiFetch<AttendanceRecordOut>("/api/v1/attendance/attempt/status", {
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken }),
+    }),
 };
 
 // --- Panel de asistencia (autenticado) ---

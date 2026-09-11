@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # En producción frontend (Vercel) y backend (Railway) son cross-site:
     # requerirá "none" + secure. Dev local (mismo sitio) usa "lax".
     session_cookie_samesite: str = "lax"
+    terminal_token_days: int = 180
 
     @field_validator("secret_key")
     @classmethod

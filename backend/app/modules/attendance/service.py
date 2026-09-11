@@ -145,12 +145,6 @@ class AttendanceService:
         employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
         nonce = str(decoded["nonce"])
-        consumed = self.db.get(AttendanceConsumedNonce, nonce)
-        if consumed is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Esta marcación ya se confirmó; identifique de nuevo para tomar otra foto",
-            )
         try:
             raw = base64.b64decode(image_base64.encode("ascii"), validate=True)
         except (ValueError, UnicodeEncodeError) as exc:
@@ -159,6 +153,7 @@ class AttendanceService:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El tamaño de la foto no es válido")
         normalized, ctype, digest = verify_and_normalize(raw)
         existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        consumed = self.db.get(AttendanceConsumedNonce, nonce)
         if existing is not None:
             if existing.image_sha256 and existing.image_sha256 != digest:
                 raise HTTPException(
@@ -166,6 +161,11 @@ class AttendanceService:
                     detail="Ya hay una foto distinta para este intento; identifique de nuevo",
                 )
             return existing
+        if consumed is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Esta marcación ya se confirmó; identifique de nuevo para tomar otra foto",
+            )
         evidence = AttendanceEvidence(
             nonce=nonce,
             employee_id=employee_id,
@@ -237,6 +237,22 @@ class AttendanceService:
                 detail="La marcación anterior no se completó; identifique de nuevo",
             )
         return self._record_snapshot(record, event_type=action)
+
+    def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if decoded.get("did") and device_id and str(decoded["did"]) != str(device_id):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        self._get_active_employee(employee_id)
+        nonce = str(decoded["nonce"])
+        consumed = self.db.get(AttendanceConsumedNonce, nonce)
+        if consumed is None or not consumed.result_payload:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Este intento aún no se confirmó")
+        if consumed.employee_id != employee_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        return consumed.result_payload
 
     def _consume_nonce(
         self,

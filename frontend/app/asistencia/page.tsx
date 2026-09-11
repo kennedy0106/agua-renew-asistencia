@@ -9,6 +9,7 @@ import { Spinner } from "@/components/Loading";
 type Phase =
   | "pairing"
   | "identificando"
+  | "escaneando_qr"
   | "abriendo_camara"
   | "video_listo"
   | "cuenta_regresiva"
@@ -25,6 +26,10 @@ function stopStream(stream: MediaStream | null) {
   stream?.getTracks().forEach((track) => track.stop());
 }
 
+function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDetectorLike) | null {
+  return (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector ?? null;
+}
+
 export default function AsistenciaPage() {
   const [phase, setPhase] = useState<Phase>("identificando");
   const [identifier, setIdentifier] = useState("");
@@ -34,13 +39,22 @@ export default function AsistenciaPage() {
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(3);
   const [lastPhoto, setLastPhoto] = useState<string | null>(null);
-  const [qrArmed, setQrArmed] = useState(false);
+  const [identifying, setIdentifying] = useState(false);
+  const [qrSupported, setQrSupported] = useState(true);
   const [now, setNow] = useState<Date>(() => new Date());
   const [serverOffset, setServerOffset] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const qrStreamRef = useRef<MediaStream | null>(null);
   const captureLock = useRef(false);
+  const identifyingRef = useRef(false);
+  const generationRef = useRef(0);
+  const infoRef = useRef<IdentifyResponse | null>(null);
+
+  function bumpGeneration() {
+    generationRef.current += 1;
+  }
 
   function releaseAllCameras() {
     stopStream(streamRef.current);
@@ -48,6 +62,7 @@ export default function AsistenciaPage() {
     stopStream(qrStreamRef.current);
     qrStreamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    if (qrVideoRef.current) qrVideoRef.current.srcObject = null;
   }
 
   useEffect(() => {
@@ -57,6 +72,7 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     return () => {
+      bumpGeneration();
       releaseAllCameras();
     };
   }, []);
@@ -70,6 +86,7 @@ export default function AsistenciaPage() {
       return;
     }
     if (streamRef.current || phase !== "abriendo_camara") return;
+    const gen = generationRef.current;
     let cancelled = false;
     (async () => {
       try {
@@ -79,7 +96,7 @@ export default function AsistenciaPage() {
           audio: false,
           video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 720 } },
         });
-        if (cancelled) {
+        if (cancelled || gen !== generationRef.current) {
           stopStream(stream);
           return;
         }
@@ -88,8 +105,9 @@ export default function AsistenciaPage() {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
         }
-        if (!cancelled) setPhase("video_listo");
+        if (!cancelled && gen === generationRef.current) setPhase("video_listo");
       } catch {
+        if (gen !== generationRef.current) return;
         setError("No se pudo abrir la cámara frontal. Permita el acceso e intente de nuevo.");
         setPhase("incidencia");
       }
@@ -101,9 +119,11 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     if (phase !== "video_listo") return;
+    const gen = generationRef.current;
     const video = videoRef.current;
     if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
       const wait = window.setTimeout(() => {
+        if (gen !== generationRef.current) return;
         if (videoRef.current && videoRef.current.videoWidth >= 320) {
           setPhase("cuenta_regresiva");
           setCountdown(3);
@@ -129,52 +149,59 @@ export default function AsistenciaPage() {
   }, [phase, countdown]);
 
   useEffect(() => {
-    if (!qrArmed) return;
-    let cancelled = false;
-    let detector: BarcodeDetectorLike | null = null;
-    const Detector = (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector;
-    if (!Detector) {
-      setError("Este navegador no lee QR con la cámara. Use el recuadro AR:…");
-      setQrArmed(false);
+    if (phase !== "escaneando_qr") {
+      stopStream(qrStreamRef.current);
+      qrStreamRef.current = null;
+      if (qrVideoRef.current) qrVideoRef.current.srcObject = null;
       return;
     }
-    detector = new Detector({ formats: ["qr_code"] });
+    const Detector = barcodeDetectorCtor();
+    if (!Detector) {
+      setQrSupported(false);
+      setError("Este navegador no lee QR con la cámara. Use el recuadro AR:…");
+      setPhase("identificando");
+      return;
+    }
+    const gen = generationRef.current;
+    let cancelled = false;
+    const detector = new Detector({ formats: ["qr_code"] });
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { facingMode: { ideal: "environment" } },
         });
-        if (cancelled) {
+        if (cancelled || gen !== generationRef.current) {
           stopStream(stream);
           return;
         }
         qrStreamRef.current = stream;
-        const video = document.createElement("video");
-        video.srcObject = stream;
-        video.setAttribute("playsinline", "true");
-        await video.play();
+        if (qrVideoRef.current) {
+          qrVideoRef.current.srcObject = stream;
+          await qrVideoRef.current.play();
+        }
         const tick = async () => {
-          if (cancelled || !detector) return;
+          if (cancelled || gen !== generationRef.current || !qrVideoRef.current) return;
           try {
-            const codes = await detector.detect(video);
+            const codes = await detector.detect(qrVideoRef.current);
             const raw = codes.map((item) => item.rawValue).find((value) => value);
             if (raw) {
-              setIdentifier(raw.startsWith("AR:") ? raw : `AR:${raw}`);
-              setQrArmed(false);
               stopStream(qrStreamRef.current);
               qrStreamRef.current = null;
+              const value = raw.startsWith("AR:") ? raw : `AR:${raw}`;
+              await identifyValue(value, gen);
               return;
             }
           } catch {
-            // el detector puede fallar un frame
+            // un frame fallido no cancela el escaneo
           }
           window.setTimeout(() => void tick(), 250);
         };
         void tick();
       } catch {
+        if (gen !== generationRef.current) return;
         setError("No se pudo abrir la cámara trasera para el QR.");
-        setQrArmed(false);
+        setPhase("identificando");
       }
     })();
     return () => {
@@ -182,7 +209,7 @@ export default function AsistenciaPage() {
       stopStream(qrStreamRef.current);
       qrStreamRef.current = null;
     };
-  }, [qrArmed]);
+  }, [phase]);
 
   const serverNow = new Date(now.getTime() + serverOffset);
 
@@ -198,13 +225,15 @@ export default function AsistenciaPage() {
     }
   }
 
-  async function handleIdentify(event: React.FormEvent) {
-    event.preventDefault();
-    const value = identifier.trim();
-    if (!value) return;
+  async function identifyValue(value: string, gen: number) {
+    if (!value || identifyingRef.current) return;
+    identifyingRef.current = true;
+    setIdentifying(true);
     setError(null);
     try {
       const result = await attendanceApi.identify(value);
+      if (gen !== generationRef.current) return;
+      infoRef.current = result;
       setInfo(result);
       setServerOffset(new Date(result.server_time).getTime() - Date.now());
       setIdentifier("");
@@ -212,6 +241,7 @@ export default function AsistenciaPage() {
       captureLock.current = false;
       setPhase("abriendo_camara");
     } catch (err) {
+      if (gen !== generationRef.current) return;
       if (err instanceof ApiError && err.status === 401) {
         setPhase("pairing");
         setError(err.message);
@@ -219,7 +249,16 @@ export default function AsistenciaPage() {
       }
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setPhase("incidencia");
+    } finally {
+      identifyingRef.current = false;
+      setIdentifying(false);
     }
+  }
+
+  async function handleIdentify(event: React.FormEvent) {
+    event.preventDefault();
+    if (identifyingRef.current) return;
+    await identifyValue(identifier.trim(), generationRef.current);
   }
 
   function grabFrame(): string | null {
@@ -235,20 +274,50 @@ export default function AsistenciaPage() {
     return dataUrl.split(",")[1] ?? null;
   }
 
-  async function sendPhoto(imageBase64: string, markingToken: string, markingAction: string) {
-    setPhase("enviando");
-    await attendanceApi.captureEvidence(markingToken, imageBase64);
-    const result =
-      markingAction === "CHECK_OUT"
-        ? await attendanceApi.checkOut(markingToken)
-        : await attendanceApi.checkIn(markingToken);
+  async function recoverAttempt(markingToken: string, gen: number): Promise<AttendanceRecordOut | null> {
+    try {
+      const frozen = await attendanceApi.attemptStatus(markingToken);
+      if (gen !== generationRef.current) return null;
+      return frozen;
+    } catch {
+      return null;
+    }
+  }
+
+  function showConfirmed(result: AttendanceRecordOut) {
     releaseAllCameras();
     setRecord(result);
     setPhase("confirmado");
   }
 
+  async function sendPhoto(imageBase64: string, markingToken: string, markingAction: string, gen: number) {
+    setPhase("enviando");
+    try {
+      await attendanceApi.captureEvidence(markingToken, imageBase64);
+      if (gen !== generationRef.current) return;
+      const result =
+        markingAction === "CHECK_OUT"
+          ? await attendanceApi.checkOut(markingToken)
+          : await attendanceApi.checkIn(markingToken);
+      if (gen !== generationRef.current) return;
+      showConfirmed(result);
+    } catch (err) {
+      if (gen !== generationRef.current) return;
+      const recovered = await recoverAttempt(markingToken, gen);
+      if (recovered) {
+        showConfirmed(recovered);
+        return;
+      }
+      setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
+      setPhase("incidencia");
+      captureLock.current = false;
+    }
+  }
+
   async function captureAndMark() {
-    if (!info || captureLock.current) return;
+    const current = infoRef.current;
+    if (!current || captureLock.current) return;
+    const gen = generationRef.current;
     captureLock.current = true;
     setPhase("capturando");
     const imageBase64 = grabFrame();
@@ -259,52 +328,66 @@ export default function AsistenciaPage() {
       return;
     }
     setLastPhoto(imageBase64);
-    try {
-      await sendPhoto(imageBase64, info.marking_token, info.marking_action);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
-      setPhase("incidencia");
-      captureLock.current = false;
-    }
+    await sendPhoto(imageBase64, current.marking_token, current.marking_action, gen);
   }
 
   useEffect(() => {
     if (phase !== "capturando") return;
     void captureAndMark();
-    // captureAndMark se recrea cada render; el lock evita un segundo envío.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   async function resendSamePhoto() {
-    if (!info || !lastPhoto) return;
+    const current = infoRef.current;
+    if (!current || !lastPhoto) return;
+    const gen = generationRef.current;
     setError(null);
-    try {
-      await sendPhoto(lastPhoto, info.marking_token, info.marking_action);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo reenviar la foto");
-      setPhase("incidencia");
+    const recovered = await recoverAttempt(current.marking_token, gen);
+    if (recovered) {
+      showConfirmed(recovered);
+      return;
     }
+    await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
   }
 
   function takeAnotherPhoto() {
+    bumpGeneration();
     releaseAllCameras();
+    infoRef.current = null;
     setInfo(null);
     setLastPhoto(null);
     captureLock.current = false;
+    identifyingRef.current = false;
+    setIdentifying(false);
     setError(null);
     setPhase("identificando");
   }
 
   function reset() {
+    bumpGeneration();
     releaseAllCameras();
     setPhase("identificando");
+    infoRef.current = null;
     setInfo(null);
     setRecord(null);
     setError(null);
     setLastPhoto(null);
-    setQrArmed(false);
     setServerOffset(0);
     captureLock.current = false;
+    identifyingRef.current = false;
+    setIdentifying(false);
+  }
+
+  function startQrScan() {
+    if (identifyingRef.current) return;
+    const Detector = barcodeDetectorCtor();
+    if (!Detector) {
+      setQrSupported(false);
+      setError("Este navegador no lee QR con la cámara. Use el recuadro AR:…");
+      return;
+    }
+    setError(null);
+    setPhase("escaneando_qr");
   }
 
   const limaClock: Intl.DateTimeFormatOptions = {
@@ -376,6 +459,7 @@ export default function AsistenciaPage() {
                 placeholder="Ej. 71112233, EMP-002 o AR:…"
                 autoFocus
                 autoComplete="off"
+                disabled={identifying}
                 style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
               />
               {error && (
@@ -384,14 +468,32 @@ export default function AsistenciaPage() {
                   {error}
                 </p>
               )}
-              <button type="submit" className="btn btn-primary kiosk-btn">
-                <User size={18} />
-                Identificarme
+              <button type="submit" className="btn btn-primary kiosk-btn" disabled={identifying}>
+                {identifying ? <Spinner size={18} /> : <User size={18} />}
+                {identifying ? "Verificando…" : "Identificarme"}
               </button>
-              <button type="button" className="btn btn-outline kiosk-btn" onClick={() => setQrArmed(true)}>
+              <button type="button" className="btn btn-outline kiosk-btn" onClick={startQrScan} disabled={identifying}>
                 Escanear QR con cámara trasera
               </button>
+              {!qrSupported && (
+                <p className="muted">El escaneo de QR no está disponible aquí. Escriba el código AR:…</p>
+              )}
             </form>
+          </>
+        )}
+
+        {phase === "escaneando_qr" && (
+          <>
+            <p className="kiosk-date">Encuadre el código QR. Al leerlo se identificará automáticamente.</p>
+            <video ref={qrVideoRef} className="kiosk-video" playsInline muted autoPlay />
+            {error && (
+              <p className="alert alert-error" role="alert">
+                {error}
+              </p>
+            )}
+            <button className="btn btn-outline kiosk-btn" type="button" onClick={reset}>
+              Cancelar escaneo
+            </button>
           </>
         )}
 
