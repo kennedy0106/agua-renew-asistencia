@@ -54,22 +54,25 @@ class PayrollRepository:
         self.db.refresh(period)
         return period
 
-    def list_records(self, period_id: uuid.UUID) -> list[PayrollRecord]:
-        return list(
-            self.db.scalars(
-                select(PayrollRecord)
-                .options(joinedload(PayrollRecord.employee))
-                .where(PayrollRecord.payroll_period_id == period_id)
-                .order_by(PayrollRecord.employee_id)
-            )
+    def list_records(self, period_id: uuid.UUID, *, payable_only: bool = False) -> list[PayrollRecord]:
+        query = (
+            select(PayrollRecord)
+            .options(joinedload(PayrollRecord.employee))
+            .where(PayrollRecord.payroll_period_id == period_id)
         )
+        if payable_only:
+            query = query.where(PayrollRecord.payable.is_(True))
+        return list(self.db.scalars(query.order_by(PayrollRecord.employee_id)))
 
-    def get_record(self, record_id: uuid.UUID) -> PayrollRecord | None:
-        return self.db.scalar(
+    def get_record(self, record_id: uuid.UUID, *, for_update: bool = False) -> PayrollRecord | None:
+        query = (
             select(PayrollRecord)
             .options(joinedload(PayrollRecord.payroll_period))
             .where(PayrollRecord.id == record_id)
         )
+        if for_update:
+            query = query.with_for_update()
+        return self.db.scalar(query)
 
     def create_record(
         self,

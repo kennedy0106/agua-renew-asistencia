@@ -180,7 +180,22 @@ export default function AdminSalariesPage() {
                 </td>
               </tr>
             )}
-            {records.map((record) => (
+            {records.filter((record) => record.payable !== false).map((record) => (
+              <FragmentRow
+                key={record.id}
+                record={record}
+                expanded={expanded === record.id}
+                onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
+              />
+            ))}
+            {records.some((record) => record.payable === false) && (
+              <tr>
+                <td colSpan={6} style={{ background: "var(--gray-100)", fontWeight: 600 }}>
+                  Historial excluido (no suma al pago)
+                </td>
+              </tr>
+            )}
+            {records.filter((record) => record.payable === false).map((record) => (
               <FragmentRow
                 key={record.id}
                 record={record}
@@ -218,7 +233,14 @@ function FragmentRow({
   return (
     <>
       <tr style={expanded ? { background: "var(--blue-soft)" } : undefined}>
-        <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>
+        <td style={{ fontWeight: 600 }}>
+          {record.employee_name ?? "—"}
+          {record.payable === false && (
+            <div className="muted" style={{ fontWeight: 400, fontSize: "0.78rem" }}>
+              Excluido del pago
+            </div>
+          )}
+        </td>
         <td className="num" style={{ textAlign: "right" }}>
           {formatMoney(record.base_salary)}
         </td>

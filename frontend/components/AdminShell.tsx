@@ -33,6 +33,7 @@ const NAV = [
   { href: "/admin/overtime-policy", label: "Horas extra", icon: Zap, roles: ["ADMIN", "BOSS"] },
   { href: "/admin/salaries", label: "Sueldos", icon: Coins, roles: ["ADMIN", "BOSS"] },
   { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"] },
+  { href: "/admin/devices", label: "Terminales", icon: Key, roles: ["ADMIN"] },
   { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"] },
 ];
 

@@ -358,7 +358,7 @@ class PayrollService:
     def summary(self, period_id: uuid.UUID) -> dict:
         """Totales del periodo (los calcula el backend; el frontend solo muestra)."""
         period = self._get_period_or_404(period_id)
-        records = [record for record in self.repo.list_records(period_id) if record.payable]
+        records = self.repo.list_records(period_id, payable_only=True)
         return {
             "period_id": period.id,
             "name": period.name,
@@ -377,10 +377,14 @@ class PayrollService:
     def set_manual_adjustment(
         self, record_id: uuid.UUID, *, amount: Decimal, notes: str | None, current_user_id: uuid.UUID | None
     ) -> PayrollRecord:
-        record = self.repo.get_record(record_id)
+        preview = self.repo.get_record(record_id)
+        if preview is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+        period = self._get_period_or_404(preview.payroll_period_id, for_update=True)
+        record = self.repo.get_record(record_id, for_update=True)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
-        if record.payroll_period.status == PERIOD_CLOSED:
+        if period.status == PERIOD_CLOSED:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El periodo está cerrado: no se puede ajustar",

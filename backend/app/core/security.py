@@ -58,22 +58,64 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
 
-def create_attendance_token(employee_id: str, *, action: str, minutes: int = 2) -> str:
-    """Prueba efímera ligada a una acción (CHECK_IN o CHECK_OUT) y un nonce de un uso."""
+def create_attendance_token(
+    employee_id: str,
+    *,
+    action: str,
+    minutes: int = 2,
+    record_id: str | None = None,
+    device_id: str | None = None,
+) -> str:
+    """Prueba efímera ligada a una acción, nonce de un uso y, si aplica, sesión/terminal."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": employee_id,
+        "type": "attendance",
+        "action": action,
+        "nonce": __import__("secrets").token_urlsafe(16),
+        "iat": now,
+        "exp": now + timedelta(minutes=minutes),
+    }
+    if record_id:
+        payload["rid"] = record_id
+    if device_id:
+        payload["did"] = device_id
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_terminal_token(device_id: str, token_version: int, *, days: int = 180) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "sub": employee_id,
-            "type": "attendance",
-            "action": action,
-            "nonce": __import__("secrets").token_urlsafe(16),
+            "sub": device_id,
+            "type": "terminal",
+            "ver": token_version,
             "iat": now,
-            "exp": now + timedelta(minutes=minutes),
+            "exp": now + timedelta(days=days),
         },
         settings.secret_key,
         algorithm=settings.jwt_algorithm,
     )
+
+
+def decode_terminal_token(token: str) -> dict[str, Any] | None:
+    payload = decode_access_token(token)
+    if payload is None or payload.get("type") != "terminal" or not payload.get("sub"):
+        return None
+    return payload
+
+
+def terminal_cookie_kwargs() -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "key": "agua_renew_terminal",
+        "httponly": True,
+        "samesite": settings.session_cookie_samesite,
+        "secure": settings.session_cookie_secure,
+        "path": "/",
+    }
 
 
 def decode_attendance_token(token: str) -> dict[str, Any] | None:

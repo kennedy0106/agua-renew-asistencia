@@ -12,7 +12,21 @@ Reglas:
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint, Uuid, func, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -64,6 +78,9 @@ class AttendanceDevice(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     device_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     credential_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pairing_code_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pairing_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -106,10 +123,12 @@ class AttendanceConsumedNonce(Base):
 
     nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
     action: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False, default="CHECK_IN", server_default="CHECK_IN")
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
     attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("attendance_records.id"), nullable=True, index=True
     )
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
@@ -124,7 +143,9 @@ class AttendanceEvidence(Base):
     attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("attendance_records.id"), nullable=True, index=True
     )
+    device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attendance_devices.id"), nullable=True, index=True)
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     image_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     exception_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)

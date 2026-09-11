@@ -59,3 +59,101 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "inputs_fingerprint" in period_cols
     assert "attendance_evidence" in tables
     assert "attendance_consumed_nonces" in tables
+    device_cols = {col["name"] for col in inspector.get_columns("attendance_devices")}
+    assert "pairing_code_hash" in device_cols
+    evidence_cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
+    assert "image_sha256" in evidence_cols
+
+
+def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T30: upgrade desde b7e1c4a90f12 con filas representativas, sin reescribirlas."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "b7e1c4a90f12")
+
+    role_id = "11111111-1111-1111-1111-111111111111"
+    employee_id = "22222222-2222-2222-2222-222222222222"
+    period_id = "33333333-3333-3333-3333-333333333333"
+    record_id = "44444444-4444-4444-4444-444444444444"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"
+            ),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '72845632', 'EMP-001', 'Ana', 'López', :role_id, true, 'qr-token-seed')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO payroll_periods (id, name, start_date, end_date, status, root_period_id, version)
+                VALUES (:id, 'Agosto seed', '2026-08-01', '2026-08-31', 'CLOSED', :id, 1)
+                """
+            ),
+            {"id": period_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO payroll_records (
+                    id, payroll_period_id, employee_id, monthly_salary, worked_minutes, expected_minutes,
+                    overtime_minutes, overtime_amount, adjustment_minutes, adjustment_amount,
+                    base_salary, manual_adjustment, missing_salary_days, total, status
+                ) VALUES (
+                    :id, :period_id, :employee_id, 1500, 0, 0, 0, 0, 0, 0, 1500, 50, 0, 1550, 'CONFIRMED'
+                )
+                """
+            ),
+            {"id": record_id, "period_id": period_id, "employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    id, employee_id, work_date, check_in_at, check_out_at, worked_minutes, status
+                ) VALUES (
+                    '55555555-5555-5555-5555-555555555555', :employee_id, '2026-08-03',
+                    '2026-08-03 13:00:00+00', '2026-08-03 22:00:00+00', 480, 'COMPLETE'
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        total = conn.execute(text("SELECT total, status FROM payroll_records WHERE id = :id"), {"id": record_id}).one()
+        assert str(total[0]) in {"1550.00", "1550"}
+        assert total[1] == "CONFIRMED"
+        payable = conn.execute(text("SELECT payable FROM payroll_records WHERE id = :id"), {"id": record_id}).one()[0]
+        assert payable is True or payable == 1
+        fingerprint = conn.execute(
+            text("SELECT inputs_fingerprint FROM payroll_periods WHERE id = :id"), {"id": period_id}
+        ).one()[0]
+        assert fingerprint is None
+        attendance_status = conn.execute(
+            text("SELECT status, worked_minutes FROM attendance_records WHERE id = '55555555-5555-5555-5555-555555555555'")
+        ).one()
+        assert attendance_status[0] == "COMPLETE"
+        assert attendance_status[1] == 480
+        nonce_cols = {col["name"] for col in inspect(engine).get_columns("attendance_consumed_nonces")}
+        assert "result_payload" in nonce_cols
+

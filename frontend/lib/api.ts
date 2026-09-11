@@ -250,9 +250,15 @@ export type AttendanceRecordOut = {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  event_type?: string | null;
 };
 
 export const attendanceApi = {
+  pairTerminal: (pairingCode: string) =>
+    apiFetch<{ id: string; name: string; device_code: string }>("/api/v1/attendance/terminal/pair", {
+      method: "POST",
+      body: JSON.stringify({ pairing_code: pairingCode }),
+    }),
   identify: (identifier: string) =>
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
       method: "POST",
@@ -338,6 +344,46 @@ export const attendanceAdminApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  evidenceMeta: (recordId: string) =>
+    apiFetch<{
+      record_id: string;
+      check_in: { id: string | null; captured_at: string | null; content_type: string | null; available: boolean } | null;
+      check_out: { id: string | null; captured_at: string | null; content_type: string | null; available: boolean } | null;
+    }>(`/api/v1/attendance/${recordId}/evidence`),
+  evidenceImage: async (evidenceId: string): Promise<string> => {
+    const res = await fetch(`${API_URL}/api/v1/attendance/evidence/${evidenceId}/image`, {
+      credentials: "include",
+    });
+    if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto");
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+};
+
+export type AttendanceDevice = {
+  id: string;
+  name: string;
+  device_code: string;
+  active: boolean;
+  last_sync_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AttendanceDeviceCreated = AttendanceDevice & {
+  pairing_code: string;
+  pairing_expires_at: string;
+};
+
+export const devicesApi = {
+  list: () => apiFetch<AttendanceDevice[]>("/api/v1/devices"),
+  create: (name: string) =>
+    apiFetch<AttendanceDeviceCreated>("/api/v1/devices", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  rotate: (id: string) => apiFetch<AttendanceDeviceCreated>(`/api/v1/devices/${id}/pairing-code`, { method: "POST" }),
+  revoke: (id: string) => apiFetch<AttendanceDevice>(`/api/v1/devices/${id}/revoke`, { method: "POST" }),
 };
 
 // --- Auditoría (solo ADMIN) ---

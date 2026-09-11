@@ -35,11 +35,12 @@ class AttendanceRecordOut(BaseModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+    event_type: str | None = None
 
 
 class EvidenceRequest(BaseModel):
     marking_token: str
-    image_base64: str = Field(min_length=8)
+    image_base64: str = Field(min_length=8, max_length=3_000_000)
     content_type: str = Field(default="image/jpeg", max_length=40)
 
 

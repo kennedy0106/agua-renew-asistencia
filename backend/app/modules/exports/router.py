@@ -12,6 +12,7 @@ import csv
 import io
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -104,6 +105,7 @@ def export_attendance(
 @router.get("/salaries.csv")
 def export_salaries(
     period_id: uuid.UUID,
+    include_excluded: bool = False,
     db: Session = Depends(get_db),
     _: object = Depends(require_admin_or_boss),
 ) -> Response:
@@ -112,7 +114,7 @@ def export_salaries(
         from fastapi import HTTPException, status
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Periodo no encontrado")
-    records = PayrollRepository(db).list_records(period_id)
+    records = PayrollRepository(db).list_records(period_id, payable_only=not include_excluded)
     rows = [
         [
             "Periodo",
@@ -128,11 +130,16 @@ def export_salaries(
             "Ajuste manual (S/)",
             "Notas",
             "Total (S/)",
+            "Estado",
             "Versión del cálculo",
         ]
     ]
+    payable_total = Decimal("0.00")
     for record in records:
         employee = record.employee
+        estado = "PAGABLE" if record.payable else "EXCLUIDO"
+        if record.payable:
+            payable_total += record.total
         rows.append(
             [
                 period.name,
@@ -148,8 +155,29 @@ def export_salaries(
                 f"{record.manual_adjustment:.2f}",
                 record.notes or "",
                 f"{record.total:.2f}",
+                estado,
                 period.version,
             ]
         )
+    rows.append(
+        [
+            period.name,
+            "TOTAL PAGABLE",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            f"{payable_total:.2f}",
+            "TOTAL",
+            period.version,
+        ]
+    )
     safe_name = "".join(c for c in period.name if c.isalnum() or c in "-_ ").strip().replace(" ", "_")
-    return _csv_response(rows, f"sueldos_{safe_name}.csv")
+    filename = f"sueldos_{safe_name}_historial.csv" if include_excluded else f"sueldos_{safe_name}.csv"
+    return _csv_response(rows, filename)

@@ -1,5 +1,7 @@
 """Tests del motor de payroll: periodos, cálculo, ajuste manual y cierre."""
 
+import csv as csv_module
+import io
 import uuid
 from datetime import datetime
 
@@ -73,6 +75,13 @@ def _create_period(client, name: str = "Agosto 2026", start: str = "2026-08-01",
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _parse_salary_csv(client, period_id: str, include_excluded: bool = False) -> list[list[str]]:
+    suffix = "&include_excluded=true" if include_excluded else ""
+    response = client.get(f"/api/v1/exports/salaries.csv?period_id={period_id}{suffix}")
+    assert response.status_code == 200, response.text
+    return list(csv_module.reader(io.StringIO(response.content.decode("utf-8-sig"))))
 
 
 # --- Periodos ---
@@ -436,6 +445,24 @@ def test_recalcular_conserva_bono_de_empleado_inelegible(client, db_session):
     summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
     assert summary["employee_count"] == 0
     assert summary["total_manual"] == "0.00"
+    listed = client.get(f"/api/v1/payroll/periods/{period['id']}/records").json()
+    assert any(item["payable"] is False for item in listed)
+    csv_rows = _parse_salary_csv(client, period["id"])
+    pagable_rows = [row for row in csv_rows[1:] if row[13] == "PAGABLE"]
+    assert pagable_rows == []
+    assert csv_rows[-1][12] == "0.00"
+
+    revived = client.post(f"/api/v1/employees/{emp}/deactivate")
+    assert revived.status_code == 200
+    revived = client.post(f"/api/v1/employees/{emp}/activate")
+    assert revived.status_code == 200
+    recalculated = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
+    payable = [item for item in recalculated if item["employee_id"] == emp and item["payable"]]
+    assert len(payable) == 1
+    assert payable[0]["manual_adjustment"] == "50.00"
+    summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
+    assert summary["employee_count"] == 1
+    assert summary["total_manual"] == "50.00"
 
 
 def test_confirmar_exige_recalculo_si_cambia_he(client, db_session):

@@ -135,12 +135,65 @@ def test_csv_sueldos_contenido(client, db_session):
     header = rows[0]
     assert header[4] == "Sueldo base (S/)"
     assert header[12] == "Total (S/)"
-    assert len(rows) == 2
+    assert header[13] == "Estado"
+    assert len(rows) == 3  # encabezado + fila pagable + TOTAL
     data = rows[1]
     assert data[0] == "Agosto 2026"
     assert data[1] == "Juan Pérez"
     assert data[4] == "1500.00"
     assert data[12] == "1500.00"
+    assert data[13] == "PAGABLE"
+    assert rows[2][1] == "TOTAL PAGABLE"
+    assert rows[2][12] == "1500.00"
+
+
+def test_csv_sueldos_excluye_no_pagables(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp1 = _create_employee(client, db_session, "72845632", "EMP-001")
+    emp2 = _create_employee(client, db_session, "71112233", "EMP-002")
+    for emp in (emp1, emp2):
+        client.post(
+            f"/api/v1/employees/{emp}/salary-settings",
+            json={"effective_from": "2026-08-01", "monthly_salary": "1500.00", "overtime_enabled": False},
+        )
+        client.post(
+            f"/api/v1/employees/{emp}/schedule",
+            json={
+                "effective_from": "2026-08-01",
+                "monday_minutes": 480,
+                "tuesday_minutes": 480,
+                "wednesday_minutes": 480,
+                "thursday_minutes": 480,
+                "friday_minutes": 480,
+            },
+        )
+    period = client.post(
+        "/api/v1/payroll/periods",
+        json={"name": "Agosto 2026", "start_date": "2026-08-01", "end_date": "2026-08-31"},
+    ).json()
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    client.patch(f"/api/v1/employees/{emp2}", json={"termination_date": "2026-07-31"})
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+
+    summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
+    assert summary["employee_count"] == 1
+    assert summary["total"] == "1500.00"
+
+    payment = _parse_csv(client.get(f"/api/v1/exports/salaries.csv?period_id={period['id']}"))
+    pagable = [row for row in payment[1:] if row[13] == "PAGABLE"]
+    assert len(pagable) == 1
+    assert pagable[0][2] == "72845632"
+    assert payment[-1][12] == "1500.00"
+    assert "historial" not in client.get(f"/api/v1/exports/salaries.csv?period_id={period['id']}").headers["content-disposition"]
+
+    history = _parse_csv(
+        client.get(f"/api/v1/exports/salaries.csv?period_id={period['id']}&include_excluded=true")
+    )
+    assert any(row[13] == "EXCLUIDO" for row in history[1:])
+    assert "historial" in client.get(
+        f"/api/v1/exports/salaries.csv?period_id={period['id']}&include_excluded=true"
+    ).headers["content-disposition"]
+    assert history[-1][12] == "1500.00"
 
 
 def test_csv_sueldos_periodo_inexistente_404(client):
