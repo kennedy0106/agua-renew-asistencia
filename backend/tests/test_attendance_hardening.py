@@ -176,6 +176,7 @@ def test_terminal_emparejado_se_exige_en_produccion(client, db_session, monkeypa
     from app.core.config import get_settings
 
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "una-clave-secreta-de-al-menos-32-caracteres-123456")
     get_settings.cache_clear()
     try:
         _login(client)
