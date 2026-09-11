@@ -25,8 +25,11 @@ class PayrollRepository:
             )
         )
 
-    def get_period(self, period_id: uuid.UUID) -> PayrollPeriod | None:
-        return self.db.scalar(select(PayrollPeriod).where(PayrollPeriod.id == period_id))
+    def get_period(self, period_id: uuid.UUID, *, for_update: bool = False) -> PayrollPeriod | None:
+        query = select(PayrollPeriod).where(PayrollPeriod.id == period_id)
+        if for_update:
+            query = query.with_for_update()
+        return self.db.scalar(query)
 
     def find_overlap(self, start_date: date, end_date: date, exclude_id: uuid.UUID | None = None) -> PayrollPeriod | None:
         query = select(PayrollPeriod).where(
@@ -117,6 +120,9 @@ class PayrollRepository:
             select(PayrollRecord).where(PayrollRecord.payroll_period_id == period_id)
         )
         for record in records:
-            record.status = "CONFIRMED"
+            if record.payable:
+                record.status = "CONFIRMED"
+            else:
+                record.status = "EXCLUDED"
             self.db.add(record)
         self.db.flush()

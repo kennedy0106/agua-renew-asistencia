@@ -228,10 +228,9 @@ def test_escenario_f_aprueba_parte_como_hora_extra(client, db_session):
     ).json()
     record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
     assert record["overtime_minutes"] == 60  # solo la aprobada
-    # Agosto 2026: 26 días L-S × 480 = 12480 min → tarifa 1500×60/12480 = 7.2115
-    # → 60 min × (7.2115/60 × 1.25) = 9.01
-    assert record["overtime_amount"] == "9.01"
-    assert record["total"] == "1509.01"
+    # 60 min × (1500/30/8 / 60 × 1.25) = 7.81
+    assert record["overtime_amount"] == "7.81"
+    assert record["total"] == "1507.81"
 
 
 # --- Escenario G: olvida marcar salida → jefe corrige con motivo ---

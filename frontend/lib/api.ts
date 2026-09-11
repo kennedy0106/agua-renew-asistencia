@@ -236,6 +236,7 @@ export type IdentifyResponse = {
   server_time: string;
   server_time_label: string;
   marking_token: string;
+  marking_action: "CHECK_IN" | "CHECK_OUT";
 };
 
 export type AttendanceRecordOut = {
@@ -256,6 +257,15 @@ export const attendanceApi = {
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
       method: "POST",
       body: JSON.stringify({ identifier }),
+    }),
+  captureEvidence: (markingToken: string, imageBase64: string, contentType = "image/jpeg") =>
+    apiFetch<{ id: string; content_type: string }>("/api/v1/attendance/evidence", {
+      method: "POST",
+      body: JSON.stringify({
+        marking_token: markingToken,
+        image_base64: imageBase64,
+        content_type: contentType,
+      }),
     }),
   checkIn: (markingToken: string) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-in", {
@@ -519,7 +529,8 @@ export type PayrollRecord = {
   manual_adjustment: string;
   missing_salary_days: number;
   total: string;
-  status: "PREVIEW" | "CONFIRMED";
+  status: "PREVIEW" | "CONFIRMED" | "EXCLUDED";
+  payable: boolean;
   notes: string | null;
   created_at: string;
   updated_at: string;

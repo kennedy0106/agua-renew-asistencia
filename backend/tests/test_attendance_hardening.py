@@ -6,6 +6,10 @@ from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.service import AttendanceService
 from app.modules.schedules.repository import WorkScheduleRepository
 
+TINY_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
 
 def _login(client) -> None:
     assert client.post(
@@ -34,9 +38,35 @@ def test_identificacion_entrega_token_para_marcar(client, db_session):
     identified = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
     assert identified.status_code == 200
     token = identified.json()["marking_token"]
+    assert identified.json()["marking_action"] == "CHECK_IN"
 
+    without_photo = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    assert without_photo.status_code == 400
+
+    evidence = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": TINY_PNG, "content_type": "image/png"},
+    )
+    assert evidence.status_code == 201, evidence.text
     marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
     assert marked.status_code == 201
+    replay = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    assert replay.status_code == 201
+    assert replay.json()["id"] == marked.json()["id"]
+
+    checkout_identify = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
+    assert checkout_identify.json()["marking_action"] == "CHECK_OUT"
+    wrong = client.post("/api/v1/attendance/check-out", json={"marking_token": token})
+    assert wrong.status_code == 401
+    out_token = checkout_identify.json()["marking_token"]
+    photo = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": out_token, "image_base64": TINY_PNG, "content_type": "image/png"},
+    )
+    assert photo.status_code == 201
+    out = client.post("/api/v1/attendance/check-out", json={"marking_token": out_token})
+    assert out.status_code == 200
+    assert out.json()["status"] == "COMPLETE"
 
 
 def test_refrigerio_se_descuenta_una_vez_en_jornada_partida(client, db_session):

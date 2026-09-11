@@ -25,6 +25,7 @@ from app.modules.attendance.schemas import (
     AttendanceSummary,
     CheckInRequest,
     CheckOutRequest,
+    EvidenceRequest,
     IdentifyRequest,
     IdentifyResponse,
 )
@@ -41,17 +42,19 @@ _public_limiter = RateLimiter(limit=120, window_seconds=60)
 _marking_limiter = RateLimiter(limit=10, window_seconds=60)
 
 
-def _employee_from_marking_payload(payload: CheckInRequest | CheckOutRequest) -> uuid.UUID:
+def _employee_from_marking_payload(
+    payload: CheckInRequest | CheckOutRequest, expected_action: str
+) -> tuple[uuid.UUID, str | None, bool]:
     if payload.marking_token:
-        subject = decode_attendance_token(payload.marking_token)
-        if subject:
+        decoded = decode_attendance_token(payload.marking_token)
+        if decoded and decoded.get("action") == expected_action:
             try:
-                return uuid.UUID(subject)
+                return uuid.UUID(str(decoded["sub"])), str(decoded["nonce"]), True
             except ValueError:
                 pass
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
     if payload.employee_id is not None and get_settings().environment != "production":
-        return payload.employee_id
+        return payload.employee_id, None, False
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Debe identificar al trabajador nuevamente")
 
 
@@ -74,15 +77,29 @@ def identify(
     return AttendanceService(db).identify(payload.identifier)
 
 
+@router.post("/evidence", status_code=status.HTTP_201_CREATED)
+def store_evidence(
+    payload: EvidenceRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+) -> dict:
+    evidence = AttendanceService(db).store_evidence(
+        marking_token=payload.marking_token,
+        image_base64=payload.image_base64,
+        content_type=payload.content_type,
+    )
+    return {"id": str(evidence.id), "content_type": evidence.content_type}
+
+
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
 def check_in(
     payload: CheckInRequest,
     db: Session = Depends(get_db),
 ) -> AttendanceRecordOut:
-    employee_id = _employee_from_marking_payload(payload)
+    employee_id, nonce, require_evidence = _employee_from_marking_payload(payload, "CHECK_IN")
     if not _marking_limiter.allow(f"mark:{employee_id}"):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
-    return AttendanceService(db).check_in(employee_id)
+    return AttendanceService(db).check_in(employee_id, nonce=nonce, require_evidence=require_evidence)
 
 
 @router.post("/check-out", response_model=AttendanceRecordOut)
@@ -90,10 +107,10 @@ def check_out(
     payload: CheckOutRequest,
     db: Session = Depends(get_db),
 ) -> AttendanceRecordOut:
-    employee_id = _employee_from_marking_payload(payload)
+    employee_id, nonce, require_evidence = _employee_from_marking_payload(payload, "CHECK_OUT")
     if not _marking_limiter.allow(f"mark:{employee_id}"):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
-    return AttendanceService(db).check_out(employee_id)
+    return AttendanceService(db).check_out(employee_id, nonce=nonce, require_evidence=require_evidence)
 
 
 # --- Panel administrativo (Fase 7) ---

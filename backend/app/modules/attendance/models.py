@@ -12,7 +12,7 @@ Reglas:
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Uuid, func, text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -97,3 +97,34 @@ class AttendanceEvent(Base):
     employee = relationship("Employee")
     device = relationship("AttendanceDevice")
     attendance_record = relationship("AttendanceRecord")
+
+
+class AttendanceConsumedNonce(Base):
+    """Nonce de marcación consumido (un uso; reintento idempotente)."""
+
+    __tablename__ = "attendance_consumed_nonces"
+
+    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_records.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AttendanceEvidence(Base):
+    """Foto de marcación (bytes privados; no es reconocimiento facial)."""
+
+    __tablename__ = "attendance_evidence"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    nonce: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_records.id"), nullable=True, index=True
+    )
+    content_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    image_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    exception_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)

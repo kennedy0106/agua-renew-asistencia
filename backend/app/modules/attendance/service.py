@@ -8,23 +8,32 @@
 - Empleado cesado no puede marcar.
 """
 
+import base64
 import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import lima_tz
-from app.modules.attendance.models import AttendanceEvent, AttendanceRecord
+from app.modules.attendance.models import (
+    AttendanceConsumedNonce,
+    AttendanceEvent,
+    AttendanceEvidence,
+    AttendanceRecord,
+)
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.repository import WorkScheduleRepository
-from app.core.security import create_attendance_token
+from app.core.security import create_attendance_token, decode_attendance_token
 from app.modules.schedules.service import ScheduleService
 
 _MISSING = object()  # sentinela: distingue "no enviado" de "enviado como null"
+_MAX_PHOTO_BYTES = 2 * 1024 * 1024
+_ALLOWED_PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -113,11 +122,87 @@ class AttendanceService:
             },
             "server_time": now_lima.isoformat(),
             "server_time_label": now_lima.strftime("%H:%M"),
-            "marking_token": create_attendance_token(str(employee.id)),
+            "marking_action": "CHECK_OUT" if open_record is not None else "CHECK_IN",
+            "marking_token": create_attendance_token(
+                str(employee.id),
+                action="CHECK_OUT" if open_record is not None else "CHECK_IN",
+            ),
         }
 
-    def check_in(self, employee_id: uuid.UUID) -> AttendanceRecord:
+    def store_evidence(self, *, marking_token: str, image_base64: str, content_type: str) -> AttendanceEvidence:
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
+        ctype = (content_type or "image/jpeg").split(";")[0].strip().lower()
+        if ctype not in _ALLOWED_PHOTO_TYPES:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="La foto debe ser JPEG, PNG o WebP")
+        try:
+            raw = base64.b64decode(image_base64.encode("ascii"), validate=True)
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Foto inválida") from exc
+        if len(raw) < 32 or len(raw) > _MAX_PHOTO_BYTES:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El tamaño de la foto no es válido")
+        nonce = str(decoded["nonce"])
+        existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        if existing is not None:
+            return existing
+        evidence = AttendanceEvidence(
+            nonce=nonce,
+            employee_id=employee_id,
+            content_type=ctype,
+            image_bytes=raw,
+        )
+        self.db.add(evidence)
+        self.db.commit()
+        self.db.refresh(evidence)
+        return evidence
+
+    def _evidence_or_400(self, nonce: str, employee_id: uuid.UUID) -> AttendanceEvidence:
+        evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        if evidence is None or evidence.employee_id != employee_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Debe capturar una foto nueva antes de marcar",
+            )
+        return evidence
+
+    def _replay_nonce(self, nonce: str, action: str, employee_id: uuid.UUID) -> AttendanceRecord | None:
+        existing = self.db.get(AttendanceConsumedNonce, nonce)
+        if existing is None:
+            return None
+        if existing.action != action or existing.employee_id != employee_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if existing.attendance_record_id is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La marcación anterior no se completó; identifique de nuevo")
+        record = self.repo.get_by_id(existing.attendance_record_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La marcación anterior no se completó; identifique de nuevo")
+        return record
+
+    def _consume_nonce(self, nonce: str, action: str, employee_id: uuid.UUID, record_id: uuid.UUID) -> None:
+        replay = self._replay_nonce(nonce, action, employee_id)
+        if replay is not None:
+            return
+        self.db.add(
+            AttendanceConsumedNonce(
+                nonce=nonce,
+                action=action,
+                employee_id=employee_id,
+                attendance_record_id=record_id,
+            )
+        )
+        self.db.flush()
+
+    def check_in(self, employee_id: uuid.UUID, *, nonce: str | None = None, require_evidence: bool = False) -> AttendanceRecord:
+        self._get_active_employee(employee_id)
+        if nonce:
+            replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
+            if replay is not None:
+                return replay
+            if require_evidence:
+                self._evidence_or_400(nonce, employee_id)
 
         if self.repo.get_open(employee_id) is not None:
             raise HTTPException(
@@ -136,7 +221,12 @@ class AttendanceService:
             )
             self.db.add(record)
             self.db.flush()
-            self._record_event(record, "CHECK_IN", now)
+            if nonce:
+                self._consume_nonce(nonce, "CHECK_IN", employee_id, record.id)
+                evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+                if evidence is not None:
+                    evidence.attendance_record_id = record.id
+            self._record_event(record, "CHECK_IN", now, external_event_id=nonce)
             self.db.commit()
             self.db.refresh(record)
         except IntegrityError as exc:
@@ -147,10 +237,16 @@ class AttendanceService:
             ) from exc
         return record
 
-    def check_out(self, employee_id: uuid.UUID) -> AttendanceRecord:
+    def check_out(self, employee_id: uuid.UUID, *, nonce: str | None = None, require_evidence: bool = False) -> AttendanceRecord:
         self._get_active_employee(employee_id)
+        if nonce:
+            replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
+            if replay is not None:
+                return replay
+            if require_evidence:
+                self._evidence_or_400(nonce, employee_id)
 
-        record = self.repo.get_open(employee_id)
+        record = self.repo.get_open(employee_id, for_update=True)
         if record is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -164,17 +260,29 @@ class AttendanceService:
         self.db.add(record)
         self.db.flush()
         self._recompute_day(employee_id, record.work_date, commit=False)
-        self._record_event(record, "CHECK_OUT", now)
+        if nonce:
+            self._consume_nonce(nonce, "CHECK_OUT", employee_id, record.id)
+            evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+            if evidence is not None:
+                evidence.attendance_record_id = record.id
+        self._record_event(record, "CHECK_OUT", now, external_event_id=nonce)
         self.db.commit()
         self.db.refresh(record)
         return record
 
-    def _record_event(self, record: AttendanceRecord, event_type: str, captured_at: datetime) -> None:
+    def _record_event(
+        self,
+        record: AttendanceRecord,
+        event_type: str,
+        captured_at: datetime,
+        *,
+        external_event_id: str | None = None,
+    ) -> None:
         self.db.add(
             AttendanceEvent(
                 employee_id=record.employee_id,
                 attendance_record_id=record.id,
-                external_event_id=str(uuid.uuid4()),
+                external_event_id=external_event_id or str(uuid.uuid4()),
                 event_type=event_type,
                 source="WEB",
                 captured_at=captured_at,
@@ -370,6 +478,8 @@ class AttendanceService:
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
 
+        old_date = record.work_date
+        old_status = record.status
         old_values = self._serialize(record)
 
         if check_in_at is not _MISSING:
@@ -404,16 +514,17 @@ class AttendanceService:
             record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, 0)
             record.status = "COMPLETE"
 
-        new_values = self._serialize(record)
-        if old_values == new_values:
+        if old_values == self._serialize(record) and old_date == record.work_date and old_status == record.status:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="No hay cambios que registrar"
             )
 
-        saved = self.repo.save(record)
-        if saved.status == "COMPLETE":
-            self._recompute_day(saved.employee_id, saved.work_date)
-            self.db.refresh(saved)
+        self.repo.save(record, commit=False)
+        dates = {old_date, record.work_date}
+        for day in dates:
+            self._recompute_day(record.employee_id, day, commit=False)
+        self.db.refresh(record)
+        new_values = self._serialize(record)
         AuditRepository(self.db).create(
             entity_type="attendance",
             entity_id=record_id,
@@ -422,5 +533,8 @@ class AttendanceService:
             new_values=new_values,
             reason=reason.strip(),
             performed_by=current_user_id,
+            commit=False,
         )
-        return saved
+        self.db.commit()
+        self.db.refresh(record)
+        return record

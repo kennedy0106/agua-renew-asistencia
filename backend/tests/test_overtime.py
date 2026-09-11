@@ -32,17 +32,20 @@ def _today_lima():
 
 def _set_record_times(client, record_id: str, start_hour: int, end_hour: int):
     today = _today_lima()
-    check_in = datetime(today.year, today.month, today.day, start_hour, 0, tzinfo=lima_tz()).astimezone(
-        datetime.now().astimezone().tzinfo  # type: ignore[arg-type]
-    )
-    local_check_in = check_in.replace(tzinfo=None).isoformat()
-    local_check_out = datetime(today.year, today.month, today.day, end_hour, 0).isoformat()
+    check_in = datetime(today.year, today.month, today.day, start_hour, 0, tzinfo=lima_tz())
+    check_out = datetime(today.year, today.month, today.day, end_hour, 0, tzinfo=lima_tz())
     response = client.patch(
         f"/api/v1/attendance/{record_id}",
-        json={"check_in_at": local_check_in, "check_out_at": local_check_out, "reason": "Fijar horario de prueba"},
+        json={
+            "check_in_at": check_in.isoformat(),
+            "check_out_at": check_out.isoformat(),
+            "reason": "Fijar horario de prueba",
+        },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    body = response.json()
+    assert body["worked_minutes"] == (end_hour - start_hour) * 60
+    return body
 
 
 def _create_full_record(client, employee_id: str, start_hour: int, end_hour: int) -> str:
@@ -159,12 +162,11 @@ def test_valor_primer_tramo_usa_25(client, db_session):
 
     result = client.get(f"/api/v1/employees/{emp}/overtime/value?date_from=2026-08-01&date_to=2026-08-31").json()
     assert result["overtime_minutes"] == 60
-    # Agosto 2026 tiene 21 días L-V: 168 horas esperadas.
-    assert result["breakdown"][0]["hourly_rate"] == "8.9286"
+    assert result["breakdown"][0]["hourly_rate"] == "6.2500"
     assert result["breakdown"][0]["first_two_minutes"] == 60
     assert result["breakdown"][0]["additional_minutes"] == 0
     # 60 min × (6.25/60 × 1.25) = 7.8125 → 7.81
-    assert result["value"] == "11.16"
+    assert result["value"] == "7.81"
 
 
 def test_valor_tercer_tramo_usa_35(client, db_session):
@@ -181,11 +183,8 @@ def test_valor_tercer_tramo_usa_35(client, db_session):
     assert b["additional_minutes"] == 60
     assert b["first_two_hours_rate"] == "25.00"
     assert b["additional_hours_rate"] == "35.00"
-    # tarifa/min = 6.25/60 = 0.1041667
-    # primer tramo: 120 × 0.1041667 × 1.25 = 15.625 → 15.63
-    # adicional:    60 × 0.1041667 × 1.35 = 8.4375  → 8.44
-    # total = 24.07
-    assert result["value"] == "34.37"
+    # 15.625 + 8.4375 = 24.0625 → un solo redondeo a céntimos: 24.06
+    assert result["value"] == "24.06"
 
 
 def test_contador_se_reinicia_por_dia(client, db_session):
@@ -202,8 +201,8 @@ def test_contador_se_reinicia_por_dia(client, db_session):
     for b in result["breakdown"]:
         assert b["first_two_minutes"] == 90
         assert b["additional_minutes"] == 0
-    # cada día: 90 × 0.1041667 × 1.25 = 11.71875 → 11.72; total 23.44
-    assert result["value"] == "33.48"
+    # cada día: 90 × 6.25/60 × 1.25 = 11.71875 → 11.72; total 23.44
+    assert result["value"] == "23.44"
 
 
 def test_valor_con_override_empleado(client, db_session):
@@ -225,7 +224,7 @@ def test_valor_con_override_empleado(client, db_session):
     assert b["source"] == "employee_override"
     assert b["first_two_hours_rate"] == "50.00"
     # 60 × (6.25/60 × 1.50) = 9.375 → 9.38
-    assert result["value"] == "13.39"
+    assert result["value"] == "9.38"
 
 
 def test_valor_sin_politica_usa_minimos_legales(client, db_session):

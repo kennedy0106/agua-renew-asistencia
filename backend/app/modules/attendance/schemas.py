@@ -3,7 +3,9 @@
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.text import require_visible_text
 
 
 class IdentifyRequest(BaseModel):
@@ -35,12 +37,19 @@ class AttendanceRecordOut(BaseModel):
     updated_at: datetime
 
 
+class EvidenceRequest(BaseModel):
+    marking_token: str
+    image_base64: str = Field(min_length=8)
+    content_type: str = Field(default="image/jpeg", max_length=40)
+
+
 class IdentifyResponse(BaseModel):
     employee: dict
     state: dict
     server_time: str
     server_time_label: str
     marking_token: str
+    marking_action: str
 
 
 class AttendanceListItem(BaseModel):
@@ -91,3 +100,8 @@ class AttendanceCorrection(BaseModel):
     check_out_at: datetime | None = None
     notes: str | None = Field(default=None, max_length=255)
     reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")

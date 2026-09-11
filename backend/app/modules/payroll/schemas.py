@@ -4,7 +4,9 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.text import require_visible_text
 
 
 class PayrollPeriodCreate(BaseModel):
@@ -44,6 +46,7 @@ class PayrollRecordOut(BaseModel):
     missing_salary_days: int = 0
     total: Decimal
     status: str
+    payable: bool = True
     notes: str | None
     created_at: datetime
     updated_at: datetime
@@ -53,9 +56,19 @@ class ManualAdjustmentRequest(BaseModel):
     amount: Decimal = Field(max_digits=12, decimal_places=2, description="Monto con signo (viáticos, bonos, descuentos)")
     notes: str = Field(min_length=3, max_length=255, description="Motivo obligatorio (queda en auditoría)")
 
+    @field_validator("notes")
+    @classmethod
+    def notes_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
+
 
 class RectificationRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
 
 
 class ReadinessIssue(BaseModel):

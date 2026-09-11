@@ -4,7 +4,9 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.text import require_visible_text
 
 
 class OvertimePolicyCreate(BaseModel):
@@ -12,6 +14,11 @@ class OvertimePolicyCreate(BaseModel):
     first_two_hours_rate: Decimal = Field(ge=25, max_digits=5, decimal_places=2)
     additional_hours_rate: Decimal = Field(ge=35, max_digits=5, decimal_places=2)
     reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
 
 
 class OvertimePolicyOut(BaseModel):

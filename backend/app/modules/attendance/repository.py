@@ -14,9 +14,9 @@ class AttendanceRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get_open(self, employee_id: uuid.UUID) -> AttendanceRecord | None:
+    def get_open(self, employee_id: uuid.UUID, *, for_update: bool = False) -> AttendanceRecord | None:
         """Entrada abierta (sin salida) del empleado, la más reciente."""
-        return self.db.scalar(
+        query = (
             select(AttendanceRecord)
             .where(
                 AttendanceRecord.employee_id == employee_id,
@@ -25,14 +25,20 @@ class AttendanceRepository:
             .order_by(AttendanceRecord.check_in_at.desc())
             .limit(1)
         )
+        if for_update:
+            query = query.with_for_update()
+        return self.db.scalar(query)
 
     def get_by_id(self, record_id: uuid.UUID) -> AttendanceRecord | None:
         return self.db.scalar(select(AttendanceRecord).where(AttendanceRecord.id == record_id))
 
-    def save(self, record: AttendanceRecord) -> AttendanceRecord:
+    def save(self, record: AttendanceRecord, *, commit: bool = True) -> AttendanceRecord:
         self.db.add(record)
-        self.db.commit()
-        self.db.refresh(record)
+        if commit:
+            self.db.commit()
+            self.db.refresh(record)
+        else:
+            self.db.flush()
         return record
 
     def get_last(self, employee_id: uuid.UUID) -> AttendanceRecord | None:

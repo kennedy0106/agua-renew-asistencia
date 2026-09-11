@@ -9,12 +9,12 @@
 - Tasas efectivas resueltas por get_effective_overtime_rates (política general
   o override por empleado). No se duplica la decisión.
 - Si overtime_enabled = false en el salary vigente → no se paga horas extra.
-- Tarifa por hora derivada: sueldo mensual / minutos esperados del mes.
-- Dinero SIEMPRE en Decimal.
+- Tarifa ordinaria: sueldo mensual / 30 / horas de jornada del día
+  (minutos programados del weekday, sin restar refrigerio).
+- Dinero SIEMPRE en Decimal; se redondea a céntimos una sola vez por día.
 """
 
 import uuid
-from calendar import monthrange
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -79,23 +79,26 @@ class OvertimeService:
                 )
         return detected
 
-    def _expected_month_minutes(self, employee_id: uuid.UUID, ref: date) -> int:
-        schedules = ScheduleService(self.db)
-        _, last_day = monthrange(ref.year, ref.month)
-        total = 0
-        for day in range(1, last_day + 1):
-            total += schedules.expected_minutes(employee_id, date(ref.year, ref.month, day))
-        return total
-
     def hourly_rate(self, employee_id: uuid.UUID, ref: date) -> Decimal:
-        """Tarifa por hora derivada del sueldo mensual (S/ por hora)."""
+        """Sueldo / 30 / horas de jornada del día (R04)."""
         salary = SalaryService(self.db).get_for_date(employee_id, ref)
         if salary is None:
             return Decimal("0")
-        expected = self._expected_month_minutes(employee_id, ref)
-        if expected <= 0:
+        day_minutes = ScheduleService(self.db).expected_minutes(employee_id, ref)
+        if day_minutes <= 0:
             return Decimal("0")
-        return (salary.monthly_salary * Decimal(60) / Decimal(expected)).quantize(_RATE, rounding=ROUND_HALF_UP)
+        hours = Decimal(day_minutes) / Decimal(60)
+        return (salary.monthly_salary / Decimal(30) / hours).quantize(_RATE, rounding=ROUND_HALF_UP)
+
+    def _raw_hourly_rate(self, employee_id: uuid.UUID, ref: date) -> Decimal:
+        salary = SalaryService(self.db).get_for_date(employee_id, ref)
+        if salary is None:
+            return Decimal("0")
+        day_minutes = ScheduleService(self.db).expected_minutes(employee_id, ref)
+        if day_minutes <= 0:
+            return Decimal("0")
+        hours = Decimal(day_minutes) / Decimal(60)
+        return salary.monthly_salary / Decimal(30) / hours
 
     def value(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict:
         """Valor monetario de las horas extra APROBADAS en el rango, por tramos diarios."""
@@ -148,23 +151,35 @@ class OvertimeService:
                 continue
 
             rates = policy.get_effective_overtime_rates(employee_id, day)
-            hourly = self.hourly_rate(employee_id, day)
+            hourly = self._raw_hourly_rate(employee_id, day)
+            if hourly <= 0:
+                skip_reason = "MISSING_SCHEDULE"
+                breakdown.append(
+                    {
+                        "adjustment_date": day,
+                        "minutes": total_minutes,
+                        "first_two_minutes": first_two,
+                        "additional_minutes": additional,
+                        "first_two_hours_rate": Decimal("0.00"),
+                        "additional_hours_rate": Decimal("0.00"),
+                        "source": skip_reason.lower(),
+                        "hourly_rate": Decimal("0"),
+                        "value": Decimal("0.00"),
+                        "skip_reason": skip_reason,
+                    }
+                )
+                continue
 
-            first_value = (
+            item_value = (
                 Decimal(first_two)
                 * hourly
                 / Decimal(60)
                 * (Decimal("1") + rates["first_two_hours_rate"] / Decimal(100))
-            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
-
-            additional_value = (
-                Decimal(additional)
+                + Decimal(additional)
                 * hourly
                 / Decimal(60)
                 * (Decimal("1") + rates["additional_hours_rate"] / Decimal(100))
             ).quantize(_CENTS, rounding=ROUND_HALF_UP)
-
-            item_value = first_value + additional_value
             total += item_value
 
             breakdown.append(
@@ -176,7 +191,7 @@ class OvertimeService:
                     "first_two_hours_rate": rates["first_two_hours_rate"],
                     "additional_hours_rate": rates["additional_hours_rate"],
                     "source": rates["source"],
-                    "hourly_rate": hourly,
+                    "hourly_rate": hourly.quantize(_RATE, rounding=ROUND_HALF_UP),
                     "value": item_value,
                     "skip_reason": None,
                 }

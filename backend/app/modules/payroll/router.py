@@ -67,6 +67,7 @@ def _record_out(record) -> PayrollRecordOut:
         missing_salary_days=record.missing_salary_days,
         total=record.total,
         status=record.status,
+        payable=record.payable,
         notes=record.notes,
         created_at=record.created_at,
         updated_at=record.updated_at,

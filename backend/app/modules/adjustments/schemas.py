@@ -4,7 +4,9 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.core.text import require_visible_text
 
 
 class AdjustmentCreate(BaseModel):
@@ -13,9 +15,19 @@ class AdjustmentCreate(BaseModel):
     adjustment_type: Literal["PERMISO", "RECUPERACION", "OTRO", "OVERTIME"]
     reason: str = Field(min_length=3, max_length=500)
 
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
+
 
 class RejectRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
 
 
 class AdjustmentOut(BaseModel):

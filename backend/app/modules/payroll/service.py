@@ -11,6 +11,8 @@ Reglas del MVP:
 - Toda operación sensible (ajuste manual, cierre) queda auditada.
 """
 
+import hashlib
+import json
 import uuid
 from calendar import monthrange
 from datetime import date, timedelta
@@ -25,12 +27,13 @@ from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
-from app.modules.employees.repository import EmployeeRepository
 from app.modules.overtime.service import OvertimeService
 from app.modules.payroll.models import (
     PERIOD_CALCULATED,
     PERIOD_CLOSED,
     PERIOD_OPEN,
+    RECORD_EXCLUDED,
+    RECORD_PREVIEW,
     PayrollPeriod,
     PayrollRecord,
 )
@@ -73,8 +76,8 @@ class PayrollService:
     def list_periods(self) -> list[PayrollPeriod]:
         return self.repo.list_periods()
 
-    def _get_period_or_404(self, period_id: uuid.UUID) -> PayrollPeriod:
-        period = self.repo.get_period(period_id)
+    def _get_period_or_404(self, period_id: uuid.UUID, *, for_update: bool = False) -> PayrollPeriod:
+        period = self.repo.get_period(period_id, for_update=for_update)
         if period is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Periodo no encontrado")
         return period
@@ -82,66 +85,113 @@ class PayrollService:
     # --- Cálculo ---
 
     def calculate(self, period_id: uuid.UUID) -> list[PayrollRecord]:
-        period = self._get_period_or_404(period_id)
+        period = self._get_period_or_404(period_id, for_update=True)
         if period.status == PERIOD_CLOSED:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El periodo está cerrado: no se puede recalcular",
             )
 
-        employees = self._employees_for_period(period)
-        salaries = SalaryService(self.db)
-        schedules = ScheduleService(self.db)
-        adjustments = AdjustmentRepository(self.db)
-        overtime = OvertimeService(self.db)
-
+        snapshots = self._eligible_snapshots(period)
         existing = {record.employee_id: record for record in self.repo.list_records(period_id)}
+        predecessor: dict[uuid.UUID, PayrollRecord] = {}
+        if period.supersedes_period_id:
+            predecessor = {
+                record.employee_id: record for record in self.repo.list_records(period.supersedes_period_id)
+            }
         try:
-            for employee in employees:
-                base, reference_salary, missing_salary_days = self._prorated_base(employee, period, salaries)
-                if reference_salary is None:
-                    continue
-
-                worked = self._sum_worked_minutes(employee.id, period)
-                expected = self._sum_expected_minutes(schedules, employee, period)
-                overtime_minutes = adjustments.approved_minutes_in_range(
-                    employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
-                )
-                adjustment_minutes = adjustments.approved_minutes_in_range(
-                    employee.id, period.start_date, period.end_date
-                ) - overtime_minutes
-                overtime_amount = overtime.value(employee.id, period.start_date, period.end_date)["value"]
-
-                record = existing.pop(employee.id, None)
+            for snapshot in snapshots:
+                employee_id = snapshot["employee_id"]
+                record = existing.pop(employee_id, None)
                 if record is None:
                     record = PayrollRecord()
                     record.payroll_period_id = period_id
-                    record.employee_id = employee.id
+                    record.employee_id = employee_id
                     record.manual_adjustment = Decimal("0.00")
-                record.monthly_salary = reference_salary.monthly_salary
-                record.worked_minutes = worked
-                record.expected_minutes = expected
-                record.overtime_minutes = overtime_minutes
-                record.overtime_amount = overtime_amount
-                record.adjustment_minutes = adjustment_minutes
+                    prev = predecessor.get(employee_id)
+                    if prev is not None:
+                        record.manual_adjustment = prev.manual_adjustment
+                        record.notes = prev.notes
+                record.monthly_salary = snapshot["monthly_salary"]
+                record.worked_minutes = snapshot["worked_minutes"]
+                record.expected_minutes = snapshot["expected_minutes"]
+                record.overtime_minutes = snapshot["overtime_minutes"]
+                record.overtime_amount = snapshot["overtime_amount"]
+                record.adjustment_minutes = snapshot["adjustment_minutes"]
                 record.adjustment_amount = Decimal("0.00")
-                record.base_salary = base
-                record.missing_salary_days = missing_salary_days
-                record.total = (base + overtime_amount + record.manual_adjustment).quantize(
+                record.base_salary = snapshot["base_salary"]
+                record.missing_salary_days = snapshot["missing_salary_days"]
+                record.total = (record.base_salary + record.overtime_amount + record.manual_adjustment).quantize(
                     _CENTS, rounding=ROUND_HALF_UP
                 )
-                record.status = "PREVIEW"
+                record.status = RECORD_PREVIEW
+                record.payable = True
                 self.db.add(record)
 
-            # F05: no borrar snapshots de quienes dejaron de ser elegibles
-            # (conserva ajuste manual, motivo y autor en el registro).
+            for leftover in existing.values():
+                leftover.status = RECORD_EXCLUDED
+                leftover.payable = False
+                self.db.add(leftover)
+
             period.status = PERIOD_CALCULATED
+            period.inputs_fingerprint = self._fingerprint(snapshots)
             self.db.add(period)
             self.db.commit()
         except Exception:
             self.db.rollback()
             raise
         return self.repo.list_records(period_id)
+
+    def _eligible_snapshots(self, period: PayrollPeriod) -> list[dict]:
+        salaries = SalaryService(self.db)
+        schedules = ScheduleService(self.db)
+        adjustments = AdjustmentRepository(self.db)
+        overtime = OvertimeService(self.db)
+        snapshots: list[dict] = []
+        for employee in self._employees_for_period(period):
+            base, reference_salary, missing_salary_days = self._prorated_base(employee, period, salaries)
+            if reference_salary is None:
+                continue
+            overtime_minutes = adjustments.approved_minutes_in_range(
+                employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
+            )
+            overtime_amount = overtime.value(employee.id, period.start_date, period.end_date)["value"]
+            snapshots.append(
+                {
+                    "employee_id": employee.id,
+                    "monthly_salary": reference_salary.monthly_salary,
+                    "worked_minutes": self._sum_worked_minutes(employee.id, period),
+                    "expected_minutes": self._sum_expected_minutes(schedules, employee, period),
+                    "overtime_minutes": overtime_minutes,
+                    "overtime_amount": overtime_amount,
+                    "adjustment_minutes": adjustments.approved_minutes_in_range(
+                        employee.id, period.start_date, period.end_date
+                    )
+                    - overtime_minutes,
+                    "base_salary": base,
+                    "missing_salary_days": missing_salary_days,
+                }
+            )
+        snapshots.sort(key=lambda item: str(item["employee_id"]))
+        return snapshots
+
+    @staticmethod
+    def _fingerprint(snapshots: list[dict]) -> str:
+        payload = [
+            {
+                "employee_id": str(item["employee_id"]),
+                "monthly_salary": str(item["monthly_salary"]),
+                "worked_minutes": item["worked_minutes"],
+                "expected_minutes": item["expected_minutes"],
+                "overtime_minutes": item["overtime_minutes"],
+                "overtime_amount": str(item["overtime_amount"]),
+                "adjustment_minutes": item["adjustment_minutes"],
+                "base_salary": str(item["base_salary"]),
+                "missing_salary_days": item["missing_salary_days"],
+            }
+            for item in snapshots
+        ]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     def _employees_for_period(self, period: PayrollPeriod) -> list[Employee]:
         return list(
@@ -250,6 +300,22 @@ class PayrollService:
         )
         for adjustment in pending:
             blockers.append({"code": "PENDING_ADJUSTMENT", "message": "Ajuste pendiente de aprobación o rechazo", "employee_id": str(adjustment.employee_id)})
+        overtime = OvertimeService(self.db)
+        for employee in self._employees_for_period(period):
+            valued = overtime.value(employee.id, period.start_date, period.end_date)
+            unpaid = [
+                item
+                for item in valued["breakdown"]
+                if item.get("skip_reason") or (item["minutes"] > 0 and item["value"] == Decimal("0.00"))
+            ]
+            if unpaid:
+                blockers.append(
+                    {
+                        "code": "UNVALUED_OVERTIME",
+                        "message": "Hay horas extra aprobadas sin valor o con tratamiento documentado pendiente",
+                        "employee_id": str(employee.id),
+                    }
+                )
         return {"ready": not blockers, "blockers": blockers, "warnings": warnings}
 
     def create_rectification(self, period_id: uuid.UUID, reason: str, current_user_id: uuid.UUID | None) -> PayrollPeriod:
@@ -292,7 +358,7 @@ class PayrollService:
     def summary(self, period_id: uuid.UUID) -> dict:
         """Totales del periodo (los calcula el backend; el frontend solo muestra)."""
         period = self._get_period_or_404(period_id)
-        records = self.repo.list_records(period_id)
+        records = [record for record in self.repo.list_records(period_id) if record.payable]
         return {
             "period_id": period.id,
             "name": period.name,
@@ -319,6 +385,11 @@ class PayrollService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="El periodo está cerrado: no se puede ajustar",
             )
+        if not record.payable:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El registro quedó fuera del cálculo pagable",
+            )
 
         old_total = record.total
         old_manual = record.manual_adjustment
@@ -342,11 +413,17 @@ class PayrollService:
         return saved
 
     def confirm(self, period_id: uuid.UUID, current_user_id: uuid.UUID | None) -> PayrollPeriod:
-        period = self._get_period_or_404(period_id)
+        period = self._get_period_or_404(period_id, for_update=True)
         if period.status != PERIOD_CALCULATED:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"El periodo debe estar CALCULATED para confirmarse (estado: {period.status})",
+            )
+        live = self._fingerprint(self._eligible_snapshots(period))
+        if not period.inputs_fingerprint or live != period.inputs_fingerprint:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La previsualización está desactualizada: vuelva a calcular antes de cerrar",
             )
         readiness = self.readiness(period_id)
         if not readiness["ready"]:
@@ -361,7 +438,7 @@ class PayrollService:
             entity_id=period_id,
             action="close",
             old_values={"status": PERIOD_CALCULATED},
-            new_values={"status": PERIOD_CLOSED},
+            new_values={"status": PERIOD_CLOSED, "inputs_fingerprint": period.inputs_fingerprint},
             reason=f"Cierre del periodo {period.name}",
             performed_by=current_user_id,
             commit=False,

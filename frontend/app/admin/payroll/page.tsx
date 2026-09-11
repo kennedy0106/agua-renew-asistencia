@@ -358,8 +358,15 @@ export default function AdminPayrollPage() {
                 )}
                 {recordsLoading && <TableSkeleton rows={4} cols={7} />}
                 {records.map((record) => (
-                  <tr key={record.id}>
-                    <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>
+                  <tr key={record.id} style={record.payable === false ? { opacity: 0.65 } : undefined}>
+                    <td style={{ fontWeight: 600 }}>
+                      {record.employee_name ?? "—"}
+                      {record.payable === false && (
+                        <div className="muted" style={{ fontWeight: 400, fontSize: "0.78rem" }}>
+                          Fuera del cálculo pagable (se conserva el historial)
+                        </div>
+                      )}
+                    </td>
                     <td className="num" style={{ textAlign: "right" }}>
                       {formatMoney(record.base_salary)}
                     </td>
@@ -403,7 +410,7 @@ export default function AdminPayrollPage() {
                           ) : (
                             <span className="muted">0.00</span>
                           )}
-                          {selected.status !== "CLOSED" && (
+                          {selected.status !== "CLOSED" && record.payable !== false && (
                             <button
                               className="btn btn-ghost btn-sm"
                               style={{ marginLeft: "0.4rem" }}

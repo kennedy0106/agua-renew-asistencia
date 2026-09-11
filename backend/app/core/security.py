@@ -58,14 +58,15 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
 
-def create_attendance_token(employee_id: str, *, minutes: int = 2) -> str:
-    """Prueba efímera de identificación para una única marcación pública."""
+def create_attendance_token(employee_id: str, *, action: str, minutes: int = 2) -> str:
+    """Prueba efímera ligada a una acción (CHECK_IN o CHECK_OUT) y un nonce de un uso."""
     settings = get_settings()
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
             "sub": employee_id,
             "type": "attendance",
+            "action": action,
             "nonce": __import__("secrets").token_urlsafe(16),
             "iat": now,
             "exp": now + timedelta(minutes=minutes),
@@ -75,11 +76,13 @@ def create_attendance_token(employee_id: str, *, minutes: int = 2) -> str:
     )
 
 
-def decode_attendance_token(token: str) -> str | None:
+def decode_attendance_token(token: str) -> dict[str, Any] | None:
     payload = decode_access_token(token)
     if payload is None or payload.get("type") != "attendance":
         return None
-    return payload.get("sub")
+    if not payload.get("sub") or not payload.get("nonce") or payload.get("action") not in {"CHECK_IN", "CHECK_OUT"}:
+        return None
+    return payload
 
 
 def session_cookie_kwargs() -> dict[str, Any]:

@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
 import { Check, Clock, Droplet, Logout, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
-type Step = "identify" | "employee" | "done";
+type Step = "identify" | "employee" | "photo" | "done";
 
 export default function AsistenciaPage() {
   const [step, setStep] = useState<Step>("identify");
@@ -17,12 +17,49 @@ export default function AsistenciaPage() {
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState<Date>(() => new Date());
   const [serverOffset, setServerOffset] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
-  // Reloj: tick local, anclado a la hora del servidor cuando ya se identificó.
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (step !== "photo") {
+      stopCamera();
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 720 } },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+      } catch {
+        setError("No se pudo abrir la cámara frontal. Permita el acceso e intente de nuevo.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
 
   const serverNow = new Date(now.getTime() + serverOffset);
 
@@ -45,14 +82,27 @@ export default function AsistenciaPage() {
     }
   }
 
-  async function handleMark() {
-    if (!info) return;
+  async function handleCaptureAndMark() {
+    if (!info || !videoRef.current) return;
     setBusy(true);
     setError(null);
     try {
-      const result = info.state.has_open_entry
-        ? await attendanceApi.checkOut(info.marking_token)
-        : await attendanceApi.checkIn(info.marking_token);
+      const video = videoRef.current;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 480;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("canvas");
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
+      const imageBase64 = dataUrl.split(",")[1];
+      if (!imageBase64) throw new Error("foto");
+      await attendanceApi.captureEvidence(info.marking_token, imageBase64);
+      const result =
+        info.marking_action === "CHECK_OUT"
+          ? await attendanceApi.checkOut(info.marking_token)
+          : await attendanceApi.checkIn(info.marking_token);
+      stopCamera();
       setRecord(result);
       setStep("done");
     } catch (err) {
@@ -63,6 +113,7 @@ export default function AsistenciaPage() {
   }
 
   function reset() {
+    stopCamera();
     setStep("identify");
     setInfo(null);
     setRecord(null);
@@ -161,18 +212,14 @@ export default function AsistenciaPage() {
             )}
 
             {info.state.has_open_entry ? (
-              <button
-                className="btn btn-primary kiosk-btn"
-                onClick={handleMark}
-                disabled={busy}
-              >
-                {busy ? <Spinner size={18} /> : <Logout size={18} />}
-                {busy ? "Registrando…" : "MARCAR SALIDA"}
+              <button className="btn btn-primary kiosk-btn" onClick={() => setStep("photo")} disabled={busy}>
+                <Logout size={18} />
+                Continuar a foto de salida
               </button>
             ) : (
-              <button className="btn btn-green kiosk-btn" onClick={handleMark} disabled={busy}>
-                {busy ? <Spinner size={18} /> : <Droplet size={18} />}
-                {busy ? "Registrando…" : "MARCAR ENTRADA"}
+              <button className="btn btn-green kiosk-btn" onClick={() => setStep("photo")} disabled={busy}>
+                <Droplet size={18} />
+                Continuar a foto de entrada
               </button>
             )}
             <button
@@ -182,6 +229,28 @@ export default function AsistenciaPage() {
               style={{ display: "flex", margin: "0.8rem auto 0" }}
             >
               Cambiar de trabajador
+            </button>
+          </>
+        )}
+
+        {step === "photo" && info && (
+          <>
+            <p className="kiosk-date" style={{ marginBottom: "0.6rem" }}>
+              Mire a la cámara frontal. La foto se toma ahora, no se reutiliza.
+            </p>
+            <video ref={videoRef} className="kiosk-video" playsInline muted autoPlay />
+            {error && (
+              <p className="alert alert-error" role="alert">
+                <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                {error}
+              </p>
+            )}
+            <button className="btn btn-green kiosk-btn" onClick={handleCaptureAndMark} disabled={busy}>
+              {busy ? <Spinner size={18} /> : <Check size={18} />}
+              {busy ? "Registrando…" : info.marking_action === "CHECK_OUT" ? "Tomar foto y marcar salida" : "Tomar foto y marcar entrada"}
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={reset} type="button" style={{ display: "flex", margin: "0.8rem auto 0" }}>
+              Cancelar
             </button>
           </>
         )}

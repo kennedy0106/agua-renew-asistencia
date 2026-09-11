@@ -133,8 +133,8 @@ def test_calcular_incluye_horas_extra(client, db_session):
     records = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
     record = records[0]
     assert record["overtime_minutes"] == 60
-    assert record["overtime_amount"] == "11.16"
-    assert record["total"] == "1511.16"
+    assert record["overtime_amount"] == "7.81"
+    assert record["total"] == "1507.81"
 
 
 def test_calcular_excluye_empleado_sin_sueldo(client, db_session):
@@ -158,8 +158,8 @@ def test_recalcular_reemplaza_preview(client, db_session):
     _add_approved_overtime(client, emp, minutes=60)
     second = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
     assert len(second) == 1
-    assert second[0]["overtime_amount"] == "11.16"
-    assert second[0]["total"] == "1511.16"
+    assert second[0]["overtime_amount"] == "7.81"
+    assert second[0]["total"] == "1507.81"
 
 
 def test_recalcular_conserva_ajuste_manual(client, db_session):
@@ -365,9 +365,9 @@ def test_summary_totales_del_periodo(client, db_session):
     summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
     assert summary["employee_count"] == 2
     assert summary["total_base"] == "2600.00"  # 1500 + 1100
-    assert summary["total_overtime"] == "15.25"
+    assert summary["total_overtime"] == "10.67"
     assert summary["total_manual"] == "50.00"
-    assert summary["total"] == "2665.25"
+    assert summary["total"] == "2660.67"
 
 
 def test_summary_supervisor_forbidden(client, db_session):
@@ -431,3 +431,67 @@ def test_recalcular_conserva_bono_de_empleado_inelegible(client, db_session):
     recalculated = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
     leftover = next(r for r in recalculated if r["employee_id"] == emp)
     assert leftover["manual_adjustment"] == "50.00"
+    assert leftover["payable"] is False
+    assert leftover["status"] == "EXCLUDED"
+    summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
+    assert summary["employee_count"] == 0
+    assert summary["total_manual"] == "0.00"
+
+
+def test_confirmar_exige_recalculo_si_cambia_he(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    _add_approved_overtime(client, emp, minutes=60)
+    stale = client.post(f"/api/v1/payroll/periods/{period['id']}/confirm")
+    assert stale.status_code == 409
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 200
+
+
+def test_he_aprobada_sin_pago_bloquea_cierre(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp, overtime_enabled=False)
+    _add_approved_overtime(client, emp, minutes=60)
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    readiness = client.get(f"/api/v1/payroll/periods/{period['id']}/readiness").json()
+    assert any(issue["code"] == "UNVALUED_OVERTIME" for issue in readiness["blockers"])
+    assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
+
+
+def test_rectificacion_copia_ajuste_manual(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "50.00", "notes": "Viáticos originales"},
+    )
+    assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 200
+    rectified = client.post(
+        f"/api/v1/payroll/periods/{period['id']}/rectifications",
+        json={"reason": "Reabrir por corrección de asistencia"},
+    ).json()
+    copied = client.post(f"/api/v1/payroll/periods/{rectified['id']}/calculate").json()[0]
+    assert copied["manual_adjustment"] == "50.00"
+    assert copied["notes"] == "Viáticos originales"
+
+
+def test_motivo_solo_espacios_es_rechazado(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    response = client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "10.00", "notes": "   "},
+    )
+    assert response.status_code == 422
+

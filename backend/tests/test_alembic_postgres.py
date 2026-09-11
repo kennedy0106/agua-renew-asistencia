@@ -11,6 +11,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from app.core.test_db import assert_disposable_postgres_url
+
 pytestmark = pytest.mark.integration
 
 
@@ -19,8 +21,12 @@ def pg_url() -> str:
     url = os.environ.get("TEST_DATABASE_URL", "").strip()
     if not url:
         pytest.skip("TEST_DATABASE_URL no configurado")
-    if not any(token in url for token in ("localhost", "127.0.0.1", "asistencia_test")):
-        pytest.skip("TEST_DATABASE_URL debe apuntar a una BD local o de CI, nunca a producción")
+    if os.environ.get("ALLOW_TEST_DB_RESET") != "1":
+        pytest.skip("ALLOW_TEST_DB_RESET=1 es obligatorio para DROP SCHEMA")
+    try:
+        assert_disposable_postgres_url(url)
+    except ValueError as exc:
+        pytest.skip(str(exc))
     return url
 
 
@@ -48,3 +54,8 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "uq_attendance_one_open_per_employee" in index_names
     columns = {col["name"] for col in inspector.get_columns("payroll_records")}
     assert "missing_salary_days" in columns
+    assert "payable" in columns
+    period_cols = {col["name"] for col in inspector.get_columns("payroll_periods")}
+    assert "inputs_fingerprint" in period_cols
+    assert "attendance_evidence" in tables
+    assert "attendance_consumed_nonces" in tables
