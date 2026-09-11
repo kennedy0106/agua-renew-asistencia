@@ -5,8 +5,8 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
-import { TableSkeleton } from "@/components/Loading";
-import { ApiError, PayrollPeriod, PayrollRecord, payrollApi } from "@/lib/api";
+import { Spinner, TableSkeleton } from "@/components/Loading";
+import { ApiError, PayrollPeriod, PayrollReadiness, PayrollRecord, payrollApi } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
@@ -24,20 +24,17 @@ function formatMinutes(minutes: number): string {
   return `${h} h ${m.toString().padStart(2, "0")}`;
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  OPEN: "Abierto",
-  CALCULATED: "Calculado",
-  CLOSED: "Cerrado",
-};
-
 export default function AdminPayrollPage() {
   const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [periodsLoading, setPeriodsLoading] = useState(true);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [actionKey, setActionKey] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<PayrollReadiness | null>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", start_date: "", end_date: "" });
@@ -56,7 +53,7 @@ export default function AdminPayrollPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
-      setLoading(false);
+      setPeriodsLoading(false);
     }
   }, [canManage]);
 
@@ -67,7 +64,7 @@ export default function AdminPayrollPage() {
   const selected = periods.find((p) => p.id === selectedId) ?? null;
 
   async function loadRecords(periodId: string) {
-    setBusy(true);
+    setRecordsLoading(true);
     setError(null);
     try {
       const [list, recs] = await Promise.all([payrollApi.periods(), payrollApi.records(periodId)]);
@@ -77,13 +74,14 @@ export default function AdminPayrollPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudieron cargar los registros");
     } finally {
-      setBusy(false);
+      setRecordsLoading(false);
     }
   }
 
   async function handleCreatePeriod(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
+    setActionKey("create");
     setError(null);
     try {
       await payrollApi.createPeriod(form);
@@ -94,11 +92,13 @@ export default function AdminPayrollPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el periodo");
     } finally {
       setBusy(false);
+      setActionKey(null);
     }
   }
 
   async function handleCalculate(periodId: string) {
     setBusy(true);
+    setActionKey(`calculate:${periodId}`);
     setError(null);
     try {
       await payrollApi.calculate(periodId);
@@ -107,14 +107,21 @@ export default function AdminPayrollPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo calcular");
     } finally {
       setBusy(false);
+      setActionKey(null);
     }
   }
 
   async function handleSaveAdjustment(recordId: string) {
     setBusy(true);
+    setActionKey(`adjust:${recordId}`);
     setError(null);
     try {
-      await payrollApi.setAdjustment(recordId, adjustAmount || "0.00", adjustNotes.trim() || null);
+      const reason = adjustNotes.trim();
+      if (reason.length < 3) {
+        setError("El motivo debe tener al menos 3 caracteres");
+        return;
+      }
+      await payrollApi.setAdjustment(recordId, adjustAmount || "0.00", reason);
       setAdjustingId(null);
       setAdjustAmount("");
       setAdjustNotes("");
@@ -123,28 +130,67 @@ export default function AdminPayrollPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo ajustar");
     } finally {
       setBusy(false);
+      setActionKey(null);
     }
   }
 
   async function handleConfirm(periodId: string) {
     setBusy(true);
+    setActionKey(`close:${periodId}`);
     setError(null);
     try {
+      const check = await payrollApi.readiness(periodId);
+      setReadiness(check);
+      if (!check.ready) {
+        setError(`No se puede cerrar: ${check.blockers.length} bloqueo(s) pendiente(s)`);
+        return;
+      }
       await payrollApi.confirm(periodId);
       setPeriods(await payrollApi.periods());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo confirmar");
     } finally {
       setBusy(false);
+      setActionKey(null);
+    }
+  }
+
+  async function handleReadiness(periodId: string) {
+    setBusy(true);
+    setActionKey(`validate:${periodId}`);
+    setError(null);
+    try {
+      setReadiness(await payrollApi.readiness(periodId));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo validar el periodo");
+    } finally {
+      setBusy(false);
+      setActionKey(null);
+    }
+  }
+
+  async function handleRectification(periodId: string) {
+    const reason = window.prompt("Motivo de la rectificación")?.trim() ?? "";
+    if (reason.length < 3) return;
+    setBusy(true);
+    setActionKey(`rectify:${periodId}`);
+    try {
+      await payrollApi.rectify(periodId, reason);
+      setPeriods(await payrollApi.periods());
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo crear la rectificación");
+    } finally {
+      setBusy(false);
+      setActionKey(null);
     }
   }
 
   return (
-    <AdminShell title="Planilla" subtitle="Calcular → revisar → ajustar con motivo → cerrar (inmutable)">
+    <AdminShell title="Cálculo de pago" subtitle="Calcular → revisar → ajustar con motivo → cerrar (inmutable)">
       {!canManage && (
         <p className="alert alert-error" role="alert">
           <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
-          Solo administradores y jefes pueden ver la planilla.
+          Solo administradores y jefes pueden ver el cálculo de pago.
         </p>
       )}
 
@@ -172,6 +218,17 @@ export default function AdminPayrollPage() {
         </p>
       )}
 
+      {readiness && (
+        <div className={`alert ${readiness.ready ? "alert-success" : "alert-error"}`} role="status">
+          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+          <span>
+            {readiness.ready
+              ? `Periodo listo para cerrar${readiness.warnings.length ? `, con ${readiness.warnings.length} advertencia(s)` : ""}.`
+              : readiness.blockers.map((issue) => issue.message).join(" · ")}
+          </span>
+        </div>
+      )}
+
       {canManage && showForm && (
         <form onSubmit={handleCreatePeriod} className="card card-pad" style={{ marginBottom: "1.1rem" }}>
           <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
@@ -189,8 +246,8 @@ export default function AdminPayrollPage() {
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="submit" className="btn btn-primary" disabled={busy}>
-                <Plus size={15} />
-                Crear periodo
+                {actionKey === "create" ? <Spinner /> : <Plus size={15} />}
+                {actionKey === "create" ? "Creando…" : "Crear periodo"}
               </button>
             </div>
           </div>
@@ -198,10 +255,17 @@ export default function AdminPayrollPage() {
       )}
 
       <div style={{ display: "grid", gap: "0.9rem", gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))", marginBottom: "1.3rem" }}>
-        {periods.length === 0 && (
-          <p className="muted" style={{ fontSize: "0.85rem" }}>
-            Sin periodos. Crea el primero.
-          </p>
+        {!periodsLoading && periods.length === 0 && (
+          <div className="empty-state card card-pad" style={{ gridColumn: "1 / -1" }}>
+            <Receipt size={28} />
+            <div>
+              <h3>Aún no hay periodos de pago</h3>
+              <p>Crea el primero para calcular el tiempo trabajado y el monto estimado.</p>
+            </div>
+            <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowForm(true)}>
+              <Plus size={15} /> Crear primer periodo
+            </button>
+          </div>
         )}
         {periods.map((period) => (
           <div
@@ -220,7 +284,7 @@ export default function AdminPayrollPage() {
               )}
             </div>
             <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.2rem" }}>
-              {period.start_date} → {period.end_date}
+              {period.start_date} → {period.end_date} · versión {period.version}
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.7rem" }}>
               <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
@@ -228,12 +292,26 @@ export default function AdminPayrollPage() {
               </button>
               {period.status !== "CLOSED" && (
                 <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
-                  {period.status === "OPEN" ? "Calcular" : "Recalcular"}
+                  {actionKey === `calculate:${period.id}` && <Spinner />}
+                  {actionKey === `calculate:${period.id}` ? "Calculando…" : period.status === "OPEN" ? "Calcular" : "Recalcular"}
                 </button>
               )}
               {period.status === "CALCULATED" && (
-                <button className="btn btn-green btn-sm" onClick={() => handleConfirm(period.id)} disabled={busy}>
-                  Confirmar y cerrar
+                <>
+                  <button className="btn btn-outline btn-sm" onClick={() => handleReadiness(period.id)} disabled={busy}>
+                    {actionKey === `validate:${period.id}` && <Spinner />}
+                    {actionKey === `validate:${period.id}` ? "Validando…" : "Validar cierre"}
+                  </button>
+                  <button className="btn btn-green btn-sm" onClick={() => handleConfirm(period.id)} disabled={busy}>
+                    {actionKey === `close:${period.id}` && <Spinner />}
+                    {actionKey === `close:${period.id}` ? "Cerrando…" : "Confirmar y cerrar"}
+                  </button>
+                </>
+              )}
+              {period.status === "CLOSED" && (
+                <button className="btn btn-outline btn-sm" onClick={() => handleRectification(period.id)} disabled={busy}>
+                  {actionKey === `rectify:${period.id}` && <Spinner />}
+                  {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
                 </button>
               )}
             </div>
@@ -256,7 +334,7 @@ export default function AdminPayrollPage() {
               </span>
             )}
           </div>
-          <div className="table-wrap" style={{ border: "none", borderRadius: 0 }}>
+          <div className="table-wrap" style={{ border: "none", borderRadius: 0 }} aria-busy={recordsLoading}>
             <table className="table">
               <thead>
                 <tr>
@@ -270,7 +348,7 @@ export default function AdminPayrollPage() {
                 </tr>
               </thead>
               <tbody>
-                {records.length === 0 && !busy && (
+                {records.length === 0 && !recordsLoading && (
                   <tr>
                     <td colSpan={7} className="empty">
                       <Receipt size={26} />
@@ -278,7 +356,7 @@ export default function AdminPayrollPage() {
                     </td>
                   </tr>
                 )}
-                {busy && <TableSkeleton rows={4} cols={7} />}
+                {recordsLoading && <TableSkeleton rows={4} cols={7} />}
                 {records.map((record) => (
                   <tr key={record.id}>
                     <td style={{ fontWeight: 600 }}>{record.employee_name ?? "—"}</td>
@@ -308,8 +386,9 @@ export default function AdminPayrollPage() {
                         <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
                           <input type="number" step={0.01} className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
                           <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} placeholder="motivo" />
-                          <button className="btn btn-primary btn-sm" onClick={() => handleSaveAdjustment(record.id)} disabled={busy}>
-                            OK
+                          <button className="btn btn-primary btn-sm" onClick={() => handleSaveAdjustment(record.id)} disabled={busy || adjustNotes.trim().length < 3}>
+                            {actionKey === `adjust:${record.id}` && <Spinner />}
+                            {actionKey === `adjust:${record.id}` ? "Guardando…" : "Guardar"}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setAdjustingId(null)} aria-label="Cancelar">
                             <X size={13} />
@@ -326,8 +405,8 @@ export default function AdminPayrollPage() {
                           )}
                           {selected.status !== "CLOSED" && (
                             <button
-                              className="link-btn"
-                              style={{ marginLeft: "0.4rem", fontSize: "0.74rem" }}
+                              className="btn btn-ghost btn-sm"
+                              style={{ marginLeft: "0.4rem" }}
                               onClick={() => {
                                 setAdjustingId(record.id);
                                 setAdjustAmount(record.manual_adjustment);

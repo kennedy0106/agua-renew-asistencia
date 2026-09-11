@@ -1,4 +1,8 @@
-"""Repositorio de periodos y registros de planilla."""
+"""Repositorio de periodos y registros de planilla.
+
+No confirma transacciones: el servicio (unidad de trabajo) hace commit
+junto con la auditoría.
+"""
 
 import uuid
 from datetime import date
@@ -36,14 +40,14 @@ class PayrollRepository:
     def create_period(self, *, name: str, start_date: date, end_date: date) -> PayrollPeriod:
         period = PayrollPeriod(name=name, start_date=start_date, end_date=end_date)
         self.db.add(period)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(period)
         return period
 
     def set_period_status(self, period: PayrollPeriod, status: str) -> PayrollPeriod:
         period.status = status
         self.db.add(period)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(period)
         return period
 
@@ -63,14 +67,6 @@ class PayrollRepository:
             .options(joinedload(PayrollRecord.payroll_period))
             .where(PayrollRecord.id == record_id)
         )
-
-    def delete_records(self, period_id: uuid.UUID) -> None:
-        records = self.db.scalars(
-            select(PayrollRecord).where(PayrollRecord.payroll_period_id == period_id)
-        )
-        for record in records:
-            self.db.delete(record)
-        self.db.commit()
 
     def create_record(
         self,
@@ -102,7 +98,7 @@ class PayrollRepository:
             status="PREVIEW",
         )
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(record)
         return record
 
@@ -112,7 +108,7 @@ class PayrollRepository:
             record.notes = notes
         record.total = record.base_salary + record.overtime_amount + amount
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(record)
         return record
 
@@ -123,4 +119,4 @@ class PayrollRepository:
         for record in records:
             record.status = "CONFIRMED"
             self.db.add(record)
-        self.db.commit()
+        self.db.flush()

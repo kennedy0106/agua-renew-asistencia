@@ -62,5 +62,6 @@ def set_schedule(
             "sunday_minutes": payload.sunday_minutes,
         },
         break_minutes=payload.break_minutes,
+        break_applies_after_minutes=payload.break_applies_after_minutes,
         performed_by=user.id if user is not None else None,
     )

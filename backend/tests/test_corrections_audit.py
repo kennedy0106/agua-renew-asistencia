@@ -135,6 +135,38 @@ def test_correccion_limpiar_salida_vuelve_open(client, db_session):
     assert body["worked_minutes"] is None
 
 
+def test_correccion_salida_anterior_a_entrada_422(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    record_id = _create_complete_record(client, emp)
+    today = datetime.now(lima_tz()).date()
+    check_in = datetime(today.year, today.month, today.day, 10, 0, tzinfo=lima_tz()).astimezone(timezone.utc)
+    check_out = datetime(today.year, today.month, today.day, 8, 0, tzinfo=lima_tz()).astimezone(timezone.utc)
+    response = client.patch(
+        f"/api/v1/attendance/{record_id}",
+        json={
+            "check_in_at": check_in.isoformat(),
+            "check_out_at": check_out.isoformat(),
+            "reason": "Intento de salida antes de la entrada",
+        },
+    )
+    assert response.status_code == 422
+    assert "salida" in response.json()["detail"].lower()
+
+
+def test_correccion_reapertura_con_otra_open_409(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    closed_id = _create_complete_record(client, emp)
+    open_entry = client.post("/api/v1/attendance/check-in", json={"employee_id": emp})
+    assert open_entry.status_code == 201
+    response = client.patch(
+        f"/api/v1/attendance/{closed_id}",
+        json={"check_out_at": None, "reason": "Reabrir un registro ya cerrado"},
+    )
+    assert response.status_code == 409
+
+
 def test_correccion_cambia_work_date_si_entrada_cruza_medianoche(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))

@@ -51,8 +51,8 @@ export default function AsistenciaPage() {
     setError(null);
     try {
       const result = info.state.has_open_entry
-        ? await attendanceApi.checkOut(info.employee.id)
-        : await attendanceApi.checkIn(info.employee.id);
+        ? await attendanceApi.checkOut(info.marking_token)
+        : await attendanceApi.checkIn(info.marking_token);
       setRecord(result);
       setStep("done");
     } catch (err) {
@@ -70,18 +70,22 @@ export default function AsistenciaPage() {
     setServerOffset(0);
   }
 
-  const timeLabel = serverNow.toLocaleTimeString("es-PE", {
+  const limaClock: Intl.DateTimeFormatOptions = {
+    timeZone: "America/Lima",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
-  });
-  const dateLabel = serverNow.toLocaleDateString("es-PE", {
+  };
+  const limaDate: Intl.DateTimeFormatOptions = {
+    timeZone: "America/Lima",
     weekday: "long",
     day: "numeric",
     month: "long",
     year: "numeric",
-  });
+  };
+  const timeLabel = serverNow.toLocaleTimeString("es-PE", limaClock);
+  const dateLabel = serverNow.toLocaleDateString("es-PE", limaDate);
   const firstName = info?.employee.first_name ?? "";
   const initials = firstName.charAt(0).toUpperCase() || "?";
 
@@ -94,12 +98,16 @@ export default function AsistenciaPage() {
       <div className="kiosk-card">
         {step === "identify" && (
           <>
-            <div className="kiosk-clock">{timeLabel}</div>
-            <div className="kiosk-date">{dateLabel}</div>
+            <div className="kiosk-clock" suppressHydrationWarning>
+              {timeLabel}
+            </div>
+            <div className="kiosk-date" suppressHydrationWarning>
+              {dateLabel}
+            </div>
 
             <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }}>
               <label className="label" htmlFor="kiosk-id">
-                DNI o código interno
+                DNI, código interno o QR
               </label>
               <input
                 id="kiosk-id"
@@ -107,7 +115,7 @@ export default function AsistenciaPage() {
                 type="text"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="Ej. 71112233 o EMP-002"
+                placeholder="Ej. 71112233, EMP-002 o AR:…"
                 autoFocus
                 autoComplete="off"
                 style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
@@ -128,10 +136,12 @@ export default function AsistenciaPage() {
 
         {step === "employee" && info && (
           <>
-            <div className="kiosk-clock" style={{ fontSize: "1.9rem" }}>
+            <div className="kiosk-clock" style={{ fontSize: "1.9rem" }} suppressHydrationWarning>
               {timeLabel}
             </div>
-            <div className="kiosk-date">{dateLabel}</div>
+            <div className="kiosk-date" suppressHydrationWarning>
+              {dateLabel}
+            </div>
 
             <div className="kiosk-employee">
               <div className="avatar-lg">{initials}</div>
@@ -205,6 +215,7 @@ export default function AsistenciaPage() {
 function formatTime(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString("es-PE", {
+    timeZone: "America/Lima",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,

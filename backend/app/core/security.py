@@ -58,6 +58,30 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
         return None
 
 
+def create_attendance_token(employee_id: str, *, minutes: int = 2) -> str:
+    """Prueba efímera de identificación para una única marcación pública."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": employee_id,
+            "type": "attendance",
+            "nonce": __import__("secrets").token_urlsafe(16),
+            "iat": now,
+            "exp": now + timedelta(minutes=minutes),
+        },
+        settings.secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def decode_attendance_token(token: str) -> str | None:
+    payload = decode_access_token(token)
+    if payload is None or payload.get("type") != "attendance":
+        return None
+    return payload.get("sub")
+
+
 def session_cookie_kwargs() -> dict[str, Any]:
     """Opciones de la cookie de sesión (HttpOnly + SameSite + Secure en prod)."""
     settings = get_settings()

@@ -33,3 +33,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: requiere TEST_DATABASE_URL (PostgreSQL + Alembic)",
+]

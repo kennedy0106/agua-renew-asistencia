@@ -129,6 +129,8 @@ export const employeesApi = {
     apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, { method: "POST" }),
   get: (id: string) => apiFetch<Employee>(`/api/v1/employees/${id}`),
   qrUrl: (id: string) => `${API_URL}/api/v1/employees/${id}/qr`,
+  rotateQr: (id: string) =>
+    apiFetch<Employee>(`/api/v1/employees/${id}/qr/rotate`, { method: "POST" }),
 };
 
 export type WorkSchedule = {
@@ -142,6 +144,7 @@ export type WorkSchedule = {
   saturday_minutes: number;
   sunday_minutes: number;
   break_minutes: number;
+  break_applies_after_minutes: number;
   effective_from: string;
   effective_to: string | null;
   created_at: string;
@@ -158,6 +161,7 @@ export type SchedulePayload = {
   saturday_minutes: number;
   sunday_minutes: number;
   break_minutes: number;
+  break_applies_after_minutes: number;
 };
 
 export const scheduleApi = {
@@ -231,6 +235,7 @@ export type IdentifyResponse = {
   };
   server_time: string;
   server_time_label: string;
+  marking_token: string;
 };
 
 export type AttendanceRecordOut = {
@@ -252,15 +257,15 @@ export const attendanceApi = {
       method: "POST",
       body: JSON.stringify({ identifier }),
     }),
-  checkIn: (employeeId: string) =>
+  checkIn: (markingToken: string) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-in", {
       method: "POST",
-      body: JSON.stringify({ employee_id: employeeId }),
+      body: JSON.stringify({ marking_token: markingToken }),
     }),
-  checkOut: (employeeId: string) =>
+  checkOut: (markingToken: string) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-out", {
       method: "POST",
-      body: JSON.stringify({ employee_id: employeeId }),
+      body: JSON.stringify({ marking_token: markingToken }),
     }),
 };
 
@@ -281,6 +286,20 @@ export type AttendanceListItem = {
   notes: string | null;
 };
 
+export type AttendanceDailyItem = {
+  employee_id: string;
+  employee_name: string | null;
+  work_date: string;
+  session_count: number;
+  gross_minutes: number;
+  break_minutes: number;
+  worked_minutes: number;
+  expected_minutes: number;
+  difference_minutes: number;
+  has_open_entry: boolean;
+  incident_codes: string[];
+};
+
 export type AttendanceSummary = {
   employees_active: number;
   present_today: number;
@@ -293,6 +312,8 @@ export const attendanceAdminApi = {
   list: (
     params: { employee_id?: string; date_from?: string; date_to?: string; status?: string } = {},
   ) => apiFetch<AttendanceListItem[]>(`/api/v1/attendance${toQueryString(params)}`),
+  daily: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) =>
+    apiFetch<AttendanceDailyItem[]>(`/api/v1/attendance/daily${toQueryString(params)}`),
   summary: () => apiFetch<AttendanceSummary>("/api/v1/attendance/summary"),
   correct: (
     recordId: string,
@@ -357,6 +378,7 @@ export type Balance = {
   worked_minutes: number;
   expected_minutes: number;
   adjustment_minutes: number;
+  overtime_minutes: number;
   balance_minutes: number;
 };
 
@@ -416,6 +438,7 @@ export type OvertimeValue = {
     source: string;
     hourly_rate: string;
     value: string;
+    skip_reason?: string | null;
   }[];
 };
 
@@ -464,7 +487,7 @@ export const overtimePolicyApi = {
     }),
 };
 
-// --- Planilla (Fase 11, solo ADMIN/BOSS) ---
+// --- Cálculo interno de pago (solo ADMIN/BOSS) ---
 
 export type PayrollPeriod = {
   id: string;
@@ -472,6 +495,10 @@ export type PayrollPeriod = {
   start_date: string;
   end_date: string;
   status: "OPEN" | "CALCULATED" | "CLOSED";
+  root_period_id: string;
+  version: number;
+  supersedes_period_id: string | null;
+  rectification_reason: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -490,6 +517,7 @@ export type PayrollRecord = {
   adjustment_amount: string;
   base_salary: string;
   manual_adjustment: string;
+  missing_salary_days: number;
   total: string;
   status: "PREVIEW" | "CONFIRMED";
   notes: string | null;
@@ -510,7 +538,7 @@ export const payrollApi = {
     }),
   records: (periodId: string) =>
     apiFetch<PayrollRecord[]>(`/api/v1/payroll/periods/${periodId}/records`),
-  setAdjustment: (recordId: string, amount: string, notes: string | null) =>
+  setAdjustment: (recordId: string, amount: string, notes: string) =>
     apiFetch<PayrollRecord>(`/api/v1/payroll/records/${recordId}/adjustment`, {
       method: "PATCH",
       body: JSON.stringify({ amount, notes }),
@@ -521,6 +549,26 @@ export const payrollApi = {
     }),
   summary: (periodId: string) =>
     apiFetch<PayrollSummary>(`/api/v1/payroll/periods/${periodId}/summary`),
+  readiness: (periodId: string) =>
+    apiFetch<PayrollReadiness>(`/api/v1/payroll/periods/${periodId}/readiness`),
+  rectify: (periodId: string, reason: string) =>
+    apiFetch<PayrollPeriod>(`/api/v1/payroll/periods/${periodId}/rectifications`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+export type PayrollReadinessIssue = {
+  code: string;
+  message: string;
+  employee_id: string | null;
+  attendance_record_id: string | null;
+};
+
+export type PayrollReadiness = {
+  ready: boolean;
+  blockers: PayrollReadinessIssue[];
+  warnings: PayrollReadinessIssue[];
 };
 
 export type PayrollSummary = {

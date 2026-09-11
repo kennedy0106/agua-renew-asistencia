@@ -11,7 +11,7 @@
 import csv
 import io
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
@@ -44,7 +44,7 @@ def _fmt_time(value: datetime | None) -> str:
     if value is None:
         return ""
     if value.tzinfo is None:
-        value = value.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(lima_tz()).strftime("%H:%M")
 
 
@@ -128,6 +128,7 @@ def export_salaries(
             "Ajuste manual (S/)",
             "Notas",
             "Total (S/)",
+            "Versión del cálculo",
         ]
     ]
     for record in records:
@@ -147,6 +148,7 @@ def export_salaries(
                 f"{record.manual_adjustment:.2f}",
                 record.notes or "",
                 f"{record.total:.2f}",
+                period.version,
             ]
         )
     safe_name = "".join(c for c in period.name if c.isalnum() or c in "-_ ").strip().replace(" ", "_")

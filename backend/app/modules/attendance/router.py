@@ -19,6 +19,7 @@ from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
     AttendanceCorrection,
+    AttendanceDailyItem,
     AttendanceListItem,
     AttendanceRecordOut,
     AttendanceSummary,
@@ -28,13 +29,30 @@ from app.modules.attendance.schemas import (
     IdentifyResponse,
 )
 from app.modules.attendance.service import AttendanceService, _MISSING
+from app.core.config import get_settings
+from app.core.security import decode_attendance_token
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 
 can_correct = require_any_role("ADMIN", "BOSS")
 
-# Rate limiting para marcación pública: 30 peticiones / minuto por IP.
-_public_limiter = RateLimiter(limit=30, window_seconds=60)
+# Identificar es compartido por el kiosco; marcar se limita por trabajador.
+_public_limiter = RateLimiter(limit=120, window_seconds=60)
+_marking_limiter = RateLimiter(limit=10, window_seconds=60)
+
+
+def _employee_from_marking_payload(payload: CheckInRequest | CheckOutRequest) -> uuid.UUID:
+    if payload.marking_token:
+        subject = decode_attendance_token(payload.marking_token)
+        if subject:
+            try:
+                return uuid.UUID(subject)
+            except ValueError:
+                pass
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+    if payload.employee_id is not None and get_settings().environment != "production":
+        return payload.employee_id
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Debe identificar al trabajador nuevamente")
 
 
 def _rate_limit_public(request: Request) -> None:
@@ -60,18 +78,22 @@ def identify(
 def check_in(
     payload: CheckInRequest,
     db: Session = Depends(get_db),
-    _: None = Depends(_rate_limit_public),
 ) -> AttendanceRecordOut:
-    return AttendanceService(db).check_in(payload.employee_id)
+    employee_id = _employee_from_marking_payload(payload)
+    if not _marking_limiter.allow(f"mark:{employee_id}"):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
+    return AttendanceService(db).check_in(employee_id)
 
 
 @router.post("/check-out", response_model=AttendanceRecordOut)
 def check_out(
     payload: CheckOutRequest,
     db: Session = Depends(get_db),
-    _: None = Depends(_rate_limit_public),
 ) -> AttendanceRecordOut:
-    return AttendanceService(db).check_out(payload.employee_id)
+    employee_id = _employee_from_marking_payload(payload)
+    if not _marking_limiter.allow(f"mark:{employee_id}"):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
+    return AttendanceService(db).check_out(employee_id)
 
 
 # --- Panel administrativo (Fase 7) ---
@@ -94,6 +116,19 @@ def list_attendance(
 def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> AttendanceSummary:
     today = datetime.now(lima_tz()).date()
     return AttendanceService(db).summary(today)
+
+
+@router.get("/daily", response_model=list[AttendanceDailyItem])
+def daily_attendance(
+    employee_id: uuid.UUID | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    _: object = Depends(get_current_user),
+) -> list[AttendanceDailyItem]:
+    return AttendanceService(db).list_daily(
+        employee_id=employee_id, date_from=date_from, date_to=date_to
+    )
 
 
 @router.patch("/{record_id}", response_model=AttendanceRecordOut)

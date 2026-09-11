@@ -61,6 +61,29 @@ def test_identify_empleado_inactivo_403(client, db_session):
     assert response.status_code == 403
 
 
+def test_identify_por_qr_ar_token(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    token = client.get(f"/api/v1/employees/{emp}").json()["qr_token"]
+    response = client.post("/api/v1/attendance/identify", json={"identifier": f"AR:{token}"})
+    assert response.status_code == 200
+    assert str(response.json()["employee"]["id"]) == emp
+
+
+def test_identify_qr_rotado_deja_de_resolver(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    old_token = client.get(f"/api/v1/employees/{emp}").json()["qr_token"]
+    rotated = client.post(f"/api/v1/employees/{emp}/qr/rotate")
+    assert rotated.status_code == 200
+    new_token = rotated.json()["qr_token"]
+    assert new_token != old_token
+    assert client.post("/api/v1/attendance/identify", json={"identifier": f"AR:{old_token}"}).status_code == 404
+    ok = client.post("/api/v1/attendance/identify", json={"identifier": f"AR:{new_token}"})
+    assert ok.status_code == 200
+    assert str(ok.json()["employee"]["id"]) == emp
+
+
 # --- Check-in ---
 
 def test_check_in_crea_registro_abierto(client, db_session):

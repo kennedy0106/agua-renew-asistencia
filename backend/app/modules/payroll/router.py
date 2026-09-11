@@ -16,8 +16,10 @@ from app.modules.payroll.schemas import (
     ManualAdjustmentRequest,
     PayrollPeriodCreate,
     PayrollPeriodOut,
+    PayrollReadinessOut,
     PayrollRecordOut,
     PayrollSummaryOut,
+    RectificationRequest,
 )
 from app.modules.payroll.service import PayrollService
 from app.modules.users.models import User
@@ -34,6 +36,10 @@ def _period_out(period) -> PayrollPeriodOut:
         start_date=period.start_date,
         end_date=period.end_date,
         status=period.status,
+        root_period_id=period.root_period_id,
+        version=period.version,
+        supersedes_period_id=period.supersedes_period_id,
+        rectification_reason=period.rectification_reason,
         created_at=period.created_at,
         updated_at=period.updated_at,
     )
@@ -58,6 +64,7 @@ def _record_out(record) -> PayrollRecordOut:
         adjustment_amount=record.adjustment_amount,
         base_salary=record.base_salary,
         manual_adjustment=record.manual_adjustment,
+        missing_salary_days=record.missing_salary_days,
         total=record.total,
         status=record.status,
         notes=record.notes,
@@ -110,6 +117,25 @@ def period_summary(
     _: object = Depends(require_salary_access),
 ) -> PayrollSummaryOut:
     return PayrollService(db).summary(period_id)
+
+
+@router.get("/periods/{period_id}/readiness", response_model=PayrollReadinessOut)
+def period_readiness(
+    period_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_salary_access),
+) -> PayrollReadinessOut:
+    return PayrollService(db).readiness(period_id)
+
+
+@router.post("/periods/{period_id}/rectifications", response_model=PayrollPeriodOut, status_code=status.HTTP_201_CREATED)
+def create_rectification(
+    period_id: uuid.UUID,
+    payload: RectificationRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_salary_access),
+) -> PayrollPeriodOut:
+    return _period_out(PayrollService(db).create_rectification(period_id, payload.reason, user.id))
 
 
 @router.patch("/records/{record_id}/adjustment", response_model=PayrollRecordOut)

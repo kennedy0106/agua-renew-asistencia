@@ -2,22 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import { useAdminSession } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import {
   Alert,
   ArrowLeft,
-  Briefcase,
-  Calendar,
   Check,
-  Clock,
   Coins,
   Download,
-  Pencil,
   Plus,
-  Scale,
-  User,
   X,
   Zap,
 } from "@/components/Icons";
@@ -78,6 +73,7 @@ function defaultForm(): SchedulePayload {
     saturday_minutes: 480,
     sunday_minutes: 0,
     break_minutes: 60,
+    break_applies_after_minutes: 360,
   };
 }
 
@@ -161,7 +157,9 @@ export default function EmployeeDetailPage() {
   // QR del empleado: se obtiene vía fetch con credenciales (no <img> cross-origin,
   // que no envía la cookie y devolvía "No autenticado"). Se guarda como object URL.
   const [qrUrl, setQrUrl] = useState<string | null>(null);
+  const [qrNonce, setQrNonce] = useState(0);
   const [downloadingQr, setDownloadingQr] = useState(false);
+  const [rotatingQr, setRotatingQr] = useState(false);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
@@ -172,7 +170,7 @@ export default function EmployeeDetailPage() {
     return { from, to };
   }
 
-  async function loadOvertime() {
+  const loadOvertime = useCallback(async () => {
     if (!canManage) return;
     setError(null);
     try {
@@ -186,7 +184,7 @@ export default function EmployeeDetailPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo consultar horas extra");
     }
-  }
+  }, [canManage, employeeId]);
 
   async function registerOvertime(day: OvertimeDetectItem) {
     setError(null);
@@ -268,7 +266,7 @@ export default function EmployeeDetailPage() {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
       setLoading(false);
     }
-  }, [employeeId, user]);
+  }, [employeeId, loadOvertime, user]);
 
   useEffect(() => {
     if (!ready) return;
@@ -297,7 +295,7 @@ export default function EmployeeDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [employee]);
+  }, [employee, qrNonce]);
 
   async function handleDownloadQr() {
     if (!employee) return;
@@ -328,6 +326,21 @@ export default function EmployeeDetailPage() {
       setError("No se pudo descargar el QR");
     } finally {
       setDownloadingQr(false);
+    }
+  }
+
+  async function handleRotateQr() {
+    if (!employee) return;
+    if (!window.confirm("Esto invalida el QR actual. ¿Rotar el código?")) return;
+    setRotatingQr(true);
+    setError(null);
+    try {
+      await employeesApi.rotateQr(employee.id);
+      setQrNonce((n) => n + 1);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo rotar el QR");
+    } finally {
+      setRotatingQr(false);
     }
   }
 
@@ -450,10 +463,10 @@ export default function EmployeeDetailPage() {
         </p>
       )}
 
-      <a href="/admin/employees" className="link-btn" style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", fontSize: "0.8rem", marginBottom: "1rem" }}>
+      <Link href="/admin/employees" className="btn btn-ghost btn-sm" style={{ marginBottom: "1rem" }}>
         <ArrowLeft size={14} />
         Volver a empleados
-      </a>
+      </Link>
 
       <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.8rem" }}>
@@ -523,6 +536,16 @@ export default function EmployeeDetailPage() {
               <Download size={14} />
               {downloadingQr ? "Descargando…" : "Descargar QR"}
             </button>
+            {canManage && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => void handleRotateQr()}
+                disabled={rotatingQr}
+                style={{ width: "fit-content" }}
+              >
+                {rotatingQr ? "Rotando…" : "Rotar QR"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -596,6 +619,18 @@ export default function EmployeeDetailPage() {
                   onChange={(e) => setForm({ ...form, break_minutes: Number(e.target.value) })}
                 />
               </div>
+              <div>
+                <label className="label">Aplicar refrigerio desde (min)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1440}
+                  step={30}
+                  className="input"
+                  value={form.break_applies_after_minutes}
+                  onChange={(e) => setForm({ ...form, break_applies_after_minutes: Number(e.target.value) })}
+                />
+              </div>
             </div>
             <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
               <Check size={15} />
@@ -616,7 +651,7 @@ export default function EmployeeDetailPage() {
                 ))}
                 <tr>
                   <td style={{ fontWeight: 600 }}>Refrigerio</td>
-                  <td>{schedule.break_minutes} min</td>
+                  <td>{schedule.break_minutes} min desde {schedule.break_applies_after_minutes} min de presencia</td>
                 </tr>
                 <tr>
                   <td style={{ fontWeight: 600 }}>Vigente desde</td>
@@ -823,7 +858,7 @@ export default function EmployeeDetailPage() {
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
           <div>
             <h2 className="card-title">Ajustes de horas y saldo</h2>
-            <p className="card-sub">Saldo = trabajado − esperado + ajustes aprobados. Nada se descuenta solo.</p>
+            <p className="card-sub">Saldo = trabajado − esperado + ajustes (sin horas extra). Las HE aprobadas se muestran aparte.</p>
           </div>
           {canManage && (
             <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm((v) => !v)}>
@@ -853,6 +888,10 @@ export default function EmployeeDetailPage() {
             <div className="stat-card">
               <div className="stat-label">Ajustes aprobados</div>
               <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.adjustment_minutes)}</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Horas extra</div>
+              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.overtime_minutes)}</div>
             </div>
             <div
               className="stat-card"

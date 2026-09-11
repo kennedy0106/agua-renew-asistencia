@@ -68,6 +68,7 @@ class ScheduleService:
         effective_from: date,
         minutes: dict[str, int],
         break_minutes: int = 0,
+        break_applies_after_minutes: int = 360,
         performed_by: uuid.UUID | None = None,
     ) -> WorkSchedule:
         if EmployeeRepository(self.db).get_by_id(employee_id) is None:
@@ -92,6 +93,7 @@ class ScheduleService:
             employee_id=employee_id,
             effective_from=effective_from,
             break_minutes=break_minutes,
+            break_applies_after_minutes=break_applies_after_minutes,
             **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
         )
 
@@ -119,6 +121,7 @@ class ScheduleService:
             "saturday_minutes": schedule.saturday_minutes,
             "sunday_minutes": schedule.sunday_minutes,
             "break_minutes": schedule.break_minutes,
+            "break_applies_after_minutes": schedule.break_applies_after_minutes,
             "effective_from": schedule.effective_from.isoformat(),
             "effective_to": schedule.effective_to.isoformat() if schedule.effective_to else None,
         }

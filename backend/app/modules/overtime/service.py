@@ -29,7 +29,6 @@ from app.modules.overtime_policy.service import OvertimePolicyService
 from app.modules.salary.service import SalaryService
 from app.modules.schedules.service import ScheduleService
 
-_FALLBACK_MONTH_MINUTES = 14400  # 240 h (30 días × 8 h), Perú.
 _CENTS = Decimal("0.01")
 _RATE = Decimal("0.0001")
 _FIRST_TWO_MINUTES = 120  # primeras 2 horas del día
@@ -58,19 +57,22 @@ class OvertimeService:
             employee_id=employee_id, date_from=date_from, date_to=date_to
         )
         schedules = ScheduleService(self.db)
-        detected = []
+        by_day: dict[date, int] = {}
         for record in records:
             if record.status != "COMPLETE" or record.worked_minutes is None:
                 continue
-            expected = schedules.expected_minutes(employee_id, record.work_date)
+            by_day[record.work_date] = by_day.get(record.work_date, 0) + record.worked_minutes
+        detected = []
+        for work_date, worked_minutes in sorted(by_day.items()):
+            expected = schedules.expected_minutes(employee_id, work_date)
             if expected <= 0:
                 continue  # A3: sin jornada configurada → no es sobretiempo
-            extra = record.worked_minutes - expected
+            extra = worked_minutes - expected
             if extra > 0:
                 detected.append(
                     {
-                        "work_date": record.work_date,
-                        "worked_minutes": record.worked_minutes,
+                        "work_date": work_date,
+                        "worked_minutes": worked_minutes,
                         "expected_minutes": expected,
                         "extra_minutes": extra,
                     }
@@ -92,7 +94,7 @@ class OvertimeService:
             return Decimal("0")
         expected = self._expected_month_minutes(employee_id, ref)
         if expected <= 0:
-            expected = _FALLBACK_MONTH_MINUTES
+            return Decimal("0")
         return (salary.monthly_salary * Decimal(60) / Decimal(expected)).quantize(_RATE, rounding=ROUND_HALF_UP)
 
     def value(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict:
@@ -125,11 +127,25 @@ class OvertimeService:
 
         for day, total_minutes in sorted(by_day.items()):
             salary = salaries.get_for_date(employee_id, day)
-            if salary is None or not salary.overtime_enabled:
-                continue  # sin configuración o deshabilitado → no se paga
-
             first_two = min(total_minutes, _FIRST_TWO_MINUTES)
             additional = max(total_minutes - _FIRST_TWO_MINUTES, 0)
+            if salary is None or not salary.overtime_enabled:
+                skip_reason = "MISSING_SALARY" if salary is None else "DISABLED"
+                breakdown.append(
+                    {
+                        "adjustment_date": day,
+                        "minutes": total_minutes,
+                        "first_two_minutes": first_two,
+                        "additional_minutes": additional,
+                        "first_two_hours_rate": Decimal("0.00"),
+                        "additional_hours_rate": Decimal("0.00"),
+                        "source": skip_reason.lower(),
+                        "hourly_rate": Decimal("0"),
+                        "value": Decimal("0.00"),
+                        "skip_reason": skip_reason,
+                    }
+                )
+                continue
 
             rates = policy.get_effective_overtime_rates(employee_id, day)
             hourly = self.hourly_rate(employee_id, day)
@@ -162,6 +178,7 @@ class OvertimeService:
                     "source": rates["source"],
                     "hourly_rate": hourly,
                     "value": item_value,
+                    "skip_reason": None,
                 }
             )
 

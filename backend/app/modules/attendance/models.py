@@ -12,7 +12,7 @@ Reglas:
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Uuid, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -23,6 +23,19 @@ ATTENDANCE_COMPLETE = "COMPLETE"
 
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
+    __table_args__ = (
+        CheckConstraint(
+            "check_out_at IS NULL OR check_out_at >= check_in_at",
+            name="ck_attendance_checkout_after_checkin",
+        ),
+        Index(
+            "uq_attendance_one_open_per_employee",
+            "employee_id",
+            unique=True,
+            postgresql_where=text("check_out_at IS NULL"),
+            sqlite_where=text("check_out_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     employee_id: Mapped[uuid.UUID] = mapped_column(
@@ -40,3 +53,47 @@ class AttendanceRecord(Base):
     )
 
     employee = relationship("Employee")
+
+
+class AttendanceDevice(Base):
+    """Dispositivo autorizado para producir eventos de asistencia."""
+
+    __tablename__ = "attendance_devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    device_code: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    credential_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AttendanceEvent(Base):
+    """Evento inmutable e idempotente; las sesiones son la proyección operativa."""
+
+    __tablename__ = "attendance_events"
+    __table_args__ = (
+        UniqueConstraint("device_id", "external_event_id", name="uq_attendance_event_device_external"),
+        CheckConstraint("event_type IN ('CHECK_IN', 'CHECK_OUT')", name="ck_attendance_event_type"),
+        CheckConstraint("source IN ('WEB', 'BIOMETRIC', 'ADMIN')", name="ck_attendance_event_source"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attendance_devices.id"), nullable=True, index=True)
+    attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_records.id"), nullable=True, index=True
+    )
+    external_event_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="WEB", server_default="WEB")
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    employee = relationship("Employee")
+    device = relationship("AttendanceDevice")
+    attendance_record = relationship("AttendanceRecord")

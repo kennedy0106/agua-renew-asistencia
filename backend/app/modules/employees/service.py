@@ -128,6 +128,7 @@ class EmployeeService:
             # A4: cerrar la vigencia activa de sueldo y jornada al cesar.
             # No se borra historial; solo se cierra effective_to = hoy (Lima).
             today = datetime.now(lima_tz()).date()
+            employee.termination_date = employee.termination_date or today
             salary_repo = SalarySettingRepository(self.db)
             active_salary = salary_repo.get_active(employee_id)
             if active_salary is not None:
@@ -138,9 +139,19 @@ class EmployeeService:
                 schedule_repo.close_active(employee_id, today)
         return self.repo.deactivate(employee)
 
+    def rotate_qr(self, employee_id: uuid.UUID) -> Employee:
+        """Revoca el token QR anterior y emite uno nuevo."""
+        employee = self.get(employee_id)
+        employee.qr_token = secrets.token_urlsafe(32)
+        self.db.add(employee)
+        self.db.commit()
+        self.db.refresh(employee)
+        return employee
+
     def activate(self, employee_id: uuid.UUID) -> Employee:
         employee = self.get(employee_id)
         if not employee.active:
+            employee.termination_date = None
             return self.repo.activate(employee)
         return employee
 

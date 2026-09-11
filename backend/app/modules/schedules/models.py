@@ -28,6 +28,10 @@ class WorkSchedule(Base):
             "AND sunday_minutes >= 0 AND break_minutes >= 0",
             name="ck_work_schedule_minutes_non_negative",
         ),
+        CheckConstraint(
+            "break_applies_after_minutes >= 0 AND break_applies_after_minutes <= 1440",
+            name="ck_work_schedule_break_threshold_range",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -42,6 +46,9 @@ class WorkSchedule(Base):
     saturday_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sunday_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     break_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    break_applies_after_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=360, server_default="360"
+    )
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)  # NULL = vigente
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

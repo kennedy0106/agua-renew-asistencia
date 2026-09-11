@@ -78,6 +78,20 @@ def _set_salary(client, employee_id: str, **overrides):
     payload.update(overrides)
     response = client.post(f"/api/v1/employees/{employee_id}/salary-settings", json=payload)
     assert response.status_code == 201, response.text
+    response = client.post(
+        f"/api/v1/employees/{employee_id}/schedule",
+        json={
+            "effective_from": "2026-08-01",
+            "monday_minutes": 480,
+            "tuesday_minutes": 480,
+            "wednesday_minutes": 480,
+            "thursday_minutes": 480,
+            "friday_minutes": 480,
+            "break_minutes": 60,
+            "break_applies_after_minutes": 360,
+        },
+    )
+    assert response.status_code == 201, response.text
 
 
 def _set_policy(client, first: str = "25.00", additional: str = "35.00", effective_from: str = "2026-08-01"):
@@ -145,12 +159,12 @@ def test_valor_primer_tramo_usa_25(client, db_session):
 
     result = client.get(f"/api/v1/employees/{emp}/overtime/value?date_from=2026-08-01&date_to=2026-08-31").json()
     assert result["overtime_minutes"] == 60
-    # Sin jornada → fallback 240 h → tarifa 1500/240 = 6.25 S/h.
-    assert result["breakdown"][0]["hourly_rate"] == "6.2500"
+    # Agosto 2026 tiene 21 días L-V: 168 horas esperadas.
+    assert result["breakdown"][0]["hourly_rate"] == "8.9286"
     assert result["breakdown"][0]["first_two_minutes"] == 60
     assert result["breakdown"][0]["additional_minutes"] == 0
     # 60 min × (6.25/60 × 1.25) = 7.8125 → 7.81
-    assert result["value"] == "7.81"
+    assert result["value"] == "11.16"
 
 
 def test_valor_tercer_tramo_usa_35(client, db_session):
@@ -171,7 +185,7 @@ def test_valor_tercer_tramo_usa_35(client, db_session):
     # primer tramo: 120 × 0.1041667 × 1.25 = 15.625 → 15.63
     # adicional:    60 × 0.1041667 × 1.35 = 8.4375  → 8.44
     # total = 24.07
-    assert result["value"] == "24.07"
+    assert result["value"] == "34.37"
 
 
 def test_contador_se_reinicia_por_dia(client, db_session):
@@ -189,7 +203,7 @@ def test_contador_se_reinicia_por_dia(client, db_session):
         assert b["first_two_minutes"] == 90
         assert b["additional_minutes"] == 0
     # cada día: 90 × 0.1041667 × 1.25 = 11.71875 → 11.72; total 23.44
-    assert result["value"] == "23.44"
+    assert result["value"] == "33.48"
 
 
 def test_valor_con_override_empleado(client, db_session):
@@ -211,7 +225,7 @@ def test_valor_con_override_empleado(client, db_session):
     assert b["source"] == "employee_override"
     assert b["first_two_hours_rate"] == "50.00"
     # 60 × (6.25/60 × 1.50) = 9.375 → 9.38
-    assert result["value"] == "9.38"
+    assert result["value"] == "13.39"
 
 
 def test_valor_sin_politica_usa_minimos_legales(client, db_session):
@@ -237,6 +251,9 @@ def test_valor_con_horas_extra_deshabilitadas_es_cero(client, db_session):
 
     result = client.get(f"/api/v1/employees/{emp}/overtime/value?date_from=2026-08-01&date_to=2026-08-31").json()
     assert result["value"] == "0.00"
+    assert result["overtime_minutes"] == 60
+    assert result["breakdown"][0]["minutes"] == 60
+    assert result["breakdown"][0]["skip_reason"] == "DISABLED"
 
 
 def test_valor_excluye_pendientes(client, db_session):

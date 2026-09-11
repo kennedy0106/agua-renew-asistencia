@@ -101,6 +101,7 @@ export default function DateField({
     <div ref={rootRef} className="datefield" style={{ position: "relative" }}>
       <button
         type="button"
+        data-required={required || undefined}
         className="datefield-trigger"
         onClick={() => setOpen((o) => !o)}
         aria-label={ariaLabel ?? placeholder}

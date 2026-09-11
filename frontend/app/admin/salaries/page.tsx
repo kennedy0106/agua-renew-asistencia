@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
-import { Alert, ChevronRight, Coins, Download } from "@/components/Icons";
+import { Alert, Coins, Download, Receipt, Refresh } from "@/components/Icons";
 import { StatSkeleton, TableSkeleton } from "@/components/Loading";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
@@ -38,6 +39,7 @@ export default function AdminSalariesPage() {
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -48,16 +50,14 @@ export default function AdminSalariesPage() {
       if (!canView) return;
       const list = await payrollApi.periods();
       setPeriods(list);
-      if (list.length > 0 && !selectedId) {
-        setSelectedId(list[0].id);
-      }
+      setSelectedId((current) => current || list[0]?.id || "");
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [canView, selectedId]);
+  }, [canView]);
 
   useEffect(() => {
     load();
@@ -66,6 +66,7 @@ export default function AdminSalariesPage() {
   useEffect(() => {
     if (!selectedId || !canView) return;
     let active = true;
+    setDetailsLoading(true);
     Promise.all([payrollApi.summary(selectedId), payrollApi.records(selectedId)])
       .then(([sum, recs]) => {
         if (!active) return;
@@ -77,6 +78,9 @@ export default function AdminSalariesPage() {
         if (active && err instanceof ApiError) {
           setError(err.message);
         }
+      })
+      .finally(() => {
+        if (active) setDetailsLoading(false);
       });
     return () => {
       active = false;
@@ -96,12 +100,11 @@ export default function AdminSalariesPage() {
       )}
 
       <div className="toolbar">
-        <Select value={selectedId} onValueChange={(v) => setSelectedId(v)}>
-          <SelectTrigger aria-label="Periodo" style={{ maxWidth: 260 }}>
+        <Select value={selectedId} onValueChange={(v) => setSelectedId(v)} disabled={loading || periods.length === 0}>
+          <SelectTrigger aria-label="Periodo de pago" style={{ maxWidth: 280 }}>
             <SelectValue placeholder={periods.length === 0 ? "Sin periodos" : "Seleccionar periodo"} />
           </SelectTrigger>
           <SelectContent>
-            {periods.length === 0 && <SelectItem value="">Sin periodos</SelectItem>}
             {periods.map((period) => (
               <SelectItem key={period.id} value={period.id}>
                 {period.name} ({period.status})
@@ -122,18 +125,20 @@ export default function AdminSalariesPage() {
       </div>
 
       {error && (
-        <p className="alert alert-error" role="alert">
-          <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
-          {error}
-        </p>
+        <div className="alert alert-error alert-with-action" role="alert">
+          <span className="alert-copy"><Alert size={15} /> {error}</span>
+          <button className="btn btn-outline btn-sm" type="button" onClick={load}>
+            <Refresh size={14} /> Reintentar
+          </button>
+        </div>
       )}
 
-      {loading ? (
+      {loading || detailsLoading ? (
         <StatSkeleton count={5} />
       ) : (
         summary && (
           <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
-            <Stat label="Total planilla" value={formatMoney(summary.total)} />
+            <Stat label="Monto estimado a pagar" value={formatMoney(summary.total)} />
             <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
             <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
             <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
@@ -142,7 +147,18 @@ export default function AdminSalariesPage() {
         )
       )}
 
-      <div className="table-wrap">
+      {!loading && periods.length === 0 ? (
+        <div className="empty-state card card-pad">
+          <Receipt size={28} />
+          <div>
+            <h3>Aún no hay periodos de pago</h3>
+            <p>Primero crea y calcula un periodo para consultar los montos.</p>
+          </div>
+          <Link href="/admin/payroll" className="btn btn-primary btn-sm">
+            Ir a cálculo de pago
+          </Link>
+        </div>
+      ) : <div className="table-wrap" aria-busy={detailsLoading}>
         <table className="table">
           <thead>
             <tr>
@@ -155,8 +171,8 @@ export default function AdminSalariesPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && <TableSkeleton rows={5} cols={6} />}
-            {!loading && records.length === 0 && (
+            {(loading || detailsLoading) && <TableSkeleton rows={5} cols={6} />}
+            {!loading && !detailsLoading && records.length === 0 && (
               <tr>
                 <td colSpan={6} className="empty">
                   <Coins size={26} />
@@ -174,7 +190,7 @@ export default function AdminSalariesPage() {
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
     </AdminShell>
   );
 }
@@ -227,15 +243,15 @@ function FragmentRow({
         </td>
         <td style={{ textAlign: "right" }}>
           <div style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center" }}>
-            <a
-              className="link-btn"
+            <Link
+              className="btn btn-ghost btn-sm"
               href={`/admin/employees/${record.employee_id}`}
               style={{ fontSize: "0.78rem" }}
               title="Editar sueldo y jornada"
             >
               Editar
-            </a>
-            <button className="link-btn" onClick={onToggle} style={{ fontSize: "0.78rem" }}>
+            </Link>
+            <button className="btn btn-outline btn-sm" onClick={onToggle}>
               {expanded ? "Ocultar" : "Ver detalle"}
             </button>
           </div>

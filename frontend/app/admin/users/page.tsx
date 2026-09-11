@@ -207,12 +207,12 @@ export default function AdminUsersPage() {
             </div>
             <div>
               <label className="label">Empleado (opcional)</label>
-              <Select value={form.employee_id} onValueChange={(v) => setForm({ ...form, employee_id: v })}>
+              <Select value={form.employee_id || "__none"} onValueChange={(v) => setForm({ ...form, employee_id: v === "__none" ? "" : v })}>
                 <SelectTrigger aria-label="Empleado">
                   <SelectValue placeholder="— Sin vincular —" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">— Sin vincular —</SelectItem>
+                  <SelectItem value="__none">— Sin vincular —</SelectItem>
                   {employees.map((emp) => (
                     <SelectItem key={emp.id} value={emp.id}>
                       {emp.first_name} {emp.last_name} ({emp.dni})
@@ -283,12 +283,12 @@ export default function AdminUsersPage() {
                 </td>
                 <td>
                   {isAdmin ? (
-                    <Select value={item.employee_id ?? ""} onValueChange={(v) => handleEmployeeLink(item, v)}>
+                    <Select value={item.employee_id ?? "__none"} onValueChange={(v) => handleEmployeeLink(item, v === "__none" ? "" : v)}>
                       <SelectTrigger aria-label="Empleado" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
                         <SelectValue placeholder="— Sin vincular —" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">— Sin vincular —</SelectItem>
+                        <SelectItem value="__none">— Sin vincular —</SelectItem>
                         {employees.map((emp) => (
                           <SelectItem key={emp.id} value={emp.id}>
                             {emp.first_name} {emp.last_name}
@@ -310,6 +310,7 @@ export default function AdminUsersPage() {
                 <td className="num" style={{ color: "var(--muted)" }}>
                   {item.last_login_at
                     ? new Date(item.last_login_at).toLocaleString("es-PE", {
+                        timeZone: "America/Lima",
                         day: "2-digit",
                         month: "2-digit",
                         hour: "2-digit",

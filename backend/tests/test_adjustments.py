@@ -221,7 +221,29 @@ def test_balance_incluye_solo_ajustes_aprobados(client, db_session):
     assert balance["adjustment_minutes"] == 120
     # Sin asistencia ni jornada en el rango → saldo = 0 - 0 + 120.
     assert balance["balance_minutes"] == 120
+    assert balance["overtime_minutes"] == 0
     assert pending["status"] == "PENDING"
+
+
+def test_balance_no_duplica_overtime(client, db_session):
+    """REG-09/F07: OVERTIME aprobado no entra en adjustment_minutes ni en el saldo."""
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    overtime = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json=_adjustment_payload(minutes=60, adjustment_type="OVERTIME", reason="HE del sábado"),
+    ).json()
+    recuperacion = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json=_adjustment_payload(adjustment_date="2026-08-24", minutes=30, reason="Recuperación"),
+    ).json()
+    client.patch(f"/api/v1/adjustments/{overtime['id']}/approve")
+    client.patch(f"/api/v1/adjustments/{recuperacion['id']}/approve")
+
+    balance = client.get(f"/api/v1/employees/{emp}/balance?date_from=2026-08-01&date_to=2026-08-31").json()
+    assert balance["overtime_minutes"] == 60
+    assert balance["adjustment_minutes"] == 30
+    assert balance["balance_minutes"] == 30
 
 
 def test_balance_rango_invalido_422(client, db_session):

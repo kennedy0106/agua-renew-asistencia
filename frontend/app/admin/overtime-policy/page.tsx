@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
-import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Check, Plus, X } from "@/components/Icons";
 import { ApiError, OvertimePolicy, overtimePolicyApi } from "@/lib/api";
@@ -15,7 +14,6 @@ function dayAfter(isoDate: string): string {
 }
 
 export default function OvertimePolicyPage() {
-  const user = useAdminUser();
   const [active, setActive] = useState<OvertimePolicy | null>(null);
   const [history, setHistory] = useState<OvertimePolicy[]>([]);
   const [loading, setLoading] = useState(true);

@@ -18,6 +18,7 @@ class WorkScheduleCreate(BaseModel):
     saturday_minutes: int = Field(default=0, ge=0, le=_MAX_DAY)
     sunday_minutes: int = Field(default=0, ge=0, le=_MAX_DAY)
     break_minutes: int = Field(default=0, ge=0, le=_MAX_DAY)
+    break_applies_after_minutes: int = Field(default=360, ge=0, le=_MAX_DAY)
 
 
 class WorkScheduleOut(BaseModel):
@@ -33,6 +34,7 @@ class WorkScheduleOut(BaseModel):
     saturday_minutes: int
     sunday_minutes: int
     break_minutes: int
+    break_applies_after_minutes: int
     effective_from: date
     effective_to: date | None
     created_at: datetime

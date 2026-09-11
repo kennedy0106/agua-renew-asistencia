@@ -12,14 +12,16 @@ import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import lima_tz
-from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.models import AttendanceEvent, AttendanceRecord
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.repository import WorkScheduleRepository
+from app.core.security import create_attendance_token
 from app.modules.schedules.service import ScheduleService
 
 _MISSING = object()  # sentinela: distingue "no enviado" de "enviado como null"
@@ -57,17 +59,23 @@ class AttendanceService:
         return employee
 
     def identify(self, identifier: str) -> dict:
-        """Resuelve al trabajador por DNI o código y devuelve su estado actual.
-
-        Mensaje genérico si no existe: no se revela información adicional.
-        """
+        """Resuelve al trabajador por DNI, código interno o QR (AR:<token>)."""
         identifier = identifier.strip()
         employees = EmployeeRepository(self.db)
-        employee = employees.get_by_dni(identifier) or employees.get_by_employee_code(identifier)
+        employee = None
+        if identifier.upper().startswith("AR:"):
+            token = identifier[3:].strip()
+            employee = employees.get_by_qr_token(token)
+        else:
+            employee = (
+                employees.get_by_dni(identifier)
+                or employees.get_by_employee_code(identifier)
+                or employees.get_by_qr_token(identifier)
+            )
         if employee is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Trabajador no encontrado. Verifique su DNI o código.",
+                detail="Trabajador no encontrado. Verifique su DNI, código o QR.",
             )
         if not employee.active:
             raise HTTPException(
@@ -105,6 +113,7 @@ class AttendanceService:
             },
             "server_time": now_lima.isoformat(),
             "server_time_label": now_lima.strftime("%H:%M"),
+            "marking_token": create_attendance_token(str(employee.id)),
         }
 
     def check_in(self, employee_id: uuid.UUID) -> AttendanceRecord:
@@ -118,7 +127,25 @@ class AttendanceService:
 
         now = datetime.now(timezone.utc)
         work_date = now.astimezone(lima_tz()).date()
-        return self.repo.create(employee_id=employee_id, work_date=work_date, check_in_at=now)
+        try:
+            record = AttendanceRecord(
+                employee_id=employee_id,
+                work_date=work_date,
+                check_in_at=now,
+                status="OPEN",
+            )
+            self.db.add(record)
+            self.db.flush()
+            self._record_event(record, "CHECK_IN", now)
+            self.db.commit()
+            self.db.refresh(record)
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya tiene una entrada abierta; marque su salida primero",
+            ) from exc
+        return record
 
     def check_out(self, employee_id: uuid.UUID) -> AttendanceRecord:
         self._get_active_employee(employee_id)
@@ -131,10 +158,67 @@ class AttendanceService:
             )
 
         now = datetime.now(timezone.utc)
-        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, record.work_date)
-        break_minutes = schedule.break_minutes if schedule else 0
-        worked = compute_worked_minutes(record.check_in_at, now, break_minutes)
-        return self.repo.check_out(record, check_out_at=now, worked_minutes=worked)
+        record.check_out_at = now
+        record.worked_minutes = compute_worked_minutes(record.check_in_at, now, 0)
+        record.status = "COMPLETE"
+        self.db.add(record)
+        self.db.flush()
+        self._recompute_day(employee_id, record.work_date, commit=False)
+        self._record_event(record, "CHECK_OUT", now)
+        self.db.commit()
+        self.db.refresh(record)
+        return record
+
+    def _record_event(self, record: AttendanceRecord, event_type: str, captured_at: datetime) -> None:
+        self.db.add(
+            AttendanceEvent(
+                employee_id=record.employee_id,
+                attendance_record_id=record.id,
+                external_event_id=str(uuid.uuid4()),
+                event_type=event_type,
+                source="WEB",
+                captured_at=captured_at,
+            )
+        )
+
+    def _recompute_day(self, employee_id: uuid.UUID, work_date: date, *, commit: bool = True) -> int:
+        """Distribuye el total diario sin solapes y descuenta un solo refrigerio."""
+        records = [
+            record
+            for record in self.repo.list_records(
+                employee_id=employee_id, date_from=work_date, date_to=work_date, status="COMPLETE"
+            )
+            if record.check_out_at is not None
+        ]
+        records.sort(key=lambda item: _as_utc(item.check_in_at))
+        cursor: datetime | None = None
+        contributions: list[int] = []
+        for record in records:
+            start = _as_utc(record.check_in_at)
+            end = _as_utc(record.check_out_at)
+            effective_start = max(start, cursor) if cursor is not None else start
+            contribution = max(0, int((end - effective_start).total_seconds() // 60))
+            contributions.append(contribution)
+            cursor = max(cursor, end) if cursor is not None else end
+
+        gross = sum(contributions)
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        break_to_apply = 0
+        if schedule and gross >= schedule.break_applies_after_minutes:
+            break_to_apply = min(schedule.break_minutes, gross)
+        remaining_break = break_to_apply
+        for index in range(len(contributions) - 1, -1, -1):
+            deducted = min(contributions[index], remaining_break)
+            contributions[index] -= deducted
+            remaining_break -= deducted
+        for record, minutes in zip(records, contributions, strict=True):
+            record.worked_minutes = minutes
+            self.db.add(record)
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        return gross - break_to_apply
 
     # --- Panel administrativo (Fase 7) ---
 
@@ -192,6 +276,60 @@ class AttendanceService:
             "checked_out_today": self.repo.count_complete_on(today),
         }
 
+    def list_daily(
+        self,
+        *,
+        employee_id: uuid.UUID | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> list[dict]:
+        records = self.repo.list_records(employee_id=employee_id, date_from=date_from, date_to=date_to)
+        groups: dict[tuple[uuid.UUID, date], list[AttendanceRecord]] = {}
+        for record in records:
+            groups.setdefault((record.employee_id, record.work_date), []).append(record)
+        schedules = ScheduleService(self.db)
+        result: list[dict] = []
+        for (group_employee_id, work_date), sessions in groups.items():
+            complete = sorted(
+                [item for item in sessions if item.check_out_at is not None],
+                key=lambda item: _as_utc(item.check_in_at),
+            )
+            gross = 0
+            cursor: datetime | None = None
+            incidents: set[str] = set()
+            for item in complete:
+                start = _as_utc(item.check_in_at)
+                end = _as_utc(item.check_out_at)
+                if (end - start).total_seconds() > 16 * 3600:
+                    incidents.add("LONG_ATTENDANCE")
+                if cursor is not None and start < cursor:
+                    incidents.add("OVERLAPPING_SESSIONS")
+                effective_start = max(start, cursor) if cursor is not None else start
+                gross += max(0, int((end - effective_start).total_seconds() // 60))
+                cursor = max(cursor, end) if cursor is not None else end
+            has_open = any(item.check_out_at is None for item in sessions)
+            if has_open:
+                incidents.add("OPEN_ATTENDANCE")
+            worked = sum(item.worked_minutes or 0 for item in complete)
+            expected = schedules.expected_minutes(group_employee_id, work_date)
+            employee = sessions[0].employee
+            result.append(
+                {
+                    "employee_id": group_employee_id,
+                    "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None,
+                    "work_date": work_date,
+                    "session_count": len(sessions),
+                    "gross_minutes": gross,
+                    "break_minutes": max(0, gross - worked),
+                    "worked_minutes": worked,
+                    "expected_minutes": expected,
+                    "difference_minutes": worked - expected,
+                    "has_open_entry": has_open,
+                    "incident_codes": sorted(incidents),
+                }
+            )
+        return sorted(result, key=lambda item: (item["work_date"], str(item["employee_id"])), reverse=True)
+
     # --- Correcciones y auditoría (Fase 8) ---
 
     @staticmethod
@@ -221,6 +359,13 @@ class AttendanceService:
         work_date (de check_in en Lima), worked_minutes (duración −
         refrigerio) y status (OPEN/COMPLETE según haya salida).
         """
+        if not reason or not reason.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="El motivo de la corrección es obligatorio",
+            )
+        reason = reason.strip()
+
         record = self.repo.get_by_id(record_id)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
@@ -228,6 +373,11 @@ class AttendanceService:
         old_values = self._serialize(record)
 
         if check_in_at is not _MISSING:
+            if check_in_at is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="La entrada es obligatoria",
+                )
             record.check_in_at = _as_utc(check_in_at)
             record.work_date = record.check_in_at.astimezone(lima_tz()).date()
         if check_out_at is not _MISSING:
@@ -235,14 +385,23 @@ class AttendanceService:
         if notes is not _MISSING:
             record.notes = notes or None
 
-        # Recalcular derivados.
+        if record.check_out_at is not None and _as_utc(record.check_out_at) < _as_utc(record.check_in_at):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La salida no puede ser anterior a la entrada",
+            )
+
         if record.check_out_at is None:
+            open_other = self.repo.get_open(record.employee_id)
+            if open_other is not None and open_other.id != record.id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya existe otra entrada abierta para este empleado",
+                )
             record.status = "OPEN"
             record.worked_minutes = None
         else:
-            schedule = WorkScheduleRepository(self.db).get_for_date(record.employee_id, record.work_date)
-            break_minutes = schedule.break_minutes if schedule else 0
-            record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, break_minutes)
+            record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, 0)
             record.status = "COMPLETE"
 
         new_values = self._serialize(record)
@@ -252,6 +411,9 @@ class AttendanceService:
             )
 
         saved = self.repo.save(record)
+        if saved.status == "COMPLETE":
+            self._recompute_day(saved.employee_id, saved.work_date)
+            self.db.refresh(saved)
         AuditRepository(self.db).create(
             entity_type="attendance",
             entity_id=record_id,

@@ -26,6 +26,7 @@ def _reset_rate_limiters():
     import app.modules.attendance.router as attendance_router
 
     attendance_router._public_limiter.reset()
+    attendance_router._marking_limiter.reset()
     yield
 
 

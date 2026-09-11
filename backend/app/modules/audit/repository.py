@@ -22,6 +22,7 @@ class AuditRepository:
         new_values: dict | None,
         reason: str,
         performed_by: uuid.UUID | None,
+        commit: bool = True,
     ) -> AuditLog:
         log = AuditLog(
             entity_type=entity_type,
@@ -33,8 +34,11 @@ class AuditRepository:
             performed_by=performed_by,
         )
         self.db.add(log)
-        self.db.commit()
-        self.db.refresh(log)
+        if commit:
+            self.db.commit()
+            self.db.refresh(log)
+        else:
+            self.db.flush()
         return log
 
     def list_logs(

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Agua ReNew — Sistema de Asistencia",
-  description: "MVP de asistencia y cálculo interno de remuneraciones de Agua ReNew",
+  description: "Asistencia, tiempo trabajado y cálculo interno de pago de Agua ReNew",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

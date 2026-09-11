@@ -29,6 +29,18 @@ agua-renew-erp/
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
 
+## Estado — Fase 20 (endurecimiento de tiempo y cálculo de pago) ✅
+
+- [x] Refrigerio diario único con umbral configurable (360 min por defecto) y consolidación de sesiones sin solapes
+- [x] Restricción de una entrada abierta por empleado + token efímero obligatorio en producción
+- [x] Base para biometría/offline: dispositivos, credencial, eventos inmutables e idempotencia por dispositivo
+- [x] Periodos mensuales, empleados históricos y sueldo base prorrateado por altas, ceses y cambios de sueldo
+- [x] Recálculo transaccional que conserva ajustes manuales y elimina el fallback salarial de 240 h
+- [x] Validación previa al cierre, bloqueos por datos pendientes y rectificaciones versionadas
+- [x] Nueva vista API diaria con presencia bruta, refrigerio, minutos netos e incidencias
+- [x] Migración Alembic `6f4b9c2d1a70` preparada para probar en rama de Neon antes de producción
+- [x] **215 tests en verde; frontend compila y lint termina sin errores**
+
 ## Estado — Fase 19 (QR único por empleado) ✅
 
 - [x] `employees.qr_token`: token aleatorio server-side (`secrets.token_urlsafe(32)`), UNIQUE + indexado; generado automáticamente al crear el empleado

@@ -8,6 +8,7 @@ import { ApiError, auditApi, AuditLog } from "@/lib/api";
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("es-PE", {
+    timeZone: "America/Lima",
     day: "2-digit",
     month: "2-digit",
     year: "numeric",

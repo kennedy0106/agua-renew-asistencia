@@ -24,6 +24,7 @@ class OvertimeValueItem(BaseModel):
     source: str
     hourly_rate: Decimal
     value: Decimal
+    skip_reason: str | None = None
 
 
 class OvertimeValueOut(BaseModel):

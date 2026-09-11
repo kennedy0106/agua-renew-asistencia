@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
-import { Alert, Briefcase, Pencil, Plus, X } from "@/components/Icons";
+import { Alert, Briefcase, Pencil, Plus } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 

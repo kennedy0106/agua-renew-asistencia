@@ -25,6 +25,13 @@ class EmployeeRepository:
     def get_by_employee_code(self, code: str) -> Employee | None:
         return self.db.scalar(select(Employee).where(Employee.employee_code == code))
 
+    def get_by_qr_token(self, qr_token: str) -> Employee | None:
+        return self.db.scalar(
+            select(Employee)
+            .options(joinedload(Employee.job_role))
+            .where(Employee.qr_token == qr_token)
+        )
+
     def list_all(
         self,
         *,

@@ -35,6 +35,20 @@ def _set_salary(client, employee_id: str, **overrides):
     payload.update(overrides)
     response = client.post(f"/api/v1/employees/{employee_id}/salary-settings", json=payload)
     assert response.status_code == 201, response.text
+    response = client.post(
+        f"/api/v1/employees/{employee_id}/schedule",
+        json={
+            "effective_from": "2026-08-01",
+            "monday_minutes": 480,
+            "tuesday_minutes": 480,
+            "wednesday_minutes": 480,
+            "thursday_minutes": 480,
+            "friday_minutes": 480,
+            "break_minutes": 60,
+            "break_applies_after_minutes": 360,
+        },
+    )
+    assert response.status_code == 201, response.text
 
 
 def _add_approved_overtime(client, employee_id: str, minutes: int = 60) -> str:
@@ -119,8 +133,8 @@ def test_calcular_incluye_horas_extra(client, db_session):
     records = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
     record = records[0]
     assert record["overtime_minutes"] == 60
-    assert record["overtime_amount"] == "7.81"  # tarifa fallback 6.25 × 25% × 1 h
-    assert record["total"] == "1507.81"
+    assert record["overtime_amount"] == "11.16"
+    assert record["total"] == "1511.16"
 
 
 def test_calcular_excluye_empleado_sin_sueldo(client, db_session):
@@ -144,8 +158,79 @@ def test_recalcular_reemplaza_preview(client, db_session):
     _add_approved_overtime(client, emp, minutes=60)
     second = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
     assert len(second) == 1
-    assert second[0]["overtime_amount"] == "7.81"
-    assert second[0]["total"] == "1507.81"
+    assert second[0]["overtime_amount"] == "11.16"
+    assert second[0]["total"] == "1511.16"
+
+
+def test_recalcular_conserva_ajuste_manual(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "50.00", "notes": "Movilidad aprobada"},
+    )
+
+    recalculated = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    assert recalculated["id"] == record["id"]
+    assert recalculated["manual_adjustment"] == "50.00"
+    assert recalculated["notes"] == "Movilidad aprobada"
+    assert recalculated["total"] == "1550.00"
+
+
+def test_prorratea_alta_y_cambios_de_sueldo(client, db_session):
+    _login(client, "admin", "Admin123!")
+    response = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": "72845632",
+            "employee_code": "EMP-001",
+            "first_name": "Juan",
+            "last_name": "Pérez",
+            "job_role_id": str(db_session._test_job_roles["Operario"]),
+            "hire_date": "2026-08-16",
+        },
+    )
+    emp = response.json()["id"]
+    _set_salary(client, emp, monthly_salary="1550.00")
+    client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": "2026-08-24", "monthly_salary": "3100.00", "overtime_enabled": False},
+    )
+    period = _create_period(client)
+
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    # 8 días a 1550/31 + 8 días a 3100/31, alta inclusiva del 16 al 31.
+    assert record["base_salary"] == "1200.00"
+
+
+def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    pending = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={"adjustment_date": "2026-08-25", "minutes": 30, "adjustment_type": "OTRO", "reason": "Revisión pendiente"},
+    ).json()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+
+    readiness = client.get(f"/api/v1/payroll/periods/{period['id']}/readiness").json()
+    assert readiness["ready"] is False
+    assert any(issue["code"] == "PENDING_ADJUSTMENT" for issue in readiness["blockers"])
+    assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
+
+    client.patch(f"/api/v1/adjustments/{pending['id']}/reject", json={"reason": "No corresponde"})
+    assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 200
+    rectified = client.post(
+        f"/api/v1/payroll/periods/{period['id']}/rectifications",
+        json={"reason": "Corrección posterior de asistencia"},
+    )
+    assert rectified.status_code == 201
+    assert rectified.json()["version"] == 2
+    assert rectified.json()["supersedes_period_id"] == period["id"]
 
 
 # --- Ajuste manual ---
@@ -280,9 +365,9 @@ def test_summary_totales_del_periodo(client, db_session):
     summary = client.get(f"/api/v1/payroll/periods/{period['id']}/summary").json()
     assert summary["employee_count"] == 2
     assert summary["total_base"] == "2600.00"  # 1500 + 1100
-    assert summary["total_overtime"] == "10.67"  # 7.81 + 2.86
+    assert summary["total_overtime"] == "15.25"
     assert summary["total_manual"] == "50.00"
-    assert summary["total"] == "2660.67"  # 2600 + 10.67 + 50
+    assert summary["total"] == "2665.25"
 
 
 def test_summary_supervisor_forbidden(client, db_session):
@@ -295,3 +380,54 @@ def test_summary_supervisor_forbidden(client, db_session):
 def test_summary_periodo_inexistente_404(client):
     _login(client, "admin", "Admin123!")
     assert client.get(f"/api/v1/payroll/periods/{uuid.uuid4()}/summary").status_code == 404
+
+
+def test_esperado_acotado_a_alta(client, db_session):
+    _login(client, "admin", "Admin123!")
+    role = str(db_session._test_job_roles["Operario"])
+    full = _create_employee(client, role, dni="11111111", code="EMP-FULL")
+    late = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": "22222222",
+            "employee_code": "EMP-LATE",
+            "first_name": "Ana",
+            "last_name": "López",
+            "job_role_id": role,
+            "hire_date": "2026-08-31",
+        },
+    ).json()["id"]
+    _set_salary(client, full)
+    _set_salary(client, late)
+    period = _create_period(client)
+    records = {r["employee_id"]: r for r in client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()}
+    assert records[late]["expected_minutes"] == 480
+    assert records[full]["expected_minutes"] > records[late]["expected_minutes"]
+
+
+def test_snapshot_registra_dias_sin_sueldo(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp, effective_from="2026-08-16")
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    assert record["missing_salary_days"] == 15
+    readiness = client.get(f"/api/v1/payroll/periods/{period['id']}/readiness").json()
+    assert any(issue["code"] == "MISSING_SALARY" for issue in readiness["blockers"])
+
+
+def test_recalcular_conserva_bono_de_empleado_inelegible(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "50.00", "notes": "Bono que no debe perderse"},
+    )
+    patched = client.patch(f"/api/v1/employees/{emp}", json={"termination_date": "2026-07-31"})
+    assert patched.status_code == 200
+    recalculated = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()
+    leftover = next(r for r in recalculated if r["employee_id"] == emp)
+    assert leftover["manual_adjustment"] == "50.00"

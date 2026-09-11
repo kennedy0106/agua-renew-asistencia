@@ -1,16 +1,18 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
-import { TableSkeleton } from "@/components/Loading";
+import { Spinner, TableSkeleton } from "@/components/Loading";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
   ApiError,
   attendanceAdminApi,
+  AttendanceDailyItem,
   AttendanceListItem,
   employeesApi,
   Employee,
@@ -20,7 +22,7 @@ const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
 function formatClock(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("es-PE", { timeZone: "America/Lima", hour: "2-digit", minute: "2-digit" });
 }
 
 function formatMinutes(minutes: number | null): string {
@@ -52,8 +54,10 @@ function fromLocalInput(local: string): string | null {
 export default function AdminAttendancePage() {
   const user = useAdminUser();
   const [records, setRecords] = useState<AttendanceListItem[]>([]);
+  const [daily, setDaily] = useState<AttendanceDailyItem[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [employeeFilter, setEmployeeFilter] = useState("");
@@ -70,24 +74,34 @@ export default function AdminAttendancePage() {
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
+  useEffect(() => {
+    employeesApi.list().then(setEmployees).catch(() => undefined);
+  }, []);
+
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const [list, emps] = await Promise.all([
+      const [list, dailyList] = await Promise.all([
         attendanceAdminApi.list({
           employee_id: employeeFilter || undefined,
           date_from: dateFrom || undefined,
           date_to: dateTo || undefined,
           status: statusFilter || undefined,
         }),
-        employeesApi.list(),
+        attendanceAdminApi.daily({
+          employee_id: employeeFilter || undefined,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        }),
       ]);
       setRecords(list);
-      setEmployees(emps);
+      setDaily(dailyList);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [employeeFilter, dateFrom, dateTo, statusFilter]);
 
@@ -145,12 +159,12 @@ export default function AdminAttendancePage() {
       )}
 
       <div className="toolbar">
-        <Select value={employeeFilter} onValueChange={(v) => setEmployeeFilter(v)}>
+        <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
           <SelectTrigger aria-label="Empleado" style={{ maxWidth: 220 }}>
             <SelectValue placeholder="Todos los empleados" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">Todos los empleados</SelectItem>
+            <SelectItem value="__all">Todos los empleados</SelectItem>
             {employees.map((e) => (
               <SelectItem key={e.id} value={e.id}>
                 {e.first_name} {e.last_name}
@@ -161,16 +175,22 @@ export default function AdminAttendancePage() {
         <DateField value={dateFrom} onChange={setDateFrom} aria-label="Fecha desde" placeholder="Desde" />
         <span className="muted" style={{ fontSize: "0.8rem" }}>a</span>
         <DateField value={dateTo} onChange={setDateTo} aria-label="Fecha hasta" placeholder="Hasta" />
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v)}>
+        <Select value={statusFilter || "__all"} onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v)}>
           <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
             <SelectValue placeholder="Todos los estados" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">Todos los estados</SelectItem>
+            <SelectItem value="__all">Todos los estados</SelectItem>
             <SelectItem value="OPEN">Entrada abierta</SelectItem>
             <SelectItem value="COMPLETE">Completado</SelectItem>
           </SelectContent>
         </Select>
+        {(employeeFilter || dateFrom || dateTo || statusFilter) && (
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setEmployeeFilter(""); setDateFrom(""); setDateTo(""); setStatusFilter(""); }}>
+            <X size={14} /> Limpiar filtros
+          </button>
+        )}
+        {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
         <button className="btn btn-outline btn-sm" onClick={exportCsv}>
           <Download size={15} />
@@ -227,6 +247,36 @@ export default function AdminAttendancePage() {
         </form>
       )}
 
+      <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Resumen diario consolidado</h2>
+      <div className="table-wrap" style={{ marginBottom: "1rem" }}>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Presencia</th>
+              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <TableSkeleton rows={3} cols={9} />}
+            {!loading && daily.length === 0 && <tr><td colSpan={9} className="empty">Sin jornadas en el rango.</td></tr>}
+            {daily.map((day) => (
+              <tr key={`${day.employee_id}-${day.work_date}`}>
+                <td style={{ fontWeight: 600 }}>{day.employee_name ?? "—"}</td>
+                <td className="num">{day.work_date}</td>
+                <td className="num">{day.session_count}</td>
+                <td className="num">{formatMinutes(day.gross_minutes)}</td>
+                <td className="num">{formatMinutes(day.break_minutes)}</td>
+                <td className="num">{formatMinutes(day.worked_minutes)}</td>
+                <td className="num">{formatMinutes(day.expected_minutes)}</td>
+                <td className="num">{formatDifference(day.difference_minutes)}</td>
+                <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>
       <div className="table-wrap">
         <table className="table">
           <thead>
@@ -254,9 +304,9 @@ export default function AdminAttendancePage() {
             {records.map((record) => (
               <tr key={record.id}>
                 <td>
-                  <a href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
+                  <Link href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
                     {record.employee_name ?? "—"}
-                  </a>
+                  </Link>
                   <span className="muted" style={{ marginLeft: "0.4rem", fontSize: "0.75rem" }}>
                     {record.job_role_name ?? ""}
                   </span>

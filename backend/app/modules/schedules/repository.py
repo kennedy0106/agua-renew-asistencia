@@ -56,6 +56,7 @@ class WorkScheduleRepository:
         saturday_minutes: int = 0,
         sunday_minutes: int = 0,
         break_minutes: int = 0,
+        break_applies_after_minutes: int = 360,
     ) -> WorkSchedule:
         schedule = WorkSchedule(
             employee_id=employee_id,
@@ -68,6 +69,7 @@ class WorkScheduleRepository:
             saturday_minutes=saturday_minutes,
             sunday_minutes=sunday_minutes,
             break_minutes=break_minutes,
+            break_applies_after_minutes=break_applies_after_minutes,
         )
         self.db.add(schedule)
         self.db.commit()

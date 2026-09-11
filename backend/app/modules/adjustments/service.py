@@ -129,15 +129,22 @@ class AdjustmentService:
             expected += schedules.expected_minutes(employee_id, day)
             day += timedelta(days=1)
 
-        adjustments = self.repo.approved_minutes_in_range(employee_id, date_from, date_to)
+        adjustments = self.repo.approved_minutes_in_range(
+            employee_id, date_from, date_to, adjustment_type=None
+        )
+        overtime_minutes = self.repo.approved_minutes_in_range(
+            employee_id, date_from, date_to, adjustment_type="OVERTIME"
+        )
+        hour_adjustments = adjustments - overtime_minutes
 
         return {
             "date_from": date_from,
             "date_to": date_to,
             "worked_minutes": worked,
             "expected_minutes": expected,
-            "adjustment_minutes": adjustments,
-            "balance_minutes": worked - expected + adjustments,
+            "adjustment_minutes": hour_adjustments,
+            "overtime_minutes": overtime_minutes,
+            "balance_minutes": worked - expected + hour_adjustments,
         }
 
     def _get_or_404(self, adjustment_id: uuid.UUID) -> HourAdjustment:

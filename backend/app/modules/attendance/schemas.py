@@ -7,15 +7,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class IdentifyRequest(BaseModel):
-    identifier: str = Field(min_length=1, max_length=20, description="DNI o código interno")
+    identifier: str = Field(min_length=1, max_length=80, description="DNI, código interno o payload QR AR:<token>")
 
 
 class CheckInRequest(BaseModel):
-    employee_id: uuid.UUID
+    marking_token: str | None = None
+    employee_id: uuid.UUID | None = Field(default=None, description="Compatibilidad local; prohibido en producción")
 
 
 class CheckOutRequest(BaseModel):
-    employee_id: uuid.UUID
+    marking_token: str | None = None
+    employee_id: uuid.UUID | None = Field(default=None, description="Compatibilidad local; prohibido en producción")
 
 
 class AttendanceRecordOut(BaseModel):
@@ -38,6 +40,7 @@ class IdentifyResponse(BaseModel):
     state: dict
     server_time: str
     server_time_label: str
+    marking_token: str
 
 
 class AttendanceListItem(BaseModel):
@@ -61,6 +64,20 @@ class AttendanceSummary(BaseModel):
     no_entry_today: int
     open_entries: int
     checked_out_today: int
+
+
+class AttendanceDailyItem(BaseModel):
+    employee_id: uuid.UUID
+    employee_name: str | None
+    work_date: date
+    session_count: int
+    gross_minutes: int
+    break_minutes: int
+    worked_minutes: int
+    expected_minutes: int
+    difference_minutes: int
+    has_open_entry: bool
+    incident_codes: list[str]
 
 
 class AttendanceCorrection(BaseModel):

@@ -12,11 +12,12 @@ Reglas del MVP:
 """
 
 import uuid
-from datetime import date
+from calendar import monthrange
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.modules.adjustments.models import HourAdjustment
@@ -58,7 +59,16 @@ class PayrollService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Ya existe un periodo que se solapa con esas fechas",
             )
-        return self.repo.create_period(name=name.strip(), start_date=start_date, end_date=end_date)
+        last_day = monthrange(start_date.year, start_date.month)[1]
+        if start_date.day != 1 or end_date != date(start_date.year, start_date.month, last_day):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="El periodo debe cubrir un mes calendario completo",
+            )
+        period = self.repo.create_period(name=name.strip(), start_date=start_date, end_date=end_date)
+        self.db.commit()
+        self.db.refresh(period)
+        return period
 
     def list_periods(self) -> list[PayrollPeriod]:
         return self.repo.list_periods()
@@ -79,50 +89,95 @@ class PayrollService:
                 detail="El periodo está cerrado: no se puede recalcular",
             )
 
-        self.repo.delete_records(period_id)  # reemplaza el preview anterior
-
-        employees = EmployeeRepository(self.db).list_all(active=True)
+        employees = self._employees_for_period(period)
         salaries = SalaryService(self.db)
         schedules = ScheduleService(self.db)
         adjustments = AdjustmentRepository(self.db)
         overtime = OvertimeService(self.db)
 
-        created = []
-        for employee in employees:
-            salary = salaries.get_for_date(employee.id, period.start_date)
-            if salary is None:
-                continue  # sin sueldo configurado en el periodo → no se incluye
+        existing = {record.employee_id: record for record in self.repo.list_records(period_id)}
+        try:
+            for employee in employees:
+                base, reference_salary, missing_salary_days = self._prorated_base(employee, period, salaries)
+                if reference_salary is None:
+                    continue
 
-            worked = self._sum_worked_minutes(employee.id, period)
-            expected = self._sum_expected_minutes(schedules, employee.id, period)
-            overtime_minutes = adjustments.approved_minutes_in_range(
-                employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
+                worked = self._sum_worked_minutes(employee.id, period)
+                expected = self._sum_expected_minutes(schedules, employee, period)
+                overtime_minutes = adjustments.approved_minutes_in_range(
+                    employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
+                )
+                adjustment_minutes = adjustments.approved_minutes_in_range(
+                    employee.id, period.start_date, period.end_date
+                ) - overtime_minutes
+                overtime_amount = overtime.value(employee.id, period.start_date, period.end_date)["value"]
+
+                record = existing.pop(employee.id, None)
+                if record is None:
+                    record = PayrollRecord()
+                    record.payroll_period_id = period_id
+                    record.employee_id = employee.id
+                    record.manual_adjustment = Decimal("0.00")
+                record.monthly_salary = reference_salary.monthly_salary
+                record.worked_minutes = worked
+                record.expected_minutes = expected
+                record.overtime_minutes = overtime_minutes
+                record.overtime_amount = overtime_amount
+                record.adjustment_minutes = adjustment_minutes
+                record.adjustment_amount = Decimal("0.00")
+                record.base_salary = base
+                record.missing_salary_days = missing_salary_days
+                record.total = (base + overtime_amount + record.manual_adjustment).quantize(
+                    _CENTS, rounding=ROUND_HALF_UP
+                )
+                record.status = "PREVIEW"
+                self.db.add(record)
+
+            # F05: no borrar snapshots de quienes dejaron de ser elegibles
+            # (conserva ajuste manual, motivo y autor en el registro).
+            period.status = PERIOD_CALCULATED
+            self.db.add(period)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        return self.repo.list_records(period_id)
+
+    def _employees_for_period(self, period: PayrollPeriod) -> list[Employee]:
+        return list(
+            self.db.scalars(
+                select(Employee).where(
+                    or_(Employee.hire_date.is_(None), Employee.hire_date <= period.end_date),
+                    or_(Employee.termination_date.is_(None), Employee.termination_date >= period.start_date),
+                )
             )
-            adjustment_minutes = adjustments.approved_minutes_in_range(
-                employee.id, period.start_date, period.end_date
-            ) - overtime_minutes
-            overtime_amount = overtime.value(employee.id, period.start_date, period.end_date)["value"]
+        )
 
-            base = salary.monthly_salary
-            total = (base + overtime_amount).quantize(_CENTS, rounding=ROUND_HALF_UP)
+    @staticmethod
+    def _employment_bounds(employee: Employee, period: PayrollPeriod) -> tuple[date, date]:
+        return (
+            max(period.start_date, employee.hire_date or period.start_date),
+            min(period.end_date, employee.termination_date or period.end_date),
+        )
 
-            record = self.repo.create_record(
-                period_id=period_id,
-                employee_id=employee.id,
-                monthly_salary=base,
-                worked_minutes=worked,
-                expected_minutes=expected,
-                overtime_minutes=overtime_minutes,
-                overtime_amount=overtime_amount,
-                adjustment_minutes=adjustment_minutes,
-                adjustment_amount=Decimal("0.00"),
-                base_salary=base,
-                total=total,
-            )
-            created.append(record)
-
-        self.repo.set_period_status(period, PERIOD_CALCULATED)
-        return created
+    def _prorated_base(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
+        active_from, active_to = self._employment_bounds(employee, period)
+        if active_from > active_to:
+            return Decimal("0.00"), None, 0
+        days_in_month = Decimal(monthrange(period.start_date.year, period.start_date.month)[1])
+        total = Decimal("0")
+        reference = None
+        missing_salary_days = 0
+        day = active_from
+        while day <= active_to:
+            salary = salaries.get_for_date(employee.id, day)
+            if salary is not None:
+                reference = reference or salary
+                total += salary.monthly_salary / days_in_month
+            else:
+                missing_salary_days += 1
+            day += timedelta(days=1)
+        return total.quantize(_CENTS, rounding=ROUND_HALF_UP), reference, missing_salary_days
 
     def _sum_worked_minutes(self, employee_id: uuid.UUID, period: PayrollPeriod) -> int:
         total = self.db.scalar(
@@ -135,16 +190,100 @@ class PayrollService:
         )
         return int(total or 0)
 
-    @staticmethod
-    def _sum_expected_minutes(schedules: ScheduleService, employee_id: uuid.UUID, period: PayrollPeriod) -> int:
+    def _sum_expected_minutes(self, schedules: ScheduleService, employee: Employee, period: PayrollPeriod) -> int:
+        active_from, active_to = self._employment_bounds(employee, period)
+        if active_from > active_to:
+            return 0
         total = 0
-        day = period.start_date
-        from datetime import timedelta
-
-        while day <= period.end_date:
-            total += schedules.expected_minutes(employee_id, day)
+        day = active_from
+        while day <= active_to:
+            total += schedules.expected_minutes(employee.id, day)
             day += timedelta(days=1)
         return total
+
+    def readiness(self, period_id: uuid.UUID) -> dict:
+        period = self._get_period_or_404(period_id)
+        blockers: list[dict] = []
+        warnings: list[dict] = []
+        salaries = SalaryService(self.db)
+        schedules = ScheduleService(self.db)
+        for employee in self._employees_for_period(period):
+            active_from, active_to = self._employment_bounds(employee, period)
+            day = active_from
+            missing_salary = False
+            missing_schedule = False
+            while day <= active_to:
+                missing_salary = missing_salary or salaries.get_for_date(employee.id, day) is None
+                missing_schedule = missing_schedule or schedules.repo.get_for_date(employee.id, day) is None
+                day += timedelta(days=1)
+            if missing_salary:
+                blockers.append({"code": "MISSING_SALARY", "message": "Empleado sin sueldo para parte del periodo", "employee_id": str(employee.id)})
+            if missing_schedule:
+                blockers.append({"code": "MISSING_SCHEDULE", "message": "Empleado sin jornada para parte del periodo", "employee_id": str(employee.id)})
+
+        open_records = self.db.scalars(
+            select(AttendanceRecord).where(
+                AttendanceRecord.status == "OPEN",
+                AttendanceRecord.work_date >= period.start_date,
+                AttendanceRecord.work_date <= period.end_date,
+            )
+        )
+        for record in open_records:
+            blockers.append({"code": "OPEN_ATTENDANCE", "message": "Entrada sin salida", "employee_id": str(record.employee_id), "attendance_record_id": str(record.id)})
+        long_records = self.db.scalars(
+            select(AttendanceRecord).where(
+                AttendanceRecord.status == "COMPLETE",
+                AttendanceRecord.work_date >= period.start_date,
+                AttendanceRecord.work_date <= period.end_date,
+                AttendanceRecord.check_out_at.is_not(None),
+            )
+        )
+        for record in long_records:
+            if record.check_out_at and (record.check_out_at - record.check_in_at).total_seconds() > 16 * 3600:
+                blockers.append({"code": "LONG_ATTENDANCE", "message": "Sesión mayor de 16 horas", "employee_id": str(record.employee_id), "attendance_record_id": str(record.id)})
+        pending = self.db.scalars(
+            select(HourAdjustment).where(
+                HourAdjustment.status == "PENDING",
+                HourAdjustment.adjustment_date >= period.start_date,
+                HourAdjustment.adjustment_date <= period.end_date,
+            )
+        )
+        for adjustment in pending:
+            blockers.append({"code": "PENDING_ADJUSTMENT", "message": "Ajuste pendiente de aprobación o rechazo", "employee_id": str(adjustment.employee_id)})
+        return {"ready": not blockers, "blockers": blockers, "warnings": warnings}
+
+    def create_rectification(self, period_id: uuid.UUID, reason: str, current_user_id: uuid.UUID | None) -> PayrollPeriod:
+        original = self._get_period_or_404(period_id)
+        if original.status != PERIOD_CLOSED:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Solo se rectifican periodos cerrados")
+        latest_version = self.db.scalar(
+            select(func.max(PayrollPeriod.version)).where(PayrollPeriod.root_period_id == original.root_period_id)
+        ) or original.version
+        rectification = PayrollPeriod(
+            name=original.name,
+            start_date=original.start_date,
+            end_date=original.end_date,
+            root_period_id=original.root_period_id,
+            version=latest_version + 1,
+            supersedes_period_id=original.id,
+            rectification_reason=reason.strip(),
+            status=PERIOD_OPEN,
+        )
+        self.db.add(rectification)
+        self.db.flush()
+        AuditRepository(self.db).create(
+            entity_type="payroll_period",
+            entity_id=rectification.id,
+            action="rectification_created",
+            old_values={"period_id": str(original.id), "version": original.version},
+            new_values={"period_id": str(rectification.id), "version": rectification.version},
+            reason=reason.strip(),
+            performed_by=current_user_id,
+            commit=False,
+        )
+        self.db.commit()
+        self.db.refresh(rectification)
+        return rectification
 
     def list_records(self, period_id: uuid.UUID) -> list[PayrollRecord]:
         self._get_period_or_404(period_id)
@@ -182,20 +321,24 @@ class PayrollService:
             )
 
         old_total = record.total
+        old_manual = record.manual_adjustment
         saved = self.repo.set_manual_adjustment(record, amount=amount, notes=notes)
         AuditRepository(self.db).create(
             entity_type="payroll_record",
             entity_id=record_id,
             action="manual_adjustment",
-            old_values={"manual_adjustment": str(old_total), "total": str(old_total)},
+            old_values={"manual_adjustment": str(old_manual), "total": str(old_total)},
             new_values={
                 "manual_adjustment": str(amount),
                 "total": str(saved.total),
                 "notes": saved.notes,
             },
-            reason=notes or "Ajuste manual de planilla",
+            reason=notes,
             performed_by=current_user_id,
+            commit=False,
         )
+        self.db.commit()
+        self.db.refresh(saved)
         return saved
 
     def confirm(self, period_id: uuid.UUID, current_user_id: uuid.UUID | None) -> PayrollPeriod:
@@ -204,6 +347,12 @@ class PayrollService:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"El periodo debe estar CALCULATED para confirmarse (estado: {period.status})",
+            )
+        readiness = self.readiness(period_id)
+        if not readiness["ready"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"message": "El periodo tiene bloqueos pendientes", **readiness},
             )
         self.repo.confirm_all(period_id)
         closed = self.repo.set_period_status(period, PERIOD_CLOSED)
@@ -215,5 +364,8 @@ class PayrollService:
             new_values={"status": PERIOD_CLOSED},
             reason=f"Cierre del periodo {period.name}",
             performed_by=current_user_id,
+            commit=False,
         )
+        self.db.commit()
+        self.db.refresh(closed)
         return closed

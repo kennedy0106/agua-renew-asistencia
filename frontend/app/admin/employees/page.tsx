@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
-import { TableSkeleton } from "@/components/Loading";
+import { Spinner, TableSkeleton } from "@/components/Loading";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, employeesApi, Employee, jobRolesApi, JobRole } from "@/lib/api";
 
@@ -25,9 +26,11 @@ export default function AdminEmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [jobRoles, setJobRoles] = useState<JobRole[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
 
   const [showCreate, setShowCreate] = useState(false);
@@ -39,24 +42,31 @@ export default function AdminEmployeesPage() {
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 280);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    jobRolesApi.list().then(setJobRoles).catch(() => undefined);
+  }, []);
+
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const [list, roles] = await Promise.all([
-        employeesApi.list({
-          active: statusFilter === "" ? undefined : statusFilter === "active",
-          search: search || undefined,
-        }),
-        jobRolesApi.list(),
-      ]);
+      const list = await employeesApi.list({
+        active: statusFilter === "" ? undefined : statusFilter === "active",
+        search: debouncedSearch || undefined,
+      });
       setEmployees(list);
-      setJobRoles(roles);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }, [search, statusFilter]);
+  }, [debouncedSearch, statusFilter]);
 
   useEffect(() => {
     load();
@@ -141,16 +151,25 @@ export default function AdminEmployeesPage() {
             style={{ paddingLeft: "2.1rem" }}
           />
         </div>
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "" | "active" | "inactive")}>
+        <Select
+          value={statusFilter || "__all"}
+          onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v as "active" | "inactive")}
+        >
           <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
             <SelectValue placeholder="Todos los estados" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">Todos los estados</SelectItem>
+            <SelectItem value="__all">Todos los estados</SelectItem>
             <SelectItem value="active">Activos</SelectItem>
             <SelectItem value="inactive">Inactivos</SelectItem>
           </SelectContent>
         </Select>
+        {(search || statusFilter) && (
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setSearch(""); setStatusFilter(""); }}>
+            <X size={14} /> Limpiar filtros
+          </button>
+        )}
+        {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
         {canManage && (
           <button className="btn btn-primary" onClick={() => setShowCreate((v) => !v)}>
@@ -240,7 +259,16 @@ export default function AdminEmployeesPage() {
               <tr>
                 <td colSpan={canManage ? 6 : 5} className="empty">
                   <Users size={26} />
-                  Sin empleados registrados.
+                  <div>{search || statusFilter ? "No hay empleados con esos filtros." : "Sin empleados registrados."}</div>
+                  {search || statusFilter ? (
+                    <button className="btn btn-outline btn-sm" type="button" onClick={() => { setSearch(""); setStatusFilter(""); }}>
+                      <X size={14} /> Limpiar filtros
+                    </button>
+                  ) : canManage ? (
+                    <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowCreate(true)}>
+                      <Plus size={14} /> Crear empleado
+                    </button>
+                  ) : null}
                 </td>
               </tr>
             )}
@@ -297,9 +325,9 @@ export default function AdminEmployeesPage() {
                 ) : (
                   <>
                     <td>
-                      <a href={`/admin/employees/${employee.id}`} style={{ fontWeight: 600 }}>
+                      <Link href={`/admin/employees/${employee.id}`} style={{ fontWeight: 600 }}>
                         {employee.first_name} {employee.last_name}
-                      </a>
+                      </Link>
                     </td>
                     <td className="num">{employee.dni}</td>
                     <td className="num">{employee.employee_code}</td>

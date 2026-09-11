@@ -5,6 +5,7 @@ marcación → saldo → ajustes → payroll, verificando la matemática exacta.
 """
 
 import uuid
+from calendar import monthrange
 from datetime import datetime, timedelta
 
 from app.core.timezone import lima_tz
@@ -122,9 +123,14 @@ def test_escenario_a_jornada_normal(client, db_session):
     assert balance["expected_minutes"] == 480
     assert balance["balance_minutes"] == 0
 
+    last = monthrange(today.year, today.month)[1]
     period = client.post(
         "/api/v1/payroll/periods",
-        json={"name": "Agosto A", "start_date": "2026-08-01", "end_date": "2026-08-31"},
+        json={
+            "name": "Mes A",
+            "start_date": today.replace(day=1).isoformat(),
+            "end_date": today.replace(day=last).isoformat(),
+        },
     ).json()
     record_payroll = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
     assert record_payroll["worked_minutes"] == 480

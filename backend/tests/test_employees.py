@@ -226,3 +226,11 @@ def test_qr_endpoint_devuelve_svg(client, db_session):
 def test_qr_endpoint_requiere_auth(client):
     response = client.get(f"/api/v1/employees/{uuid.uuid4()}/qr")
     assert response.status_code == 401
+
+
+def test_rotar_qr_cambia_token(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create(client, _payload(db_session._test_job_roles["Operario"])).json()
+    rotated = client.post(f"/api/v1/employees/{emp['id']}/qr/rotate")
+    assert rotated.status_code == 200
+    assert rotated.json()["qr_token"] != emp["qr_token"]

@@ -19,6 +19,10 @@ class PayrollPeriodOut(BaseModel):
     start_date: date
     end_date: date
     status: str
+    root_period_id: uuid.UUID
+    version: int
+    supersedes_period_id: uuid.UUID | None
+    rectification_reason: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +41,7 @@ class PayrollRecordOut(BaseModel):
     adjustment_amount: Decimal
     base_salary: Decimal
     manual_adjustment: Decimal
+    missing_salary_days: int = 0
     total: Decimal
     status: str
     notes: str | None
@@ -46,7 +51,24 @@ class PayrollRecordOut(BaseModel):
 
 class ManualAdjustmentRequest(BaseModel):
     amount: Decimal = Field(max_digits=12, decimal_places=2, description="Monto con signo (viáticos, bonos, descuentos)")
-    notes: str | None = Field(default=None, max_length=255, description="Motivo (queda en auditoría)")
+    notes: str = Field(min_length=3, max_length=255, description="Motivo obligatorio (queda en auditoría)")
+
+
+class RectificationRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class ReadinessIssue(BaseModel):
+    code: str
+    message: str
+    employee_id: uuid.UUID | None = None
+    attendance_record_id: uuid.UUID | None = None
+
+
+class PayrollReadinessOut(BaseModel):
+    ready: bool
+    blockers: list[ReadinessIssue]
+    warnings: list[ReadinessIssue]
 
 
 class PayrollSummaryOut(BaseModel):
