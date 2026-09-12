@@ -369,3 +369,53 @@ def test_entrada_concurrente_mismo_nonce(pg_engine):
         _cleanup_payroll(check, period_id, record_id)
     finally:
         check.close()
+
+
+def test_canje_simultaneo_mismo_codigo(pg_engine):
+    """Dos conexiones PostgreSQL canjean el mismo código: exactamente un ganador."""
+    if "attendance_devices" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de terminales incompleto")
+    from app.modules.attendance.models import AttendanceDevice
+    from app.modules.devices.service import DeviceService
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        device, code = DeviceService(session).create("Kiosco concurrente")
+        device_id = device.id
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def worker():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            DeviceService(db).pair(code)
+            outcomes.append("ok")
+        except HTTPException as exc:
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=worker, name="pair-a"),
+        threading.Thread(target=worker, name="pair-b"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+
+    assert outcomes.count("ok") == 1
+    assert outcomes.count(401) == 1
+    check = factory()
+    try:
+        row = check.get(AttendanceDevice, device_id)
+        assert row is not None
+        assert row.pairing_code_hash is None
+        check.execute(text("DELETE FROM attendance_devices WHERE id = :id"), {"id": device_id})
+        check.commit()
+    finally:
+        check.close()

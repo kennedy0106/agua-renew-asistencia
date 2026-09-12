@@ -253,6 +253,11 @@ export type AttendanceRecordOut = {
   event_type?: string | null;
 };
 
+export type AttemptStatusResponse = {
+  state: "CONFIRMED" | "PENDING" | string;
+  record: AttendanceRecordOut | null;
+};
+
 export const attendanceApi = {
   pairTerminal: (pairingCode: string) =>
     apiFetch<{ id: string; name: string; device_code: string }>("/api/v1/attendance/terminal/pair", {
@@ -284,7 +289,7 @@ export const attendanceApi = {
       body: JSON.stringify({ marking_token: markingToken }),
     }),
   attemptStatus: (markingToken: string) =>
-    apiFetch<AttendanceRecordOut>("/api/v1/attendance/attempt/status", {
+    apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/status", {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),

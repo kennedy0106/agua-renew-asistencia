@@ -48,6 +48,11 @@ class AttemptStatusRequest(BaseModel):
     marking_token: str
 
 
+class AttemptStatusResponse(BaseModel):
+    state: str
+    record: AttendanceRecordOut | None = None
+
+
 class IdentifyResponse(BaseModel):
     employee: dict
     state: dict

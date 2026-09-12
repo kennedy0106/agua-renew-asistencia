@@ -129,6 +129,29 @@ def decode_attendance_token(token: str) -> dict[str, Any] | None:
     return payload
 
 
+def decode_attendance_token_for_recovery(token: str) -> dict[str, Any] | None:
+    """Valida firma y tipo de un token de marcación ignorando solo ``exp``.
+
+    No sustituye a ``decode_attendance_token``: las escrituras siguen
+    rechazando el permiso corto vencido.
+    """
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.jwt_algorithm],
+            options={"verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return None
+    if payload is None or payload.get("type") != "attendance":
+        return None
+    if not payload.get("sub") or not payload.get("nonce") or payload.get("action") not in {"CHECK_IN", "CHECK_OUT"}:
+        return None
+    return payload
+
+
 def session_cookie_kwargs() -> dict[str, Any]:
     """Opciones de la cookie de sesión (HttpOnly + SameSite + Secure en prod)."""
     settings = get_settings()

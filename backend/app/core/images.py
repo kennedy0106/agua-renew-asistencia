@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import warnings
 from io import BytesIO
 
 from fastapi import HTTPException, status
 from PIL import Image, ImageOps, UnidentifiedImageError
-import warnings
 
 MIN_WIDTH = 320
 MIN_HEIGHT = 240
@@ -20,7 +20,21 @@ JPEG_QUALITY = 80
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-warnings.simplefilter("error", Image.DecompressionBombWarning)
+
+_BOMB_ERRORS = (
+    UnidentifiedImageError,
+    OSError,
+    ValueError,
+    Image.DecompressionBombError,
+    Image.DecompressionBombWarning,
+)
+
+
+def _reject_invalid(exc: BaseException) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="El archivo no es una imagen válida",
+    ) from exc
 
 
 def verify_and_normalize(raw: bytes) -> tuple[bytes, str, str]:
@@ -30,37 +44,33 @@ def verify_and_normalize(raw: bytes) -> tuple[bytes, str, str]:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="El tamaño de la foto no es válido",
         )
-    try:
-        image = Image.open(BytesIO(raw))
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El archivo no es una imagen válida",
-        ) from exc
-    fmt = (image.format or "").upper()
-    if fmt not in ALLOWED_FORMATS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La foto debe ser JPEG, PNG o WebP",
-        )
-    width, height = image.size
-    if width < MIN_WIDTH or height < MIN_HEIGHT:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La foto es demasiado pequeña para usarse como evidencia",
-        )
-    if width > MAX_WIDTH or height > MAX_HEIGHT or width * height > MAX_PIXELS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="La foto supera las dimensiones permitidas",
-        )
-    try:
-        image.load()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El archivo no es una imagen válida",
-        ) from exc
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        try:
+            image = Image.open(BytesIO(raw))
+        except _BOMB_ERRORS as exc:
+            _reject_invalid(exc)
+        fmt = (image.format or "").upper()
+        if fmt not in ALLOWED_FORMATS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La foto debe ser JPEG, PNG o WebP",
+            )
+        width, height = image.size
+        if width < MIN_WIDTH or height < MIN_HEIGHT:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La foto es demasiado pequeña para usarse como evidencia",
+            )
+        if width > MAX_WIDTH or height > MAX_HEIGHT or width * height > MAX_PIXELS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La foto supera las dimensiones permitidas",
+            )
+        try:
+            image.load()
+        except _BOMB_ERRORS as exc:
+            _reject_invalid(exc)
     transposed = ImageOps.exif_transpose(image) or image
     rgb = transposed.convert("RGB")
     longest = max(rgb.size)

@@ -18,6 +18,14 @@ type Phase =
   | "confirmado"
   | "incidencia";
 
+type RecoverOutcome =
+  | { kind: "confirmed"; record: AttendanceRecordOut }
+  | { kind: "pending" }
+  | { kind: "unauthorized" }
+  | { kind: "gone" }
+  | { kind: "error" }
+  | { kind: "stale" };
+
 type BarcodeDetectorLike = {
   detect: (source: CanvasImageSource) => Promise<Array<{ rawValue: string }>>;
 };
@@ -28,6 +36,10 @@ function stopStream(stream: MediaStream | null) {
 
 function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDetectorLike) | null {
   return (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector ?? null;
+}
+
+function isE2eKiosk(): boolean {
+  return typeof window !== "undefined" && Boolean((window as unknown as { __E2E_KIOSK?: boolean }).__E2E_KIOSK);
 }
 
 export default function AsistenciaPage() {
@@ -49,6 +61,8 @@ export default function AsistenciaPage() {
   const qrStreamRef = useRef<MediaStream | null>(null);
   const captureLock = useRef(false);
   const identifyingRef = useRef(false);
+  const sendingRef = useRef(false);
+  const recoverLockRef = useRef(false);
   const generationRef = useRef(0);
   const infoRef = useRef<IdentifyResponse | null>(null);
 
@@ -119,6 +133,10 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     if (phase !== "video_listo") return;
+    if (isE2eKiosk()) {
+      setPhase("capturando");
+      return;
+    }
     const gen = generationRef.current;
     const video = videoRef.current;
     if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
@@ -184,8 +202,10 @@ export default function AsistenciaPage() {
           if (cancelled || gen !== generationRef.current || !qrVideoRef.current) return;
           try {
             const codes = await detector.detect(qrVideoRef.current);
+            if (cancelled || gen !== generationRef.current) return;
             const raw = codes.map((item) => item.rawValue).find((value) => value);
             if (raw) {
+              if (gen !== generationRef.current) return;
               stopStream(qrStreamRef.current);
               qrStreamRef.current = null;
               const value = raw.startsWith("AR:") ? raw : `AR:${raw}`;
@@ -250,8 +270,10 @@ export default function AsistenciaPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setPhase("incidencia");
     } finally {
-      identifyingRef.current = false;
-      setIdentifying(false);
+      if (gen === generationRef.current) {
+        identifyingRef.current = false;
+        setIdentifying(false);
+      }
     }
   }
 
@@ -263,7 +285,17 @@ export default function AsistenciaPage() {
 
   function grabFrame(): string | null {
     const video = videoRef.current;
-    if (!video || video.videoWidth < 320 || video.videoHeight < 240) return null;
+    if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
+      if (!isE2eKiosk()) return null;
+      const canvas = document.createElement("canvas");
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.fillStyle = "#224466";
+      ctx.fillRect(0, 0, 320, 240);
+      return canvas.toDataURL("image/jpeg", 0.8).split(",")[1] ?? null;
+    }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -274,13 +306,19 @@ export default function AsistenciaPage() {
     return dataUrl.split(",")[1] ?? null;
   }
 
-  async function recoverAttempt(markingToken: string, gen: number): Promise<AttendanceRecordOut | null> {
+  async function recoverAttempt(markingToken: string, gen: number): Promise<RecoverOutcome> {
     try {
       const frozen = await attendanceApi.attemptStatus(markingToken);
-      if (gen !== generationRef.current) return null;
-      return frozen;
-    } catch {
-      return null;
+      if (gen !== generationRef.current) return { kind: "stale" };
+      if (frozen.state === "CONFIRMED" && frozen.record) {
+        return { kind: "confirmed", record: frozen.record };
+      }
+      return { kind: "pending" };
+    } catch (err) {
+      if (gen !== generationRef.current) return { kind: "stale" };
+      if (err instanceof ApiError && err.status === 401) return { kind: "unauthorized" };
+      if (err instanceof ApiError && err.status === 410) return { kind: "gone" };
+      return { kind: "error" };
     }
   }
 
@@ -290,7 +328,16 @@ export default function AsistenciaPage() {
     setPhase("confirmado");
   }
 
+  function showUncertain(message: string) {
+    setError(message);
+    setPhase("incidencia");
+    captureLock.current = false;
+  }
+
   async function sendPhoto(imageBase64: string, markingToken: string, markingAction: string, gen: number) {
+    if (gen !== generationRef.current) return;
+    if (sendingRef.current) return;
+    sendingRef.current = true;
     setPhase("enviando");
     try {
       await attendanceApi.captureEvidence(markingToken, imageBase64);
@@ -304,13 +351,29 @@ export default function AsistenciaPage() {
     } catch (err) {
       if (gen !== generationRef.current) return;
       const recovered = await recoverAttempt(markingToken, gen);
-      if (recovered) {
-        showConfirmed(recovered);
+      if (recovered.kind === "stale") return;
+      if (recovered.kind === "confirmed") {
+        showConfirmed(recovered.record);
+        return;
+      }
+      if (recovered.kind === "pending" || recovered.kind === "error") {
+        showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
+        return;
+      }
+      if (recovered.kind === "unauthorized") {
+        setPhase("pairing");
+        setError("Este equipo no está autorizado para consultar el intento.");
+        return;
+      }
+      if (recovered.kind === "gone") {
+        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
         return;
       }
       setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
       setPhase("incidencia");
       captureLock.current = false;
+    } finally {
+      if (gen === generationRef.current) sendingRef.current = false;
     }
   }
 
@@ -341,13 +404,33 @@ export default function AsistenciaPage() {
     const current = infoRef.current;
     if (!current || !lastPhoto) return;
     const gen = generationRef.current;
+    if (sendingRef.current || recoverLockRef.current) return;
+    recoverLockRef.current = true;
     setError(null);
-    const recovered = await recoverAttempt(current.marking_token, gen);
-    if (recovered) {
-      showConfirmed(recovered);
-      return;
+    try {
+      const recovered = await recoverAttempt(current.marking_token, gen);
+      if (gen !== generationRef.current || recovered.kind === "stale") return;
+      if (recovered.kind === "confirmed") {
+        showConfirmed(recovered.record);
+        return;
+      }
+      if (recovered.kind === "unauthorized") {
+        setPhase("pairing");
+        setError("Este equipo no está autorizado para consultar el intento.");
+        return;
+      }
+      if (recovered.kind === "gone") {
+        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
+        return;
+      }
+      if (recovered.kind === "error") {
+        showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
+        return;
+      }
+      await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
+    } finally {
+      if (gen === generationRef.current) recoverLockRef.current = false;
     }
-    await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
   }
 
   function takeAnotherPhoto() {
@@ -358,6 +441,8 @@ export default function AsistenciaPage() {
     setLastPhoto(null);
     captureLock.current = false;
     identifyingRef.current = false;
+    sendingRef.current = false;
+    recoverLockRef.current = false;
     setIdentifying(false);
     setError(null);
     setPhase("identificando");
@@ -375,6 +460,8 @@ export default function AsistenciaPage() {
     setServerOffset(0);
     captureLock.current = false;
     identifyingRef.current = false;
+    sendingRef.current = false;
+    recoverLockRef.current = false;
     setIdentifying(false);
   }
 
@@ -416,7 +503,7 @@ export default function AsistenciaPage() {
         <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
       </div>
 
-      <div className="kiosk-card">
+      <div className="kiosk-card" data-phase={phase}>
         {phase === "pairing" && (
           <form onSubmit={handlePair} style={{ display: "grid", gap: "0.7rem" }}>
             <p className="kiosk-date">Este equipo necesita un código de emparejamiento de un solo uso.</p>
@@ -446,7 +533,7 @@ export default function AsistenciaPage() {
             <div className="kiosk-date" suppressHydrationWarning>
               {dateLabel}
             </div>
-            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }}>
+            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }} data-testid="kiosk-identify-form">
               <label className="label" htmlFor="kiosk-id">
                 DNI, código interno o QR
               </label>
@@ -460,6 +547,7 @@ export default function AsistenciaPage() {
                 autoFocus
                 autoComplete="off"
                 disabled={identifying}
+                data-testid="kiosk-identifier"
                 style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
               />
               {error && (
@@ -468,11 +556,11 @@ export default function AsistenciaPage() {
                   {error}
                 </p>
               )}
-              <button type="submit" className="btn btn-primary kiosk-btn" disabled={identifying}>
+              <button type="submit" className="btn btn-primary kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
                 {identifying ? <Spinner size={18} /> : <User size={18} />}
                 {identifying ? "Verificando…" : "Identificarme"}
               </button>
-              <button type="button" className="btn btn-outline kiosk-btn" onClick={startQrScan} disabled={identifying}>
+              <button type="button" className="btn btn-outline kiosk-btn" onClick={startQrScan} disabled={identifying} data-testid="kiosk-scan-qr">
                 Escanear QR con cámara trasera
               </button>
               {!qrSupported && (
@@ -491,7 +579,7 @@ export default function AsistenciaPage() {
                 {error}
               </p>
             )}
-            <button className="btn btn-outline kiosk-btn" type="button" onClick={reset}>
+            <button className="btn btn-outline kiosk-btn" type="button" onClick={reset} data-testid="kiosk-cancel-qr">
               Cancelar escaneo
             </button>
           </>
@@ -502,7 +590,7 @@ export default function AsistenciaPage() {
             <div className="kiosk-employee">
               <div className="avatar-lg">{initials}</div>
               <div>
-                <div className="name">
+                <div className="name" data-testid="kiosk-employee-name">
                   {info.employee.first_name} {info.employee.last_name}
                 </div>
                 <div className="role">
@@ -513,7 +601,7 @@ export default function AsistenciaPage() {
             <video ref={videoRef} className="kiosk-video" playsInline muted autoPlay />
             {phase === "cuenta_regresiva" && <p className="kiosk-countdown">{countdown}</p>}
             {phase === "abriendo_camara" && <p className="muted">Abriendo cámara…</p>}
-            <button className="btn btn-outline btn-sm" onClick={reset} type="button">
+            <button className="btn btn-outline btn-sm" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
               Cancelar
             </button>
           </>
@@ -533,11 +621,11 @@ export default function AsistenciaPage() {
               </p>
             )}
             {lastPhoto && info && (
-              <button className="btn btn-primary kiosk-btn" type="button" onClick={() => void resendSamePhoto()}>
+              <button className="btn btn-primary kiosk-btn" type="button" onClick={() => void resendSamePhoto()} data-testid="kiosk-resend">
                 Reenviar la misma foto
               </button>
             )}
-            <button className="btn btn-outline kiosk-btn" type="button" onClick={takeAnotherPhoto}>
+            <button className="btn btn-outline kiosk-btn" type="button" onClick={takeAnotherPhoto} data-testid="kiosk-take-another">
               Tomar otra foto
             </button>
           </>

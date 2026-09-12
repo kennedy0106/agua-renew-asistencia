@@ -32,6 +32,7 @@ from app.modules.attendance.schemas import (
     IdentifyRequest,
     IdentifyResponse,
     AttemptStatusRequest,
+    AttemptStatusResponse,
 )
 from app.modules.attendance.service import AttendanceService, _MISSING
 from app.modules.devices.schemas import PairingRequest
@@ -125,7 +126,7 @@ def store_evidence(
     return {"id": str(evidence.id), "content_type": evidence.content_type}
 
 
-@router.post("/attempt/status", response_model=AttendanceRecordOut)
+@router.post("/attempt/status", response_model=AttemptStatusResponse)
 def attempt_status(
     payload: AttemptStatusRequest,
     db: Session = Depends(get_db),

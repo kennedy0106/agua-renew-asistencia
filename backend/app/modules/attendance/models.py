@@ -125,6 +125,7 @@ class AttendanceConsumedNonce(Base):
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     event_type: Mapped[str] = mapped_column(String(20), nullable=False, default="CHECK_IN", server_default="CHECK_IN")
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attendance_devices.id"), nullable=True, index=True)
     attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("attendance_records.id"), nullable=True, index=True
     )

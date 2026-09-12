@@ -18,7 +18,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
-from app.core.security import create_attendance_token, decode_attendance_token
+from app.core.config import get_settings
+from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
     AttendanceConsumedNonce,
@@ -239,20 +240,33 @@ class AttendanceService:
         return self._record_snapshot(record, event_type=action)
 
     def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
-        decoded = decode_attendance_token(marking_token)
+        decoded = decode_attendance_token_for_recovery(marking_token)
         if decoded is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if decoded.get("did") and device_id and str(decoded["did"]) != str(device_id):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
         employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
         nonce = str(decoded["nonce"])
         consumed = self.db.get(AttendanceConsumedNonce, nonce)
         if consumed is None or not consumed.result_payload:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Este intento aún no se confirmó")
+            return {"state": "PENDING", "record": None}
         if consumed.employee_id != employee_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        return consumed.result_payload
+        if consumed.device_id is not None:
+            if device_id is None or consumed.device_id != device_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="El token no corresponde a este terminal",
+                )
+        created_at = consumed.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        window = timedelta(minutes=get_settings().attempt_recovery_minutes)
+        if datetime.now(timezone.utc) - created_at > window:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="El plazo para recuperar este intento ya venció",
+            )
+        return {"state": "CONFIRMED", "record": consumed.result_payload}
 
     def _consume_nonce(
         self,
@@ -260,6 +274,7 @@ class AttendanceService:
         action: str,
         employee_id: uuid.UUID,
         record: AttendanceRecord,
+        device_id: uuid.UUID | None = None,
     ) -> None:
         replay = self._replay_nonce(nonce, action, employee_id)
         if replay is not None:
@@ -270,6 +285,7 @@ class AttendanceService:
                 action=action,
                 event_type=action,
                 employee_id=employee_id,
+                device_id=device_id,
                 attendance_record_id=record.id,
                 result_payload=self._record_snapshot(record, event_type=action),
             )
@@ -313,7 +329,7 @@ class AttendanceService:
             self.db.add(record)
             self.db.flush()
             if nonce:
-                self._consume_nonce(nonce, "CHECK_IN", employee_id, record)
+                self._consume_nonce(nonce, "CHECK_IN", employee_id, record, device_id=device_id)
                 evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
                 if evidence is not None:
                     evidence.attendance_record_id = record.id
@@ -382,7 +398,7 @@ class AttendanceService:
             self.db.flush()
             self._recompute_day(employee_id, record.work_date, commit=False)
             if nonce:
-                self._consume_nonce(nonce, "CHECK_OUT", employee_id, record)
+                self._consume_nonce(nonce, "CHECK_OUT", employee_id, record, device_id=device_id)
                 evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
                 if evidence is not None:
                     evidence.attendance_record_id = record.id

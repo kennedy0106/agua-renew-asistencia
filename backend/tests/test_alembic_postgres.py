@@ -63,6 +63,8 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "pairing_code_hash" in device_cols
     evidence_cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
     assert "image_sha256" in evidence_cols
+    nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
+    assert "device_id" in nonce_cols
 
 
 def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,4 +158,5 @@ def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypa
         assert attendance_status[1] == 480
         nonce_cols = {col["name"] for col in inspect(engine).get_columns("attendance_consumed_nonces")}
         assert "result_payload" in nonce_cols
+        assert "device_id" in nonce_cols
 

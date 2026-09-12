@@ -346,7 +346,9 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
-    assert pending.status_code == 404
+    assert pending.status_code == 200
+    assert pending.json()["state"] == "PENDING"
+    assert pending.json()["record"] is None
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -354,8 +356,9 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
     status = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
     assert status.status_code == 200
-    assert status.json()["id"] == marked.json()["id"]
-    assert status.json()["event_type"] == "CHECK_IN"
+    assert status.json()["state"] == "CONFIRMED"
+    assert status.json()["record"]["id"] == marked.json()["id"]
+    assert status.json()["record"]["event_type"] == "CHECK_IN"
 
     other = client.post(
         "/api/v1/employees",
@@ -370,7 +373,8 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     assert other.status_code == 201
     other_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-009"}).json()["marking_token"]
     isolated = client.post("/api/v1/attendance/attempt/status", json={"marking_token": other_token})
-    assert isolated.status_code == 404
+    assert isolated.status_code == 200
+    assert isolated.json()["state"] == "PENDING"
 
 
 def test_attempt_status_exige_terminal_en_produccion(client, db_session, monkeypatch):
@@ -475,3 +479,151 @@ def test_imagen_exif_conserva_orientacion(client, db_session):
     assert image.status_code == 200
     decoded = Image.open(BytesIO(image.content))
     assert decoded.size[1] > decoded.size[0]
+
+
+def _expire_marking_token(token: str) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    import jwt
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    payload = jwt.decode(
+        token,
+        settings.secret_key,
+        algorithms=[settings.jwt_algorithm],
+        options={"verify_exp": False},
+    )
+    payload["exp"] = datetime.now(timezone.utc) - timedelta(minutes=5)
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
+def test_recupera_entrada_con_token_corto_vencido(client, db_session):
+    from sqlalchemy import func, select
+    from app.modules.attendance.models import AttendanceRecord
+
+    _login(client)
+    _employee(client, db_session)
+    photo = valid_jpeg_b64()
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    evidence = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert evidence.status_code == 201
+    marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    assert marked.status_code == 201
+    expired = _expire_marking_token(token)
+    recovered = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+    assert recovered.status_code == 200
+    assert recovered.json()["state"] == "CONFIRMED"
+    assert recovered.json()["record"]["id"] == marked.json()["id"]
+    assert recovered.json()["record"]["check_in_at"].startswith(marked.json()["check_in_at"][:19])
+    assert recovered.json()["record"]["event_type"] == "CHECK_IN"
+    assert client.post("/api/v1/attendance/check-in", json={"marking_token": expired}).status_code == 401
+    assert client.post("/api/v1/attendance/check-out", json={"marking_token": expired}).status_code == 401
+    assert client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": expired, "image_base64": photo, "content_type": "image/jpeg"},
+    ).status_code == 401
+    db_session.expire_all()
+    count = db_session.scalar(select(func.count()).select_from(AttendanceRecord))
+    assert count == 1
+
+
+def test_recupera_salida_con_token_corto_vencido(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    in_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": in_token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    client.post("/api/v1/attendance/check-in", json={"marking_token": in_token})
+    out_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": out_token, "image_base64": valid_jpeg_b64(color=(9, 9, 9)), "content_type": "image/jpeg"},
+    )
+    marked = client.post("/api/v1/attendance/check-out", json={"marking_token": out_token})
+    assert marked.status_code == 200
+    expired = _expire_marking_token(out_token)
+    recovered = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+    assert recovered.status_code == 200
+    assert recovered.json()["state"] == "CONFIRMED"
+    assert recovered.json()["record"]["id"] == marked.json()["id"]
+    assert recovered.json()["record"]["check_out_at"].startswith(marked.json()["check_out_at"][:19])
+    assert recovered.json()["record"]["event_type"] == "CHECK_OUT"
+    assert client.post("/api/v1/attendance/check-out", json={"marking_token": expired}).status_code == 401
+
+
+def test_attempt_status_fuera_de_plazo_410(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from app.modules.attendance.models import AttendanceConsumedNonce
+
+    _login(client)
+    _employee(client, db_session)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    row = db_session.scalar(select(AttendanceConsumedNonce))
+    assert row is not None
+    row.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db_session.add(row)
+    db_session.commit()
+    expired = _expire_marking_token(token)
+    gone = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+    assert gone.status_code == 410
+
+
+def test_attempt_status_otro_terminal_y_revocado(client, db_session, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_db
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("SECRET_KEY", "una-clave-secreta-de-al-menos-32-caracteres-123456")
+    get_settings.cache_clear()
+    try:
+        _login(client)
+        _employee(client, db_session)
+        first = client.post("/api/v1/devices", json={"name": "Tablet A"})
+        second = client.post("/api/v1/devices", json={"name": "Tablet B"})
+        assert first.status_code == 201 and second.status_code == 201
+        assert client.post("/api/v1/attendance/terminal/pair", json={"pairing_code": first.json()["pairing_code"]}).status_code == 200
+        token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+        client.post(
+            "/api/v1/attendance/evidence",
+            json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+        )
+        marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+        assert marked.status_code == 201
+        expired = _expire_marking_token(token)
+        own = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+        assert own.status_code == 200
+        assert own.json()["state"] == "CONFIRMED"
+
+        other = TestClient(app)
+
+        def _override():
+            yield db_session
+
+        app.dependency_overrides[get_db] = _override
+        try:
+            assert other.post("/api/v1/attendance/terminal/pair", json={"pairing_code": second.json()["pairing_code"]}).status_code == 200
+            denied = other.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+            assert denied.status_code == 401
+        finally:
+            other.close()
+
+        client.post(f"/api/v1/devices/{first.json()['id']}/revoke")
+        revoked = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
+        assert revoked.status_code == 401
+    finally:
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
