@@ -296,9 +296,13 @@ export default function AdminAttendancePage() {
                 value={attemptReason}
                 onChange={(e) => setAttemptReason(e.target.value)}
                 minLength={3}
+                maxLength={500}
                 placeholder="Revisión autorizada"
                 data-testid="admin-attempt-reason"
               />
+              <p className="muted" style={{ fontSize: "0.75rem", margin: "0.25rem 0 0" }}>
+                Máximo 500 caracteres. El servidor rechaza textos más largos o solo espacios.
+              </p>
             </div>
           </div>
           {attemptLookup && (

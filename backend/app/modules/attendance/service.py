@@ -57,10 +57,14 @@ class AttendanceService:
         self.db = db
         self.repo = AttendanceRepository(db)
 
-    def _get_active_employee(self, employee_id: uuid.UUID):
+    def _get_employee_or_404(self, employee_id: uuid.UUID):
         employee = EmployeeRepository(self.db).get_by_id(employee_id)
         if employee is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
+        return employee
+
+    def _get_active_employee(self, employee_id: uuid.UUID):
+        employee = self._get_employee_or_404(employee_id)
         if not employee.active:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -400,7 +404,7 @@ class AttendanceService:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         device = self._require_kiosk_device(decoded, device_id)
         employee_id = uuid.UUID(str(decoded["sub"]))
-        self._get_active_employee(employee_id)
+        self._get_employee_or_404(employee_id)
         nonce = str(decoded["nonce"])
         action = str(decoded.get("action") or "")
         write_token_valid = decode_attendance_token(marking_token) is not None
@@ -433,7 +437,7 @@ class AttendanceService:
         action = str(decoded.get("action") or "")
         nonce = str(decoded["nonce"])
         self.repo.lock_employee_for_attempt(employee_id)
-        self._get_active_employee(employee_id)
+        self._get_employee_or_404(employee_id)
         resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
         if evidence is not None and evidence.employee_id != employee_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")

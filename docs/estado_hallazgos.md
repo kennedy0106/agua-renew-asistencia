@@ -1,4 +1,4 @@
-# Estado de hallazgos (H01–H07, CDB-01–CDB-03, R45 y EDB-01–EDB-03)
+# Estado de hallazgos (H01–H07, CDB-01–CDB-03, R45, EDB-01–EDB-03 y E506-01–E506-02)
 
 Documento de seguimiento. No certifica seguridad global ni exactitud de toda la nómina.
 
@@ -39,6 +39,19 @@ Documento de seguimiento. No certifica seguridad global ni exactitud de toda la 
 | EDB-01 | `consultAttempt()` es lectura; `kiosk-consult-attempt` no llama a `sendPhoto`. Recarga sin foto local. | UI f/g + integración T01/T02 | Tablet física |
 | EDB-02 | Tabla `attendance_attempt_resolutions`, lock de empleado, `/attempt/resolve`, revisión ADMIN/BOSS, completar evidencia existente. | Hardening, concurrencia A/B, Alembic `e1f2a3b4c5d6`→`f2a3b4c5d6e7`, T03–T11 | Tablet física y despliegue autorizado |
 
+## E506-01–E506-02 (sobre `e506ada`)
+
+| ID | Corrección | Prueba | Pendiente |
+|---|---|---|---|
+| E506-01 | `AttendanceAttemptResolution.reason` y migración nueva `g3b4c5d6e7f8` (80→500). Schema y panel alineados a 500. No se edita `f2a3b4c5d6e7`. | Alembic PG (80/81/120/500, rechazo 501, downgrade sin recorte), HTTP SQLite y PostgreSQL | Tablet física |
+| E506-02 | `attempt_status` y `resolve_attempt` comprueban existencia, no `active`. Nuevas marcaciones/evidencia siguen 403 si el empleado está inactivo. | Hardening A06–A10 e integración A06–A08 | Tablet física |
+
+### Migraciones
+
+- `e1f2a3b4c5d6`: pertenencia de nonce. Probada en PostgreSQL local desechable. No aplicada a Neon en R45.
+- `f2a3b4c5d6e7`: tabla `attendance_attempt_resolutions`. Upgrade poblado desde `e1f2a3b4c5d6` en Postgres desechable. **No aplicada a Neon.** El backend nuevo necesita un esquema compatible antes de un despliegue autorizado. Un downgrade de esta revisión elimina la trazabilidad de resoluciones.
+- `g3b4c5d6e7f8`: amplia `attendance_attempt_resolutions.reason` de 80 a 500. Upgrade poblado desde `f2a3b4c5d6e7` en Postgres desechable. **No aplicada a Neon.** Un downgrade a 80 se niega si existen motivos más largos; no recorta.
+
 ### Referencia mínima del kiosco (R45-03 / EDB-01)
 
 Si la marcación ya se envió y el resultado es incierto, el kiosco guarda en `sessionStorage` (`agua_renew_kiosk_open_attempt`) el token de marcación, la acción, el empleado y la etapa local versionada. No guarda la cookie del terminal, contraseñas ni fotografías. Consultar no sube foto. Un 401/410 o un fallo de consulta muestra el paso de revisión por un jefe; no se afirma que no se haya marcado. Tras CANCELLED/REVIEWED, «Volver al inicio» es explícito.
@@ -54,11 +67,6 @@ Ejecutado `npm audit --json` (sin `--force`):
 | next 16.3.2 | producción (directo) | crítica (RCE Windows / Image Optimization AVIF: GHSA-p293-qw3h-jr36, GHSA-2xp9-vwfh-vxw4) | Parche compatible a 16.3.5 (misma línea 16.3; no es major) |
 
 No se usó `npm audit fix --force`. No quedan avisos conocidos en el árbol tras el parche de Next.
-
-### Migraciones
-
-- `e1f2a3b4c5d6`: pertenencia de nonce. Probada en PostgreSQL local desechable. No aplicada a Neon en R45.
-- `f2a3b4c5d6e7`: tabla `attendance_attempt_resolutions`. Upgrade poblado desde `e1f2a3b4c5d6` en Postgres desechable. **No aplicada a Neon.** El backend nuevo necesita un esquema compatible antes de un despliegue autorizado. Un downgrade de esta revisión elimina la trazabilidad de resoluciones.
 
 ## Fuera de este incremento
 

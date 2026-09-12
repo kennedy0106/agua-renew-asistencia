@@ -15,13 +15,20 @@ def _login(client) -> None:
     ).status_code == 200
 
 
-def _employee(client, db_session) -> str:
+def _employee(
+    client,
+    db_session,
+    *,
+    dni: str = "72845632",
+    employee_code: str = "EMP-001",
+    first_name: str = "Ana",
+) -> str:
     response = client.post(
         "/api/v1/employees",
         json={
-            "dni": "72845632",
-            "employee_code": "EMP-001",
-            "first_name": "Ana",
+            "dni": dni,
+            "employee_code": employee_code,
+            "first_name": first_name,
             "last_name": "López",
             "job_role_id": str(db_session._test_job_roles["Operario"]),
         },
@@ -997,3 +1004,242 @@ def test_resolve_otro_terminal_y_sin_cookie(client, db_session):
     finally:
         absent.close()
     assert first["id"]
+
+
+def _mark(client, identifier: str, *, checkout: bool = False) -> tuple[str, dict]:
+    token = client.post("/api/v1/attendance/identify", json={"identifier": identifier}).json()["marking_token"]
+    stored = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    assert stored.status_code == 201, stored.text
+    path = "/api/v1/attendance/check-out" if checkout else "/api/v1/attendance/check-in"
+    marked = client.post(path, json={"marking_token": token})
+    assert marked.status_code in {200, 201}, marked.text
+    return token, marked.json()
+
+
+def test_review_motivo_3_80_81_y_rechazo_501(client, db_session):
+    from sqlalchemy import func, select
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceRecord
+    from app.modules.audit.models import AuditLog
+
+    _login(client)
+    _pair_kiosk(client)
+    cases = ((3, "abc"), (80, "W" * 80), (81, "X" * 81), (120, "Y" * 120), (500, "C" * 500))
+    for index, (length, reason) in enumerate(cases, start=1):
+        code = f"EMP-R{index}"
+        _employee(client, db_session, dni=f"7284503{index}", employee_code=code, first_name=f"R{index}")
+        token, marked = _mark(client, code)
+        nonce = _nonce_of(token)
+        reviewed = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": reason})
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["state"] == "REVIEWED"
+        kiosk = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+        assert kiosk.status_code == 200
+        assert kiosk.json()["state"] == "REVIEWED"
+        db_session.expire_all()
+        stored = db_session.get(AttendanceAttemptResolution, nonce)
+        assert stored is not None
+        assert stored.reason == reason
+        assert len(stored.reason) == length
+        record = db_session.get(AttendanceRecord, __import__("uuid").UUID(marked["id"]))
+        assert record is not None
+        assert record.check_in_at.isoformat().startswith(marked["check_in_at"][:19])
+        audit = db_session.scalar(
+            select(AuditLog).where(AuditLog.action == "ATTEMPT_REVIEWED", AuditLog.reason == reason)
+        )
+        assert audit is not None
+
+    _employee(client, db_session, dni="72845099", employee_code="EMP-R501", first_name="R501")
+    token, _marked = _mark(client, "EMP-R501")
+    nonce = _nonce_of(token)
+    before_resolutions = db_session.scalar(select(func.count()).select_from(AttendanceAttemptResolution))
+    before_audits = db_session.scalar(
+        select(func.count()).select_from(AuditLog).where(AuditLog.action == "ATTEMPT_REVIEWED")
+    )
+    rejected = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": "Z" * 501})
+    assert rejected.status_code == 422
+    spaces = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": "   "})
+    assert spaces.status_code == 422
+    empty = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": ""})
+    assert empty.status_code == 422
+    db_session.expire_all()
+    after_resolutions = db_session.scalar(select(func.count()).select_from(AttendanceAttemptResolution))
+    after_audits = db_session.scalar(
+        select(func.count()).select_from(AuditLog).where(AuditLog.action == "ATTEMPT_REVIEWED")
+    )
+    assert after_resolutions == before_resolutions
+    assert after_audits == before_audits
+    assert db_session.get(AttendanceAttemptResolution, nonce) is None
+
+
+def test_consulta_tras_desactivar_recupera_salida(client, db_session):
+    from sqlalchemy import func, select
+    from app.modules.attendance.models import AttendanceRecord
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    _mark(client, "EMP-001")
+    token_out, marked = _mark(client, "EMP-001", checkout=True)
+    assert marked["status"] == "COMPLETE"
+    original_out = marked["check_out_at"]
+    original_id = marked["id"]
+    original_minutes = marked["worked_minutes"]
+    deactivated = client.post(f"/api/v1/employees/{employee_id}/deactivate")
+    assert deactivated.status_code == 200
+    recovered = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token_out})
+    assert recovered.status_code == 200
+    assert recovered.json()["state"] == "CONFIRMED"
+    assert recovered.json()["record"]["id"] == original_id
+    assert recovered.json()["record"]["check_out_at"].startswith(original_out[:19])
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(AttendanceRecord)) == 1
+    stored = db_session.get(AttendanceRecord, __import__("uuid").UUID(original_id))
+    assert stored is not None
+    assert stored.check_out_at.isoformat().startswith(original_out[:19])
+    assert stored.worked_minutes == original_minutes
+    assert client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).status_code == 403
+    assert client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token_out, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    ).status_code == 403
+    assert client.post("/api/v1/attendance/check-out", json={"marking_token": token_out}).status_code == 403
+
+
+def test_review_empleado_inactivo_fuera_de_ventana(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from app.modules.attendance.models import AttendanceConsumedNonce, AttendanceRecord
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token, marked = _mark(client, "EMP-001")
+    nonce = _nonce_of(token)
+    row = db_session.scalar(select(AttendanceConsumedNonce).where(AttendanceConsumedNonce.nonce == nonce))
+    assert row is not None
+    row.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db_session.add(row)
+    db_session.commit()
+    assert client.post(f"/api/v1/employees/{employee_id}/deactivate").status_code == 200
+    gone = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert gone.status_code == 410
+    reviewed = client.post(
+        f"/api/v1/attendance/attempts/{nonce}/review",
+        json={"reason": "Liberar tablet de empleado cesado"},
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["state"] == "REVIEWED"
+    kiosk = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert kiosk.status_code == 200
+    assert kiosk.json()["state"] == "REVIEWED"
+    db_session.expire_all()
+    stored = db_session.get(AttendanceRecord, __import__("uuid").UUID(marked["id"]))
+    assert stored is not None
+    assert stored.check_in_at.isoformat().startswith(marked["check_in_at"][:19])
+    assert stored.check_out_at is None
+    assert client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).status_code == 403
+
+
+def test_review_boss_empleado_inactivo_fuera_de_ventana(client, db_session):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from app.modules.attendance.models import AttendanceConsumedNonce
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token, marked = _mark(client, "EMP-001")
+    nonce = _nonce_of(token)
+    row = db_session.scalar(select(AttendanceConsumedNonce).where(AttendanceConsumedNonce.nonce == nonce))
+    assert row is not None
+    row.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db_session.add(row)
+    db_session.commit()
+    assert client.post(f"/api/v1/employees/{employee_id}/deactivate").status_code == 200
+    assert client.post("/api/v1/auth/login", json={"username": "boss", "password": "Boss123!"}).status_code == 200
+    reviewed = client.post(
+        f"/api/v1/attendance/attempts/{nonce}/review",
+        json={"reason": "Jefe libera kiosco de cesado"},
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["state"] == "REVIEWED"
+    kiosk = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert kiosk.status_code == 200
+    assert kiosk.json()["state"] == "REVIEWED"
+    assert marked["id"]
+
+
+def test_resolve_empleado_inactivo_sin_confirmacion(client, db_session):
+    from sqlalchemy import func, select
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceRecord
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    assert client.post(f"/api/v1/employees/{employee_id}/deactivate").status_code == 200
+    resolved = client.post(
+        "/api/v1/attendance/attempt/resolve",
+        json={"marking_token": token, "reason_code": "USER_CANCELLED"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["state"] == "CANCELLED"
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(AttendanceRecord)) == 0
+    assert db_session.scalar(select(func.count()).select_from(AttendanceAttemptResolution)) == 1
+    assert client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).status_code == 403
+    assert client.post("/api/v1/attendance/check-in", json={"marking_token": token}).status_code == 403
+    assert client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    ).status_code == 403
+
+
+def test_consulta_empleado_inactivo_otro_terminal_y_dueno_nulo(client, db_session):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+    from app.main import app
+    from app.db.session import get_db
+    from app.modules.attendance.models import AttendanceConsumedNonce
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    first = _pair_kiosk(client, "Inactivo A")
+    second = client.post("/api/v1/devices", json={"name": "Inactivo B"})
+    token, marked = _mark(client, "EMP-001")
+    assert client.post(f"/api/v1/employees/{employee_id}/deactivate").status_code == 200
+    own = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert own.status_code == 200
+    assert own.json()["state"] == "CONFIRMED"
+
+    other = TestClient(app)
+
+    def _override():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        assert other.post("/api/v1/attendance/terminal/pair", json={"pairing_code": second.json()["pairing_code"]}).status_code == 200
+        denied = other.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+        assert denied.status_code == 401
+        denied_resolve = other.post(
+            "/api/v1/attendance/attempt/resolve",
+            json={"marking_token": token, "reason_code": "USER_CANCELLED"},
+        )
+        assert denied_resolve.status_code == 401
+    finally:
+        other.close()
+
+    nonce = _nonce_of(token)
+    row = db_session.scalar(select(AttendanceConsumedNonce).where(AttendanceConsumedNonce.nonce == nonce))
+    assert row is not None
+    row.device_id = None
+    db_session.add(row)
+    db_session.commit()
+    null_owner = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert null_owner.status_code == 401
+    assert first["id"]
+    assert marked["id"]

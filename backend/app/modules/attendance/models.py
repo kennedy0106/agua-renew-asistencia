@@ -177,7 +177,7 @@ class AttendanceAttemptResolution(Base):
     device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("attendance_devices.id"), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(20), nullable=False)
     resolution: Mapped[str] = mapped_column(String(32), nullable=False)
-    reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
     resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("attendance_records.id"), nullable=True, index=True

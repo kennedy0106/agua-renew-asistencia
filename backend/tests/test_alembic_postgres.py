@@ -68,6 +68,10 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "attendance_attempt_resolutions" in tables
     resolution_cols = {col["name"] for col in inspector.get_columns("attendance_attempt_resolutions")}
     assert {"nonce", "employee_id", "device_id", "resolution", "reason"} <= resolution_cols
+    reason_col = next(
+        col for col in inspector.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_col["type"], "length", None) == 500
 
 
 def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -382,3 +386,169 @@ def test_alembic_upgrade_e1f2a3b4c5d6_conserva_datos_y_crea_resoluciones(pg_url:
             text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-sin-terminal'")
         ).scalar_one()
         assert orphan is None
+
+
+def test_alembic_upgrade_f2a3b4c5d6e7_amplia_reason_sin_perder_datos(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A04/A05: 80→500 conserva motivos; 501 falla en PG; downgrade no recorta."""
+    from sqlalchemy.exc import DataError
+
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "f2a3b4c5d6e7")
+
+    employee_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    device_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    role_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    reason_80 = "R" * 80
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-R500', 'Nora', 'Luz', :role_id, true, 'qr-reason-500')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_devices (id, name, device_code, active, token_version)
+                VALUES (:id, 'Kiosco motivo', 'dev-reason', true, 1)
+                """
+            ),
+            {"id": device_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_attempt_resolutions (
+                    nonce, employee_id, device_id, action, resolution, reason
+                ) VALUES (
+                    'nonce-reason-80', :employee_id, :device_id, 'CHECK_IN', 'CANCELLED_UNCONFIRMED', :reason
+                )
+                """
+            ),
+            {"employee_id": employee_id, "device_id": device_id, "reason": reason_80},
+        )
+
+    command.upgrade(cfg, "g3b4c5d6e7f8")
+    inspector = inspect(engine)
+    reason_col = next(
+        col for col in inspector.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_col["type"], "length", None) == 500
+    with engine.connect() as conn:
+        preserved = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert preserved == reason_80
+        assert len(preserved) == 80
+
+    lengths = {81: "A" * 81, 120: "B" * 120, 500: "C" * 500}
+    with engine.begin() as conn:
+        for length, reason in lengths.items():
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attendance_attempt_resolutions (
+                        nonce, employee_id, device_id, action, resolution, reason
+                    ) VALUES (
+                        :nonce, :employee_id, :device_id, 'CHECK_OUT', 'CANCELLED_UNCONFIRMED', :reason
+                    )
+                    """
+                ),
+                {
+                    "nonce": f"nonce-reason-{length}",
+                    "employee_id": employee_id,
+                    "device_id": device_id,
+                    "reason": reason,
+                },
+            )
+
+    with engine.connect() as conn:
+        for length, reason in lengths.items():
+            stored = conn.execute(
+                text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = :nonce"),
+                {"nonce": f"nonce-reason-{length}"},
+            ).scalar_one()
+            assert stored == reason
+            assert len(stored) == length
+
+    with pytest.raises(DataError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attendance_attempt_resolutions (
+                        nonce, employee_id, device_id, action, resolution, reason
+                    ) VALUES (
+                        'nonce-reason-501', :employee_id, :device_id, 'CHECK_IN',
+                        'CANCELLED_UNCONFIRMED', :reason
+                    )
+                    """
+                ),
+                {"employee_id": employee_id, "device_id": device_id, "reason": "D" * 501},
+            )
+
+    with engine.connect() as conn:
+        missing = conn.execute(
+            text("SELECT count(*) FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-501'")
+        ).scalar_one()
+        assert missing == 0
+        eighty = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert eighty == reason_80
+
+    with pytest.raises(Exception, match="No se puede reducir reason"):
+        command.downgrade(cfg, "f2a3b4c5d6e7")
+
+    with engine.connect() as conn:
+        remaining = conn.execute(
+            text(
+                """
+                SELECT nonce, char_length(reason) FROM attendance_attempt_resolutions
+                ORDER BY nonce
+                """
+            )
+        ).all()
+        assert {(row[0], row[1]) for row in remaining} == {
+            ("nonce-reason-80", 80),
+            ("nonce-reason-81", 81),
+            ("nonce-reason-120", 120),
+            ("nonce-reason-500", 500),
+        }
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM attendance_attempt_resolutions WHERE char_length(reason) > 80")
+        )
+
+    command.downgrade(cfg, "f2a3b4c5d6e7")
+    inspector_after = inspect(engine)
+    reason_after = next(
+        col for col in inspector_after.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_after["type"], "length", None) == 80
+    with engine.connect() as conn:
+        leftover = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert leftover == reason_80

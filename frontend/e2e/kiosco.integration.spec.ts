@@ -710,4 +710,156 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     const own = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: token });
     expect(own.body.state).toBe("PENDING");
   });
+
+  test("E506-A06 consulta salida tras desactivar empleado", async ({ page, request }) => {
+    const api = await adminApi(request);
+    const employee = await createEmployee(api, "A06");
+    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
+    let checkOutAfterReload = 0;
+    let evidenceAfterReload = 0;
+    let reloaded = false;
+
+    await page.route("**/api/v1/attendance/check-out", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      if (reloaded) checkOutAfterReload += 1;
+      await route.fetch();
+      await route.abort("failed");
+    });
+    await page.route("**/api/v1/attendance/evidence", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      if (reloaded) evidenceAfterReload += 1;
+      await route.continue();
+    });
+    await page.route("**/api/v1/attendance/attempt/status", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      if (!reloaded) {
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/asistencia");
+    await pairKiosk(page, device.pairing_code);
+    await identifyAndCaptureToken(page, employee.employee_code);
+    await waitConfirmed(page, /Entrada registrada/);
+    await page.getByTestId("kiosk-new-marking").click();
+    await identifyAndCaptureToken(page, employee.employee_code);
+    await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
+    const before = await countAttendance(api, employee.id);
+    expect(before.filter((row) => row.status === "COMPLETE")).toHaveLength(1);
+    const original = before.find((row) => row.status === "COMPLETE");
+    expect(original).toBeTruthy();
+
+    const deactivated = await api.post(`${API}/api/v1/employees/${employee.id}/deactivate`);
+    expect(deactivated.ok(), await deactivated.text()).toBeTruthy();
+    await page.reload();
+    reloaded = true;
+    await wrapGetUserMediaCounter(page);
+    await page.getByTestId("kiosk-consult-attempt").click();
+    await waitConfirmed(page, /Salida registrada/);
+    expect(checkOutAfterReload).toBe(0);
+    expect(evidenceAfterReload).toBe(0);
+    expect(await gumCount(page)).toBe(0);
+    const after = await countAttendance(api, employee.id);
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(original?.id);
+    expect(after[0].check_out_at).toBe(original?.check_out_at);
+    expect(after[0].worked_minutes).toBe(original?.worked_minutes);
+    const identifyInactive = await fetchJson(page, "/api/v1/attendance/identify", {
+      identifier: employee.employee_code,
+    });
+    expect(identifyInactive.status).toBe(403);
+  });
+
+  test("E506-A07 revisión de jefe con empleado inactivo y volver al inicio", async ({ page, request }) => {
+    const api = await adminApi(request);
+    const employee = await createEmployee(api, "A07");
+    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
+    let allowStatus = false;
+    await page.route("**/api/v1/attendance/check-in", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      await route.fetch();
+      await route.abort("failed");
+    });
+    await page.route("**/api/v1/attendance/attempt/status", async (route) => {
+      if (route.request().method() === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      if (!allowStatus) {
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto("/asistencia");
+    await pairKiosk(page, device.pairing_code);
+    const token = await identifyAndCaptureToken(page, employee.employee_code);
+    await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
+    const nonce = nonceOf(token);
+    execFileSync("uv", ["run", "python", "-m", "scripts.e2e_age_nonce"], {
+      cwd: BACKEND_DIR,
+      env: { ...process.env, E2E_AGE_NONCE: nonce },
+      stdio: "pipe",
+    });
+    const deactivated = await api.post(`${API}/api/v1/employees/${employee.id}/deactivate`);
+    expect(deactivated.ok(), await deactivated.text()).toBeTruthy();
+    allowStatus = true;
+    const gone = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: token });
+    expect(gone.status).toBe(410);
+    const reviewed = await api.post(`${API}/api/v1/attendance/attempts/${nonce}/review`, {
+      data: { reason: "Jefe libera kiosco de trabajador cesado" },
+    });
+    expect(reviewed.ok(), await reviewed.text()).toBeTruthy();
+    expect((await reviewed.json()).state).toBe("REVIEWED");
+    await page.getByTestId("kiosk-consult-attempt").click();
+    await expect(page.getByTestId("kiosk-restart-resolved")).toBeVisible();
+    await page.getByTestId("kiosk-restart-resolved").click();
+    await expect(page.getByTestId("kiosk-identify")).toBeVisible();
+    const records = await countAttendance(api, employee.id);
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe("OPEN");
+    const identifyInactive = await fetchJson(page, "/api/v1/attendance/identify", {
+      identifier: employee.employee_code,
+    });
+    expect(identifyInactive.status).toBe(403);
+  });
+
+  test("E506-A08 cancelar intento no confirmado de empleado inactivo", async ({ page, request }) => {
+    const api = await adminApi(request);
+    const employee = await createEmployee(api, "A08");
+    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
+    await page.goto("/asistencia");
+    await pairKiosk(page, device.pairing_code);
+    const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier: employee.employee_code });
+    expect(identified.status).toBe(200);
+    const token = identified.body.marking_token as string;
+    const deactivated = await api.post(`${API}/api/v1/employees/${employee.id}/deactivate`);
+    expect(deactivated.ok(), await deactivated.text()).toBeTruthy();
+    const resolved = await fetchJson(page, "/api/v1/attendance/attempt/resolve", {
+      marking_token: token,
+      reason_code: "USER_CANCELLED",
+    });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.state).toBe("CANCELLED");
+    expect(await countAttendance(api, employee.id)).toHaveLength(0);
+    const identifyInactive = await fetchJson(page, "/api/v1/attendance/identify", {
+      identifier: employee.employee_code,
+    });
+    expect(identifyInactive.status).toBe(403);
+    expect((await fetchJson(page, "/api/v1/attendance/check-in", { marking_token: token })).status).toBe(403);
+  });
 });
