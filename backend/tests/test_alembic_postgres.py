@@ -65,6 +65,9 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "image_sha256" in evidence_cols
     nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
     assert "device_id" in nonce_cols
+    assert "attendance_attempt_resolutions" in tables
+    resolution_cols = {col["name"] for col in inspector.get_columns("attendance_attempt_resolutions")}
+    assert {"nonce", "employee_id", "device_id", "resolution", "reason"} <= resolution_cols
 
 
 def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,3 +245,140 @@ def test_alembic_upgrade_conserva_nonces_sin_device_id(pg_url: str, monkeypatch:
         payload = row[3]
         assert payload["event_type"] == "CHECK_IN"
 
+
+def test_alembic_upgrade_e1f2a3b4c5d6_conserva_datos_y_crea_resoluciones(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upgrade poblado desde e1f2a3b4c5d6: no backfill de dueños y tabla nueva vacía."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "e1f2a3b4c5d6")
+
+    role_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    employee_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    record_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    device_id = "12121212-1212-1212-1212-121212121212"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71117777', 'EMP-EDB', 'Rita', 'Sol', :role_id, true, 'qr-edb-nonce')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_devices (id, name, device_code, active, token_version)
+                VALUES (:id, 'Kiosco legado', 'dev-edb', true, 1)
+                """
+            ),
+            {"id": device_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    id, employee_id, work_date, check_in_at, check_out_at, worked_minutes, status
+                ) VALUES (
+                    :id, :employee_id, '2026-08-03',
+                    '2026-08-03 13:00:00+00', NULL, NULL, 'OPEN'
+                )
+                """
+            ),
+            {"id": record_id, "employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, device_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'nonce-con-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :device_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "device_id": device_id,
+                "record_id": record_id,
+                "payload": '{"id": "ffffffff-ffff-ffff-ffff-ffffffffffff", "event_type": "CHECK_IN"}',
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'nonce-sin-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "record_id": record_id,
+                "payload": '{"id": "ffffffff-ffff-ffff-ffff-ffffffffffff", "event_type": "CHECK_IN"}',
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, attendance_record_id, device_id, content_type, image_bytes
+                ) VALUES (
+                    '13131313-1313-1313-1313-131313131313', 'nonce-con-terminal', :employee_id, :record_id,
+                    :device_id, 'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id, "record_id": record_id, "device_id": device_id},
+        )
+
+    command.upgrade(cfg, "f2a3b4c5d6e7")
+    inspector = inspect(engine)
+    assert "attendance_attempt_resolutions" in inspector.get_table_names()
+    with engine.connect() as conn:
+        owned = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-con-terminal'")
+        ).scalar_one()
+        orphan = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-sin-terminal'")
+        ).scalar_one()
+        assert str(owned) == device_id
+        assert orphan is None
+        evidence_sha = conn.execute(
+            text("SELECT content_type FROM attendance_evidence WHERE nonce = 'nonce-con-terminal'")
+        ).scalar_one()
+        assert evidence_sha == "image/jpeg"
+        resolutions = conn.execute(text("SELECT count(*) FROM attendance_attempt_resolutions")).scalar_one()
+        assert resolutions == 0
+        status = conn.execute(
+            text("SELECT status FROM attendance_records WHERE id = :id"), {"id": record_id}
+        ).scalar_one()
+        assert status == "OPEN"
+
+    command.downgrade(cfg, "e1f2a3b4c5d6")
+    inspector_after = inspect(engine)
+    assert "attendance_attempt_resolutions" not in inspector_after.get_table_names()
+    with engine.connect() as conn:
+        orphan = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-sin-terminal'")
+        ).scalar_one()
+        assert orphan is None

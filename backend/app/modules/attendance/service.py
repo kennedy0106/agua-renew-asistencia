@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
+    AttendanceAttemptResolution,
     AttendanceConsumedNonce,
     AttendanceEvent,
     AttendanceEvidence,
@@ -141,8 +142,7 @@ class AttendanceService:
         decoded = decode_attendance_token(marking_token)
         if decoded is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if decoded.get("did") and device_id and str(decoded["did"]) != str(device_id):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self._require_token_terminal(decoded, device_id)
         employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
         nonce = str(decoded["nonce"])
@@ -153,9 +153,20 @@ class AttendanceService:
         if len(raw) > MAX_INPUT_BYTES:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El tamaño de la foto no es válido")
         normalized, ctype, digest = verify_and_normalize(raw)
-        existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
-        consumed = self.db.get(AttendanceConsumedNonce, nonce)
+
+        self.repo.lock_employee_for_attempt(employee_id)
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        resolution, consumed, existing = self._fresh_attempt_rows(nonce)
+        if resolution is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este intento ya no admite evidencia; identifique de nuevo",
+            )
         if existing is not None:
+            if existing.employee_id != employee_id:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
             if existing.image_sha256 and existing.image_sha256 != digest:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -180,7 +191,7 @@ class AttendanceService:
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
-            existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+            existing = self.repo.get_evidence_by_nonce(nonce)
             if existing is None:
                 raise
             if existing.image_sha256 and existing.image_sha256 != digest:
@@ -193,7 +204,7 @@ class AttendanceService:
         return evidence
 
     def _evidence_or_400(self, nonce: str, employee_id: uuid.UUID) -> AttendanceEvidence:
-        evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        evidence = self.repo.get_evidence_by_nonce(nonce)
         if evidence is None or evidence.employee_id != employee_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -219,7 +230,7 @@ class AttendanceService:
         }
 
     def _replay_nonce(self, nonce: str, action: str, employee_id: uuid.UUID) -> dict | None:
-        existing = self.db.get(AttendanceConsumedNonce, nonce)
+        existing = self.repo.get_consumed_nonce(nonce)
         if existing is None:
             return None
         if existing.action != action or existing.employee_id != employee_id:
@@ -239,10 +250,16 @@ class AttendanceService:
             )
         return self._record_snapshot(record, event_type=action)
 
-    def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
-        decoded = decode_attendance_token_for_recovery(marking_token)
-        if decoded is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+    @staticmethod
+    def _require_token_terminal(decoded: dict, device_id: uuid.UUID | None) -> None:
+        token_did = decoded.get("did")
+        if token_did and device_id and str(device_id) != str(token_did):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
+
+    def _require_kiosk_device(self, decoded: dict, device_id: uuid.UUID | None) -> uuid.UUID:
         if device_id is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -254,32 +271,335 @@ class AttendanceService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="El token no corresponde a este terminal",
             )
-        employee_id = uuid.UUID(str(decoded["sub"]))
-        self._get_active_employee(employee_id)
-        nonce = str(decoded["nonce"])
-        token_action = str(decoded.get("action") or "")
-        consumed = self.db.get(AttendanceConsumedNonce, nonce)
-        if consumed is None or not consumed.result_payload:
-            return {"state": "PENDING", "record": None}
-        if consumed.employee_id != employee_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if consumed.action != token_action:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if consumed.device_id is None or consumed.device_id != device_id:
+        return device_id
+
+    def _fresh_attempt_rows(self, nonce: str):
+        return (
+            self.repo.get_resolution(nonce),
+            self.repo.get_consumed_nonce(nonce),
+            self.repo.get_evidence_by_nonce(nonce),
+        )
+
+    def _reject_cancelled(self, resolution: AttendanceAttemptResolution | None) -> None:
+        if resolution is not None:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="El token no corresponde a este terminal",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este intento ya fue resuelto; identifique de nuevo",
             )
+
+    def _confirmed_within_window(self, consumed: AttendanceConsumedNonce) -> bool:
         created_at = consumed.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
         window = timedelta(minutes=get_settings().attempt_recovery_minutes)
-        if datetime.now(timezone.utc) - created_at > window:
+        return datetime.now(timezone.utc) - created_at <= window
+
+    def _status_from_rows(
+        self,
+        *,
+        nonce: str,
+        employee_id: uuid.UUID,
+        action: str,
+        device_id: uuid.UUID,
+        write_token_valid: bool,
+        resolution: AttendanceAttemptResolution | None,
+        consumed: AttendanceConsumedNonce | None,
+        evidence: AttendanceEvidence | None,
+    ) -> dict:
+        if evidence is not None and (
+            evidence.employee_id != employee_id or (evidence.device_id is not None and evidence.device_id != device_id)
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if resolution is not None:
+            if resolution.employee_id != employee_id or resolution.action != action:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+            if resolution.device_id != device_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="El token no corresponde a este terminal",
+                )
+            if consumed is not None and consumed.result_payload and resolution.resolution == "CANCELLED_UNCONFIRMED":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="El intento tiene una confirmación y una cancelación incompatibles; requiere revisión",
+                )
+            if resolution.resolution == "CANCELLED_UNCONFIRMED":
+                return {
+                    "state": "CANCELLED",
+                    "record": None,
+                    "evidence_ready": evidence is not None,
+                    "write_token_valid": False,
+                    "can_restart": True,
+                    "nonce": nonce,
+                    "resolution_id": nonce,
+                    "reason": resolution.reason,
+                }
+            return {
+                "state": "REVIEWED",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": False,
+                "can_restart": True,
+                "nonce": nonce,
+                "resolution_id": nonce,
+                "reason": resolution.reason,
+            }
+        if consumed is not None:
+            if consumed.employee_id != employee_id or consumed.action != action:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+            if consumed.device_id is None or consumed.device_id != device_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="El token no corresponde a este terminal",
+                )
+            if not consumed.result_payload:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="El intento quedó inconsistente; pida revisión autorizada",
+                )
+            if not self._confirmed_within_window(consumed):
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail="El plazo para recuperar este intento ya venció",
+                )
+            return {
+                "state": "CONFIRMED",
+                "record": consumed.result_payload,
+                "evidence_ready": True,
+                "write_token_valid": write_token_valid,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+            }
+        if write_token_valid:
+            return {
+                "state": "PENDING",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": True,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+            }
+        return {
+            "state": "EXPIRED_UNCONFIRMED",
+            "record": None,
+            "evidence_ready": evidence is not None,
+            "write_token_valid": False,
+            "can_restart": False,
+            "nonce": nonce,
+            "resolution_id": None,
+            "reason": None,
+        }
+
+    def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
+        decoded = decode_attendance_token_for_recovery(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        device = self._require_kiosk_device(decoded, device_id)
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        self._get_active_employee(employee_id)
+        nonce = str(decoded["nonce"])
+        action = str(decoded.get("action") or "")
+        write_token_valid = decode_attendance_token(marking_token) is not None
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        return self._status_from_rows(
+            nonce=nonce,
+            employee_id=employee_id,
+            action=action,
+            device_id=device,
+            write_token_valid=write_token_valid,
+            resolution=resolution,
+            consumed=consumed,
+            evidence=evidence,
+        )
+
+    def resolve_attempt(
+        self,
+        marking_token: str,
+        *,
+        reason_code: str,
+        device_id: uuid.UUID | None = None,
+    ) -> dict:
+        if reason_code not in {"TOKEN_EXPIRED", "PHOTO_RETAKE", "USER_CANCELLED"}:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Motivo de resolución no permitido")
+        decoded = decode_attendance_token_for_recovery(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        device = self._require_kiosk_device(decoded, device_id)
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        action = str(decoded.get("action") or "")
+        nonce = str(decoded["nonce"])
+        self.repo.lock_employee_for_attempt(employee_id)
+        self._get_active_employee(employee_id)
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        if evidence is not None and evidence.employee_id != employee_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        status_payload = self._status_from_rows(
+            nonce=nonce,
+            employee_id=employee_id,
+            action=action,
+            device_id=device,
+            write_token_valid=decode_attendance_token(marking_token) is not None,
+            resolution=resolution,
+            consumed=consumed,
+            evidence=evidence,
+        )
+        if status_payload["state"] == "CONFIRMED":
+            return status_payload
+        if status_payload["state"] in {"CANCELLED", "REVIEWED"}:
+            return status_payload
+        row = AttendanceAttemptResolution(
+            nonce=nonce,
+            employee_id=employee_id,
+            device_id=device,
+            action=action,
+            resolution="CANCELLED_UNCONFIRMED",
+            reason=reason_code,
+            resolved_by_user_id=None,
+            attendance_record_id=None,
+        )
+        self.db.add(row)
+        AuditRepository(self.db).create(
+            entity_type="attendance_attempt",
+            entity_id=employee_id,
+            action="ATTEMPT_CANCELLED",
+            old_values=None,
+            new_values={"nonce": nonce, "reason": reason_code, "action": action},
+            reason=reason_code,
+            performed_by=None,
+            commit=False,
+        )
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repo.get_resolution(nonce)
+            if existing is None:
+                raise
+            return self.attempt_status(marking_token, device_id=device)
+        return {
+            "state": "CANCELLED",
+            "record": None,
+            "evidence_ready": evidence is not None,
+            "write_token_valid": False,
+            "can_restart": True,
+            "nonce": nonce,
+            "resolution_id": nonce,
+            "reason": reason_code,
+        }
+
+    def inspect_attempt_admin(self, nonce: str) -> dict:
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        employee_id = None
+        action = None
+        device_id = None
+        if resolution is not None:
+            employee_id = resolution.employee_id
+            action = resolution.action
+            device_id = resolution.device_id
+        elif consumed is not None:
+            employee_id = consumed.employee_id
+            action = consumed.action
+            device_id = consumed.device_id
+        elif evidence is not None:
+            employee_id = evidence.employee_id
+            device_id = evidence.device_id
+        if employee_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Intento no encontrado")
+        employee = EmployeeRepository(self.db).get_by_id(employee_id)
+        device = None
+        if device_id is not None:
+            from app.modules.attendance.models import AttendanceDevice
+
+            device = self.db.get(AttendanceDevice, device_id)
+        automatable = device_id is not None
+        state = "UNKNOWN"
+        record = None
+        if resolution is not None:
+            state = "CANCELLED" if resolution.resolution == "CANCELLED_UNCONFIRMED" else "REVIEWED"
+        elif consumed is not None and consumed.result_payload:
+            state = "CONFIRMED"
+            record = consumed.result_payload
+            if not self._confirmed_within_window(consumed):
+                state = "CONFIRMED_WINDOW_ELAPSED"
+        elif consumed is not None:
+            state = "INCONSISTENT"
+            automatable = False
+        elif evidence is not None:
+            state = "EVIDENCE_ONLY"
+        return {
+            "nonce": nonce,
+            "employee_id": str(employee_id),
+            "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None,
+            "action": action,
+            "device_id": str(device_id) if device_id else None,
+            "device_name": device.name if device is not None else None,
+            "state": state,
+            "automatable": automatable,
+            "record": record,
+            "evidence_ready": evidence is not None,
+            "resolution": resolution.resolution if resolution is not None else None,
+        }
+
+    def review_attempt(self, nonce: str, *, reason: str, user_id: uuid.UUID) -> dict:
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        employee_id = consumed.employee_id if consumed is not None else (evidence.employee_id if evidence is not None else None)
+        if employee_id is None and resolution is not None:
+            employee_id = resolution.employee_id
+        if employee_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Intento no encontrado")
+        self.repo.lock_employee_for_attempt(employee_id)
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        if resolution is not None:
+            return self.inspect_attempt_admin(nonce)
+        if consumed is None or not consumed.result_payload:
             raise HTTPException(
-                status_code=status.HTTP_410_GONE,
-                detail="El plazo para recuperar este intento ya venció",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No hay una confirmación verificable para revisar; el terminal debe resolver el intento",
             )
-        return {"state": "CONFIRMED", "record": consumed.result_payload}
+        if consumed.device_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este registro histórico no tiene terminal demostrable; no se automatiza la pertenencia",
+            )
+        record_id = consumed.attendance_record_id
+        if record_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El intento quedó inconsistente; requiere revisión manual fuera de este mecanismo",
+            )
+        row = AttendanceAttemptResolution(
+            nonce=nonce,
+            employee_id=consumed.employee_id,
+            device_id=consumed.device_id,
+            action=consumed.action,
+            resolution="REVIEWED_CONFIRMED",
+            reason=reason,
+            resolved_by_user_id=user_id,
+            attendance_record_id=record_id,
+        )
+        self.db.add(row)
+        AuditRepository(self.db).create(
+            entity_type="attendance_attempt",
+            entity_id=consumed.employee_id,
+            action="ATTEMPT_REVIEWED",
+            old_values={"record_id": str(record_id)},
+            new_values={"nonce": nonce, "reason": reason},
+            reason=reason,
+            performed_by=user_id,
+            commit=False,
+        )
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repo.get_resolution(nonce)
+            if existing is None:
+                raise
+        return self.inspect_attempt_admin(nonce)
 
     def _consume_nonce(
         self,
@@ -313,11 +633,17 @@ class AttendanceService:
         require_evidence: bool = False,
         device_id: uuid.UUID | None = None,
         token_device_id: str | None = None,
+        marking_token: str | None = None,
     ) -> AttendanceRecord | dict:
         self._get_active_employee(employee_id)
         if token_device_id and device_id and str(device_id) != str(token_device_id):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self.repo.lock_employee_for_attempt(employee_id)
+        if marking_token and decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         if nonce:
+            resolution, _consumed, _evidence = self._fresh_attempt_rows(nonce)
+            self._reject_cancelled(resolution)
             replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
             if replay is not None:
                 return replay
@@ -343,7 +669,7 @@ class AttendanceService:
             self.db.flush()
             if nonce:
                 self._consume_nonce(nonce, "CHECK_IN", employee_id, record, device_id=device_id)
-                evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+                evidence = self.repo.get_evidence_by_nonce(nonce)
                 if evidence is not None:
                     evidence.attendance_record_id = record.id
             self._record_event(record, "CHECK_IN", now, external_event_id=nonce, device_id=device_id)
@@ -355,10 +681,13 @@ class AttendanceService:
                 replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
                 if replay is not None:
                     return replay
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Ya tiene una entrada abierta; marque su salida primero",
-            ) from exc
+            detail = str(getattr(exc, "orig", exc))
+            if "uq_attendance_one_open" in detail or "UNIQUE constraint failed" in detail:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya tiene una entrada abierta; marque su salida primero",
+                ) from exc
+            raise
         return record
 
     def check_out(
@@ -370,11 +699,17 @@ class AttendanceService:
         device_id: uuid.UUID | None = None,
         token_device_id: str | None = None,
         record_id: uuid.UUID | None = None,
+        marking_token: str | None = None,
     ) -> AttendanceRecord | dict:
         self._get_active_employee(employee_id)
         if token_device_id and device_id and str(device_id) != str(token_device_id):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self.repo.lock_employee_for_attempt(employee_id)
+        if marking_token and decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         if nonce:
+            resolution, _consumed, _evidence = self._fresh_attempt_rows(nonce)
+            self._reject_cancelled(resolution)
             replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
             if replay is not None:
                 return replay
@@ -412,7 +747,7 @@ class AttendanceService:
             self._recompute_day(employee_id, record.work_date, commit=False)
             if nonce:
                 self._consume_nonce(nonce, "CHECK_OUT", employee_id, record, device_id=device_id)
-                evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+                evidence = self.repo.get_evidence_by_nonce(nonce)
                 if evidence is not None:
                     evidence.attendance_record_id = record.id
             self._record_event(record, "CHECK_OUT", now, external_event_id=nonce, device_id=device_id)
@@ -424,10 +759,7 @@ class AttendanceService:
                 replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
                 if replay is not None:
                     return replay
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="La entrada de este intento ya no está abierta",
-            ) from exc
+            raise
         return record
 
     def list_evidence_for_record(self, record_id: uuid.UUID) -> dict:

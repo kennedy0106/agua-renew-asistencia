@@ -6,7 +6,12 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.models import (
+    AttendanceAttemptResolution,
+    AttendanceConsumedNonce,
+    AttendanceEvidence,
+    AttendanceRecord,
+)
 from app.modules.employees.models import Employee
 
 
@@ -116,4 +121,34 @@ class AttendanceRepository:
             select(func.count())
             .select_from(AttendanceRecord)
             .where(AttendanceRecord.status == "COMPLETE", AttendanceRecord.work_date == day)
+        )
+
+    def lock_employee_for_attempt(self, employee_id: uuid.UUID) -> Employee:
+        """Bloquea la fila del empleado (coordinación del intento). Sin joins."""
+        employee = self.db.scalar(select(Employee).where(Employee.id == employee_id).with_for_update())
+        if employee is None:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
+        return employee
+
+    def get_resolution(self, nonce: str) -> AttendanceAttemptResolution | None:
+        return self.db.scalar(
+            select(AttendanceAttemptResolution)
+            .where(AttendanceAttemptResolution.nonce == nonce)
+            .execution_options(populate_existing=True)
+        )
+
+    def get_consumed_nonce(self, nonce: str) -> AttendanceConsumedNonce | None:
+        return self.db.scalar(
+            select(AttendanceConsumedNonce)
+            .where(AttendanceConsumedNonce.nonce == nonce)
+            .execution_options(populate_existing=True)
+        )
+
+    def get_evidence_by_nonce(self, nonce: str) -> AttendanceEvidence | None:
+        return self.db.scalar(
+            select(AttendanceEvidence)
+            .where(AttendanceEvidence.nonce == nonce)
+            .execution_options(populate_existing=True)
         )

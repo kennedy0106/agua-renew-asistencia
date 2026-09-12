@@ -26,6 +26,8 @@ from app.modules.attendance.schemas import (
     AttendanceListItem,
     AttendanceRecordOut,
     AttendanceSummary,
+    AttemptResolveRequest,
+    AttemptReviewRequest,
     CheckInRequest,
     CheckOutRequest,
     EvidenceRequest,
@@ -138,6 +140,39 @@ def attempt_status(
     )
 
 
+@router.post("/attempt/resolve", response_model=AttemptStatusResponse)
+def resolve_attempt(
+    payload: AttemptResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+    device=Depends(require_terminal),
+) -> dict:
+    return AttendanceService(db).resolve_attempt(
+        payload.marking_token,
+        reason_code=payload.reason_code,
+        device_id=device.id if device else None,
+    )
+
+
+@router.get("/attempts/{nonce}")
+def inspect_attempt(
+    nonce: str,
+    db: Session = Depends(get_db),
+    _: object = Depends(can_correct),
+) -> dict:
+    return AttendanceService(db).inspect_attempt_admin(nonce)
+
+
+@router.post("/attempts/{nonce}/review")
+def review_attempt(
+    nonce: str,
+    payload: AttemptReviewRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> dict:
+    return AttendanceService(db).review_attempt(nonce, reason=payload.reason, user_id=user.id)
+
+
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
 def check_in(
     payload: CheckInRequest,
@@ -153,6 +188,7 @@ def check_in(
         require_evidence=require_evidence,
         device_id=device.id if device else None,
         token_device_id=token_did,
+        marking_token=payload.marking_token,
     )
 
 
@@ -172,6 +208,7 @@ def check_out(
         device_id=device.id if device else None,
         token_device_id=token_did,
         record_id=record_id,
+        marking_token=payload.marking_token,
     )
 
 

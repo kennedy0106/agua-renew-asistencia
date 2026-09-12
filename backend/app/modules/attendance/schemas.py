@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -48,9 +49,32 @@ class AttemptStatusRequest(BaseModel):
     marking_token: str
 
 
+AttemptState = Literal["CONFIRMED", "PENDING", "EXPIRED_UNCONFIRMED", "CANCELLED", "REVIEWED"]
+
+
 class AttemptStatusResponse(BaseModel):
-    state: str
+    state: AttemptState
     record: AttendanceRecordOut | None = None
+    evidence_ready: bool = False
+    write_token_valid: bool = False
+    can_restart: bool = False
+    nonce: str | None = None
+    resolution_id: str | None = None
+    reason: str | None = None
+
+
+class AttemptResolveRequest(BaseModel):
+    marking_token: str
+    reason_code: Literal["TOKEN_EXPIRED", "PHOTO_RETAKE", "USER_CANCELLED"]
+
+
+class AttemptReviewRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
 
 
 class IdentifyResponse(BaseModel):

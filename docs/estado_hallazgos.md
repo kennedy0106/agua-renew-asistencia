@@ -1,4 +1,4 @@
-# Estado de hallazgos (H01–H07, CDB-01–CDB-03 y R45)
+# Estado de hallazgos (H01–H07, CDB-01–CDB-03, R45 y EDB-01–EDB-03)
 
 Documento de seguimiento. No certifica seguridad global ni exactitud de toda la nómina.
 
@@ -7,8 +7,8 @@ Documento de seguimiento. No certifica seguridad global ni exactitud de toda la 
 | ID | Estado | Qué queda |
 |---|---|---|
 | H01 | Cerrado | Ajuste salarial con `FOR UPDATE` sin `joinedload`; pruebas PostgreSQL de bono y 409. |
-| H02 | Parcialmente resuelto | Evidencia idempotente, `/attempt/status` y recuperación con token corto vencido. R45-02 exige terminal autenticado y `device_id` coincidente; sin pertenencia no hay recuperación de kiosco. Falta el recorrido en tablet física. |
-| H03 | Parcialmente resuelto | Generación y bloqueos; R45-03 conserva el intento enviado. Pruebas UI con API simulada y suite de integración local. Falta tablet física. |
+| H02 | Parcialmente resuelto | Evidencia idempotente, `/attempt/status` y recuperación con token corto vencido. R45-02 exige terminal autenticado y `device_id` coincidente; EDB-02 añade resolución durable y revisión ADMIN/BOSS. Falta el recorrido en tablet física. |
+| H03 | Parcialmente resuelto | Generación y bloqueos; R45-03 conserva el intento enviado. EDB-01 separa consultar de reenviar. Pruebas UI con API simulada y suite de integración local. Falta tablet física. |
 | H04 | Implementado; ampliar evidencia | `UPDATE` condicional por hash y canje simultáneo en PostgreSQL. |
 | H05 | Parcialmente resuelto | Límites antes de `load()` y EXIF; CDB-03 cubre bombas de descompresión en `Image.open()`. |
 | H06 | Implementado en código | Vista QR e identificación automática. Pendiente tablet física (detector, cámaras, luz). |
@@ -31,9 +31,17 @@ Documento de seguimiento. No certifica seguridad global ni exactitud de toda la 
 | R45-03 | Intento enviado se persiste en `sessionStorage` (token + acción + empleado; sin cookie ni foto). «Tomar otra foto» recaptura el mismo intento; cancelar no borra una asistencia confirmada. | UI de carreras + integración con respuesta perdida tras commit real | Cerrado en Chromium de escritorio | Corte de red real en tablet |
 | R45-04 | Suite UI (API simulada) + integración Chromium/Next/FastAPI/Postgres desechable con Alembic | `npm run test:e2e` y `npm run test:e2e:integration` en CI | Debe ejecutarse en la rama; falla si falta el entorno | No declara tablet física |
 
-### Referencia mínima del kiosco (R45-03)
+## EDB-01–EDB-03 (sobre `edbfcbc`)
 
-Si la marcación ya se envió y el resultado es incierto, el kiosco guarda en `sessionStorage` (`agua_renew_kiosk_open_attempt`) el token de marcación, la acción y el empleado. No guarda la cookie del terminal, contraseñas ni fotografías. Sirve para consultar el mismo intento tras recargar. Un 401/410 o un fallo de consulta muestra el paso de revisión por un jefe; no se afirma que no se haya marcado.
+| ID | Corrección | Prueba | Pendiente |
+|---|---|---|---|
+| EDB-03 | `seed_e2e_kiosk` exige `TEST_DATABASE_URL` validada; no usa `SessionLocal` ni `DATABASE_URL`. | `test_seed_e2e_kiosk.py` con destinos ficticios locales | Ninguno de seed en Neon |
+| EDB-01 | `consultAttempt()` es lectura; `kiosk-consult-attempt` no llama a `sendPhoto`. Recarga sin foto local. | UI f/g + integración T01/T02 | Tablet física |
+| EDB-02 | Tabla `attendance_attempt_resolutions`, lock de empleado, `/attempt/resolve`, revisión ADMIN/BOSS, completar evidencia existente. | Hardening, concurrencia A/B, Alembic `e1f2a3b4c5d6`→`f2a3b4c5d6e7`, T03–T11 | Tablet física y despliegue autorizado |
+
+### Referencia mínima del kiosco (R45-03 / EDB-01)
+
+Si la marcación ya se envió y el resultado es incierto, el kiosco guarda en `sessionStorage` (`agua_renew_kiosk_open_attempt`) el token de marcación, la acción, el empleado y la etapa local versionada. No guarda la cookie del terminal, contraseñas ni fotografías. Consultar no sube foto. Un 401/410 o un fallo de consulta muestra el paso de revisión por un jefe; no se afirma que no se haya marcado. Tras CANCELLED/REVIEWED, «Volver al inicio» es explícito.
 
 ### Avisos npm (clasificación)
 
@@ -47,10 +55,11 @@ Ejecutado `npm audit --json` (sin `--force`):
 
 No se usó `npm audit fix --force`. No quedan avisos conocidos en el árbol tras el parche de Next.
 
-### Migración `e1f2a3b4c5d6`
+### Migraciones
 
-Probada en PostgreSQL local desechable (esquema vacío y nonces sin `device_id`). No aplicada a Neon en este incremento. El backend nuevo necesita un esquema compatible antes de un despliegue autorizado.
+- `e1f2a3b4c5d6`: pertenencia de nonce. Probada en PostgreSQL local desechable. No aplicada a Neon en R45.
+- `f2a3b4c5d6e7`: tabla `attendance_attempt_resolutions`. Upgrade poblado desde `e1f2a3b4c5d6` en Postgres desechable. **No aplicada a Neon.** El backend nuevo necesita un esquema compatible antes de un despliegue autorizado. Un downgrade de esta revisión elimina la trazabilidad de resoluciones.
 
 ## Fuera de este incremento
 
-Prorrateo salarial, R2, retención de fotos confirmadas y funciones nuevas del ERP.
+Prorrateo salarial, R2, retención de fotos confirmadas, funciones nuevas del ERP, tablet física y despliegue productivo.

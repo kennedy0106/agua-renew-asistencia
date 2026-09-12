@@ -77,6 +77,10 @@ export default function AdminAttendancePage() {
     check_out: null,
     missing: null,
   });
+  const [attemptNonce, setAttemptNonce] = useState("");
+  const [attemptReason, setAttemptReason] = useState("");
+  const [attemptLookup, setAttemptLookup] = useState<string | null>(null);
+  const [reviewingAttempt, setReviewingAttempt] = useState(false);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
 
@@ -163,6 +167,46 @@ export default function AdminAttendancePage() {
     }
   }
 
+  async function lookupKioskAttempt() {
+    if (!canManage) return;
+    setReviewingAttempt(true);
+    setError(null);
+    try {
+      const inspected = await attendanceAdminApi.inspectAttempt(attemptNonce.trim());
+      setAttemptLookup(
+        [
+          inspected.state,
+          inspected.employee_name ?? inspected.employee_id,
+          inspected.action ?? "sin acción",
+          inspected.automatable ? "revisable" : "no automatizable",
+          inspected.record?.id ? `evento ${inspected.record.id}` : "sin evento",
+        ].join(" · "),
+      );
+    } catch (err) {
+      setAttemptLookup(null);
+      setError(err instanceof ApiError ? err.message : "No se encontró el intento");
+    } finally {
+      setReviewingAttempt(false);
+    }
+  }
+
+  async function reviewKioskAttempt(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canManage) return;
+    setReviewingAttempt(true);
+    setError(null);
+    try {
+      await attendanceAdminApi.reviewAttempt(attemptNonce.trim(), attemptReason.trim());
+      setAttemptReason("");
+      const inspected = await attendanceAdminApi.inspectAttempt(attemptNonce.trim());
+      setAttemptLookup(`Revisado · ${inspected.state} · el registro original no se modificó`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo revisar el intento");
+    } finally {
+      setReviewingAttempt(false);
+    }
+  }
+
   function exportCsv() {
     const params = new URLSearchParams();
     if (employeeFilter) params.set("employee_id", employeeFilter);
@@ -221,6 +265,57 @@ export default function AdminAttendancePage() {
           Exportar CSV
         </button>
       </div>
+
+      {canManage && (
+        <form className="card card-pad" style={{ marginBottom: "1rem" }} onSubmit={reviewKioskAttempt}>
+          <h2 className="card-title">Revisar intento de kiosco</h2>
+          <p className="muted" style={{ fontSize: "0.8rem", margin: "0.35rem 0 0.7rem" }}>
+            Use la referencia mostrada en la tablet. Conserva el evento original; no corrige horas ni borra fotos.
+          </p>
+          <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
+            <div>
+              <label className="label" htmlFor="kiosk-attempt-nonce">
+                Referencia del intento
+              </label>
+              <input
+                id="kiosk-attempt-nonce"
+                className="input"
+                value={attemptNonce}
+                onChange={(e) => setAttemptNonce(e.target.value)}
+                placeholder="nonce del kiosco"
+                data-testid="admin-attempt-nonce"
+              />
+            </div>
+            <div>
+              <label className="label" htmlFor="kiosk-attempt-reason">
+                Motivo
+              </label>
+              <input
+                id="kiosk-attempt-reason"
+                className="input"
+                value={attemptReason}
+                onChange={(e) => setAttemptReason(e.target.value)}
+                minLength={3}
+                placeholder="Revisión autorizada"
+                data-testid="admin-attempt-reason"
+              />
+            </div>
+          </div>
+          {attemptLookup && (
+            <p className="muted" style={{ marginTop: "0.6rem" }} data-testid="admin-attempt-lookup">
+              {attemptLookup}
+            </p>
+          )}
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
+            <button type="button" className="btn btn-outline btn-sm" disabled={reviewingAttempt || !attemptNonce.trim()} onClick={() => void lookupKioskAttempt()}>
+              Consultar intento
+            </button>
+            <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
+              {reviewingAttempt ? "Guardando…" : "Revisar y liberar kiosco"}
+            </button>
+          </div>
+        </form>
+      )}
 
       {photosFor && !correcting && (
         <div className="card card-pad" style={{ marginBottom: "1rem" }}>

@@ -254,8 +254,14 @@ export type AttendanceRecordOut = {
 };
 
 export type AttemptStatusResponse = {
-  state: "CONFIRMED" | "PENDING" | string;
+  state: "CONFIRMED" | "PENDING" | "EXPIRED_UNCONFIRMED" | "CANCELLED" | "REVIEWED";
   record: AttendanceRecordOut | null;
+  evidence_ready?: boolean;
+  write_token_valid?: boolean;
+  can_restart?: boolean;
+  nonce?: string | null;
+  resolution_id?: string | null;
+  reason?: string | null;
 };
 
 export const attendanceApi = {
@@ -292,6 +298,11 @@ export const attendanceApi = {
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/status", {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
+    }),
+  resolveAttempt: (markingToken: string, reasonCode: "TOKEN_EXPIRED" | "PHOTO_RETAKE" | "USER_CANCELLED") =>
+    apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/resolve", {
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken, reason_code: reasonCode }),
     }),
 };
 
@@ -368,6 +379,25 @@ export const attendanceAdminApi = {
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
+  inspectAttempt: (nonce: string) =>
+    apiFetch<{
+      nonce: string;
+      employee_id: string;
+      employee_name: string | null;
+      action: string | null;
+      device_id: string | null;
+      device_name: string | null;
+      state: string;
+      automatable: boolean;
+      record: AttendanceRecordOut | null;
+      evidence_ready: boolean;
+      resolution: string | null;
+    }>(`/api/v1/attendance/attempts/${encodeURIComponent(nonce)}`),
+  reviewAttempt: (nonce: string, reason: string) =>
+    apiFetch<unknown>(`/api/v1/attendance/attempts/${encodeURIComponent(nonce)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
 };
 
 export type AttendanceDevice = {

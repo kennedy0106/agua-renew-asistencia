@@ -419,3 +419,450 @@ def test_canje_simultaneo_mismo_codigo(pg_engine):
         check.commit()
     finally:
         check.close()
+
+
+def _seed_employee_device(session):
+    from app.modules.attendance.models import AttendanceDevice
+
+    role = JobRole(name=f"Rol-{uuid.uuid4().hex[:8]}", active=True)
+    session.add(role)
+    session.flush()
+    employee = Employee(
+        dni=str(uuid.uuid4().int)[:8],
+        employee_code=f"E-{uuid.uuid4().hex[:8]}",
+        first_name="Ana",
+        last_name="López",
+        job_role_id=role.id,
+        active=True,
+        qr_token=uuid.uuid4().hex,
+    )
+    session.add(employee)
+    session.flush()
+    device = AttendanceDevice(
+        name=f"Kiosco {uuid.uuid4().hex[:6]}",
+        device_code=uuid.uuid4().hex,
+        active=True,
+    )
+    session.add(device)
+    session.commit()
+    return employee.id, device.id
+
+
+def _cleanup_attempt(session, employee_id, device_id) -> None:
+    session.execute(text("DELETE FROM attendance_attempt_resolutions WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_events WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_evidence WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_consumed_nonces WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_records WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM employees WHERE id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_devices WHERE id = :id"), {"id": device_id})
+    session.commit()
+
+
+def test_marcacion_gana_resolucion_ve_confirmado(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceRecord
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    nonce = str(decode_attendance_token(token)["nonce"])
+    holding = threading.Event()
+    results: dict[str, object] = {}
+
+    def marker():
+        db = factory()
+        try:
+            service = AttendanceService(db)
+            service.repo.lock_employee_for_attempt(employee_id)
+            holding.set()
+            results["mark"] = service.check_in(
+                employee_id,
+                nonce=nonce,
+                require_evidence=False,
+                device_id=device_id,
+                token_device_id=str(device_id),
+                marking_token=token,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["mark"] = exc.status_code
+            raise
+        finally:
+            db.close()
+
+    def resolver():
+        db = factory()
+        try:
+            holding.wait(timeout=5)
+            results["resolve"] = AttendanceService(db).resolve_attempt(
+                token, reason_code="USER_CANCELLED", device_id=device_id
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["resolve"] = exc.status_code
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=marker, name="marker-first"),
+        threading.Thread(target=resolver, name="resolver-wait"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+
+    marked = results.get("mark")
+    assert marked is not None and not isinstance(marked, int)
+    resolved = results.get("resolve")
+    assert isinstance(resolved, dict)
+    assert resolved["state"] == "CONFIRMED"
+    check = factory()
+    try:
+        records = list(check.scalars(select(AttendanceRecord).where(AttendanceRecord.employee_id == employee_id)))
+        assert len(records) == 1
+        assert check.scalar(select(AttendanceAttemptResolution).where(AttendanceAttemptResolution.nonce == nonce)) is None
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()
+
+
+def test_resolucion_gana_marcacion_no_crea_evento(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceRecord
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    nonce = str(decode_attendance_token(token)["nonce"])
+    holding = threading.Event()
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def resolver():
+        db = factory()
+        try:
+            service = AttendanceService(db)
+            service.repo.lock_employee_for_attempt(employee_id)
+            holding.set()
+            results["resolve"] = service.resolve_attempt(
+                token, reason_code="USER_CANCELLED", device_id=device_id
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["resolve"] = exc.status_code
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    def marker():
+        db = factory()
+        try:
+            holding.wait(timeout=5)
+            results["mark"] = AttendanceService(db).check_in(
+                employee_id,
+                nonce=nonce,
+                require_evidence=False,
+                device_id=device_id,
+                token_device_id=str(device_id),
+                marking_token=token,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["mark"] = exc.status_code
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=resolver, name="resolver-first"),
+        threading.Thread(target=marker, name="marker-wait"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not errors
+
+    resolved = results.get("resolve")
+    assert isinstance(resolved, dict) and resolved["state"] == "CANCELLED"
+    assert results.get("mark") == 409
+    check = factory()
+    try:
+        records = list(check.scalars(select(AttendanceRecord).where(AttendanceRecord.employee_id == employee_id)))
+        assert records == []
+        row = check.scalar(select(AttendanceAttemptResolution).where(AttendanceAttemptResolution.nonce == nonce))
+        assert row is not None
+        assert row.resolution == "CANCELLED_UNCONFIRMED"
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()
+
+
+def test_evidencia_vs_resolucion_ambos_ordenes(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    from tests.image_helpers import valid_jpeg_b64
+    from app.modules.attendance.models import AttendanceEvidence
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    holding = threading.Event()
+    results: dict[str, object] = {}
+
+    def evidence_first():
+        db = factory()
+        try:
+            service = AttendanceService(db)
+            service.repo.lock_employee_for_attempt(employee_id)
+            holding.set()
+            results["evidence"] = service.store_evidence(
+                marking_token=token,
+                image_base64=valid_jpeg_b64(),
+                content_type="image/jpeg",
+                device_id=device_id,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["evidence"] = exc.status_code
+        finally:
+            db.close()
+
+    def resolve_wait():
+        db = factory()
+        try:
+            holding.wait(timeout=5)
+            results["resolve"] = AttendanceService(db).resolve_attempt(
+                token, reason_code="PHOTO_RETAKE", device_id=device_id
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["resolve"] = exc.status_code
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=evidence_first, name="evidence-first"),
+        threading.Thread(target=resolve_wait, name="resolve-after-evidence"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not isinstance(results.get("evidence"), int)
+    assert isinstance(results.get("resolve"), dict)
+    assert results["resolve"]["state"] == "CANCELLED"
+
+    token_b = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    holding_b = threading.Event()
+    results_b: dict[str, object] = {}
+
+    def resolve_first():
+        db = factory()
+        try:
+            service = AttendanceService(db)
+            service.repo.lock_employee_for_attempt(employee_id)
+            holding_b.set()
+            results_b["resolve"] = service.resolve_attempt(
+                token_b, reason_code="PHOTO_RETAKE", device_id=device_id
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results_b["resolve"] = exc.status_code
+        finally:
+            db.close()
+
+    def evidence_wait():
+        db = factory()
+        try:
+            holding_b.wait(timeout=5)
+            results_b["evidence"] = AttendanceService(db).store_evidence(
+                marking_token=token_b,
+                image_base64=valid_jpeg_b64(color=(9, 9, 9)),
+                content_type="image/jpeg",
+                device_id=device_id,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results_b["evidence"] = exc.status_code
+        finally:
+            db.close()
+
+    threads_b = [
+        threading.Thread(target=resolve_first, name="resolve-first-ev"),
+        threading.Thread(target=evidence_wait, name="evidence-after-resolve"),
+    ]
+    for thread in threads_b:
+        thread.start()
+    _join_finished(threads_b)
+    assert isinstance(results_b.get("resolve"), dict) and results_b["resolve"]["state"] == "CANCELLED"
+    assert results_b.get("evidence") == 409
+    check = factory()
+    try:
+        leftover = list(check.scalars(select(AttendanceEvidence).where(AttendanceEvidence.employee_id == employee_id)))
+        assert len(leftover) == 1
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()
+
+
+def test_dos_resoluciones_simultaneas_una_fila(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    from sqlalchemy import func
+    from app.modules.attendance.models import AttendanceAttemptResolution
+    from app.modules.audit.models import AuditLog
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    nonce = str(decode_attendance_token(token)["nonce"])
+    barrier = threading.Barrier(2)
+    payloads: list[object] = []
+    errors: list[BaseException] = []
+
+    def worker():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            payloads.append(
+                AttendanceService(db).resolve_attempt(token, reason_code="USER_CANCELLED", device_id=device_id)
+            )
+        except HTTPException as exc:
+            payloads.append(exc.status_code)
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=worker, name="resolve-a"), threading.Thread(target=worker, name="resolve-b")]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not errors
+    states = [item["state"] for item in payloads if isinstance(item, dict)]
+    assert states == ["CANCELLED", "CANCELLED"]
+    check = factory()
+    try:
+        count = check.scalar(
+            select(func.count()).select_from(AttendanceAttemptResolution).where(AttendanceAttemptResolution.nonce == nonce)
+        )
+        assert count == 1
+        audits = check.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(AuditLog.entity_id == employee_id, AuditLog.action == "ATTEMPT_CANCELLED")
+        )
+        assert audits == 1
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()
+
+
+def test_permiso_vence_esperando_el_lock(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    import time
+    from datetime import datetime, timedelta, timezone
+    import jwt
+    from app.core.config import get_settings
+    from app.modules.attendance.models import AttendanceRecord
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id), minutes=1)
+    nonce = str(decode_attendance_token(token)["nonce"])
+    locked = threading.Event()
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def holder():
+        db = factory()
+        try:
+            AttendanceService(db).repo.lock_employee_for_attempt(employee_id)
+            locked.set()
+            time.sleep(1.5)
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.rollback()
+            db.close()
+
+    def late_mark():
+        db = factory()
+        try:
+            assert locked.wait(timeout=5)
+            settings = get_settings()
+            payload = jwt.decode(
+                token,
+                settings.secret_key,
+                algorithms=[settings.jwt_algorithm],
+                options={"verify_exp": False},
+            )
+            payload["exp"] = datetime.now(timezone.utc) - timedelta(seconds=5)
+            expired = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+            results["mark"] = AttendanceService(db).check_in(
+                employee_id,
+                nonce=nonce,
+                require_evidence=False,
+                device_id=device_id,
+                token_device_id=str(device_id),
+                marking_token=expired,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["mark"] = exc.status_code
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=holder, name="lock-holder"),
+        threading.Thread(target=late_mark, name="expired-writer"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads, timeout=20)
+    assert not errors
+    assert results.get("mark") == 401
+    check = factory()
+    try:
+        records = list(check.scalars(select(AttendanceRecord).where(AttendanceRecord.employee_id == employee_id)))
+        assert records == []
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()

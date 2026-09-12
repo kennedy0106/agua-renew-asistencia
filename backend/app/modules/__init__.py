@@ -7,6 +7,7 @@ del paquete antes de importar cualquier submódulo, las relaciones por nombre
 
 from app.modules.adjustments.models import HourAdjustment  # noqa: F401
 from app.modules.attendance.models import (  # noqa: F401
+    AttendanceAttemptResolution,
     AttendanceConsumedNonce,
     AttendanceDevice,
     AttendanceEvent,
