@@ -30,6 +30,14 @@ def _employee(client, db_session) -> str:
     return response.json()["id"]
 
 
+def _pair_kiosk(client, name: str = "Kiosco A") -> dict:
+    created = client.post("/api/v1/devices", json={"name": name})
+    assert created.status_code == 201, created.text
+    paired = client.post("/api/v1/attendance/terminal/pair", json={"pairing_code": created.json()["pairing_code"]})
+    assert paired.status_code == 200, paired.text
+    return created.json()
+
+
 def test_identificacion_entrega_token_para_marcar(client, db_session):
     _login(client)
     _employee(client, db_session)
@@ -344,6 +352,7 @@ def test_reenvio_misma_foto_tras_confirmar_devuelve_evidencia(client, db_session
 def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     _login(client)
     _employee(client, db_session)
+    device = _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
     assert pending.status_code == 200
@@ -375,6 +384,13 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     isolated = client.post("/api/v1/attendance/attempt/status", json={"marking_token": other_token})
     assert isolated.status_code == 200
     assert isolated.json()["state"] == "PENDING"
+    from sqlalchemy import select
+    from app.modules.attendance.models import AttendanceConsumedNonce
+    import uuid as uuid_mod
+
+    row = db_session.scalar(select(AttendanceConsumedNonce))
+    assert row is not None
+    assert row.device_id == uuid_mod.UUID(device["id"])
 
 
 def test_attempt_status_exige_terminal_en_produccion(client, db_session, monkeypatch):
@@ -504,6 +520,7 @@ def test_recupera_entrada_con_token_corto_vencido(client, db_session):
 
     _login(client)
     _employee(client, db_session)
+    _pair_kiosk(client)
     photo = valid_jpeg_b64()
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     evidence = client.post(
@@ -534,6 +551,7 @@ def test_recupera_entrada_con_token_corto_vencido(client, db_session):
 def test_recupera_salida_con_token_corto_vencido(client, db_session):
     _login(client)
     _employee(client, db_session)
+    _pair_kiosk(client)
     in_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     client.post(
         "/api/v1/attendance/evidence",
@@ -564,6 +582,7 @@ def test_attempt_status_fuera_de_plazo_410(client, db_session):
 
     _login(client)
     _employee(client, db_session)
+    _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     client.post(
         "/api/v1/attendance/evidence",
@@ -627,3 +646,72 @@ def test_attempt_status_otro_terminal_y_revocado(client, db_session, monkeypatch
     finally:
         monkeypatch.setenv("ENVIRONMENT", "development")
         get_settings.cache_clear()
+
+
+def test_attempt_status_sin_terminal_401(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert pending.status_code == 401
+
+
+def test_attempt_status_pending_exige_mismo_terminal(client, db_session):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_db
+
+    _login(client)
+    _employee(client, db_session)
+    first = _pair_kiosk(client, "Kiosco pendiente A")
+    second = client.post("/api/v1/devices", json={"name": "Kiosco pendiente B"})
+    assert second.status_code == 201
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    own = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert own.status_code == 200
+    assert own.json()["state"] == "PENDING"
+
+    other = TestClient(app)
+
+    def _override():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        assert other.post("/api/v1/attendance/terminal/pair", json={"pairing_code": second.json()["pairing_code"]}).status_code == 200
+        denied = other.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+        assert denied.status_code == 401
+    finally:
+        other.close()
+    assert first["id"]
+
+
+def test_attempt_status_pertenencia_nula_401_sin_backfill(client, db_session):
+    import uuid
+    from sqlalchemy import select
+    from app.modules.attendance.models import AttendanceConsumedNonce
+
+    _login(client)
+    _employee(client, db_session)
+    device = _pair_kiosk(client, "Kiosco nulo")
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    marked = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
+    assert marked.status_code == 201
+    row = db_session.scalar(select(AttendanceConsumedNonce))
+    assert row is not None
+    assert row.device_id == uuid.UUID(device["id"])
+    row.device_id = None
+    db_session.add(row)
+    db_session.commit()
+    denied = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
+    assert denied.status_code == 401
+    db_session.expire_all()
+    stored = db_session.scalar(select(AttendanceConsumedNonce))
+    assert stored is not None
+    assert stored.device_id is None
+    assert stored.result_payload is not None
+    assert stored.result_payload["id"] == marked.json()["id"]

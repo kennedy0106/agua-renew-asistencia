@@ -1,12 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
 
+if (process.env.E2E_INTEGRATION !== "1") {
+  throw new Error("E2E_INTEGRATION=1 es obligatorio para playwright.integration.config.ts");
+}
+
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: /.*\.ui\.spec\.ts/,
+  testMatch: /.*\.integration\.spec\.ts/,
   fullyParallel: false,
+  workers: 1,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
-  timeout: 60_000,
+  retries: 0,
+  timeout: 180_000,
+  expect: { timeout: 20_000 },
   use: {
     baseURL: "http://127.0.0.1:3000",
     permissions: ["camera"],
@@ -20,5 +26,5 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
-  projects: [{ name: "chromium-ui", use: { ...devices["Desktop Chrome"] } }],
+  projects: [{ name: "chromium-integration", use: { ...devices["Desktop Chrome"] } }],
 });

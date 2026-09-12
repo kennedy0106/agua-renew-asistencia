@@ -160,3 +160,85 @@ def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypa
         assert "result_payload" in nonce_cols
         assert "device_id" in nonce_cols
 
+
+def test_alembic_upgrade_conserva_nonces_sin_device_id(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """e1f2a3b4c5d6 deja device_id NULL en nonces anteriores; no inventa propietario."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "d9a1b2c3d4e5")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    record_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-LEG', 'Luis', 'Paz', :role_id, true, 'qr-legacy-nonce')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    id, employee_id, work_date, check_in_at, check_out_at, worked_minutes, status
+                ) VALUES (
+                    :id, :employee_id, '2026-08-03',
+                    '2026-08-03 13:00:00+00', NULL, NULL, 'OPEN'
+                )
+                """
+            ),
+            {"id": record_id, "employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'legacy-nonce-sin-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "record_id": record_id,
+                "payload": '{"id": "cccccccc-cccc-cccc-cccc-cccccccccccc", "event_type": "CHECK_IN"}',
+            },
+        )
+
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT device_id, action, employee_id, result_payload
+                FROM attendance_consumed_nonces
+                WHERE nonce = 'legacy-nonce-sin-terminal'
+                """
+            )
+        ).one()
+        assert row[0] is None
+        assert row[1] == "CHECK_IN"
+        assert str(row[2]) == employee_id
+        payload = row[3]
+        assert payload["event_type"] == "CHECK_IN"
+

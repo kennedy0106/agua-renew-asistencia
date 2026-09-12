@@ -67,7 +67,85 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+      - name: El bundle no incluye fotografía sintética
+        run: |
+          if grep -R "__E2E_KIOSK" .next/static .next/server --exclude-dir=dev; then
+            echo "El bundle contiene el bypass de cámara sintético"
+            exit 1
+          fi
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
         env:
           CI: true
+
+  e2e-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: asistencia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
+      DATABASE_URL_UNPOOLED: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
+      ALLOW_TEST_DB_RESET: "1"
+      SECRET_KEY: e2e-asistencia-secret-key-32chars!!
+      ENVIRONMENT: development
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+      E2E_API_URL: http://127.0.0.1:8000
+      E2E_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Instalar y migrar API
+        working-directory: backend
+        run: |
+          uv sync --group dev
+          uv run alembic upgrade head
+          uv run python -m scripts.seed_e2e_kiosk
+      - name: Arrancar FastAPI
+        working-directory: backend
+        run: |
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asistencia-api.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8000/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FastAPI no respondió"
+          cat /tmp/asistencia-api.log
+          exit 1
+      - name: Instalar y construir frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Playwright con API y Postgres reales
+        working-directory: frontend
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e:integration
+        env:
+          CI: true
+          E2E_INTEGRATION: "1"
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          E2E_API_URL: http://127.0.0.1:8000
+          SECRET_KEY: e2e-asistencia-secret-key-32chars!!
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
+          ALLOW_TEST_DB_RESET: "1"

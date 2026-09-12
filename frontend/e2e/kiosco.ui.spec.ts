@@ -1,5 +1,6 @@
 import { expect, type Page, type Route } from "@playwright/test";
 import { test } from "@playwright/test";
+import { deferred, installKioskCameraHarness } from "./kiosk-harness";
 
 type IdentifyBody = {
   employee: { id: string; first_name: string; last_name: string; job_role_name: string | null; active: boolean };
@@ -46,51 +47,24 @@ async function fulfillApi(route: Route, status: number, body: unknown) {
   });
 }
 
-async function installKioskStubs(page: Page) {
-  await page.addInitScript(() => {
-    (window as unknown as { __E2E_KIOSK: boolean }).__E2E_KIOSK = true;
-    navigator.mediaDevices.getUserMedia = async () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 640;
-      canvas.height = 480;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.fillStyle = "#224466";
-        ctx.fillRect(0, 0, 640, 480);
-      }
-      return canvas.captureStream(8);
-    };
-    const queued: string[] = [];
-    (window as unknown as { __pushQr: (value: string) => void }).__pushQr = (value: string) => {
-      queued.push(value);
-    };
-    class FakeDetector {
-      async detect() {
-        const raw = queued.shift();
-        return raw ? [{ rawValue: raw }] : [];
-      }
-    }
-    (window as unknown as { BarcodeDetector: unknown }).BarcodeDetector = FakeDetector;
-  });
+async function identifyUntilIncident(page: Page) {
+  await page.goto("/asistencia");
+  await expect(page.getByTestId("kiosk-identify")).toBeVisible();
+  await page.getByTestId("kiosk-identifier").fill("EMP-001");
+  await page.getByTestId("kiosk-identify").click();
+  await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 20_000 });
 }
 
-function deferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
-test.describe("kiosco aislamiento de intentos", () => {
+test.describe("kiosco UI con API simulada", () => {
   test.beforeEach(async ({ page }) => {
-    await installKioskStubs(page);
+    await installKioskCameraHarness(page);
   });
 
   test("a) cancelar durante consulta de reintento no sube evidencia vieja", async ({ page }) => {
     let evidenceCalls = 0;
     const secondStatus = deferred();
     let statusCalls = 0;
+    let statusReleased = false;
 
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") {
@@ -114,23 +88,27 @@ test.describe("kiosco aislamiento de intentos", () => {
           return;
         }
         await secondStatus.promise;
+        statusReleased = true;
         await fulfillApi(route, 200, { state: "PENDING", record: null });
         return;
       }
       await fulfillApi(route, 404, {});
     });
 
-    await page.goto("/asistencia");
-    await expect(page.getByTestId("kiosk-identify")).toBeVisible();
-    await page.getByTestId("kiosk-identifier").fill("EMP-001");
-    await page.getByTestId("kiosk-identify").click();
-    await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 20_000 });
+    await identifyUntilIncident(page);
     const evidenceBeforeResend = evidenceCalls;
     await page.getByTestId("kiosk-resend").click();
+    await expect.poll(() => statusCalls).toBe(2);
     await page.getByTestId("kiosk-take-another").click();
-    await expect(page.locator("[data-phase='identificando']")).toBeVisible();
+    await expect(page.locator("[data-phase='identificando']")).toHaveCount(0);
+    await expect(
+      page.locator("[data-phase='abriendo_camara'], [data-phase='video_listo'], [data-phase='cuenta_regresiva']"),
+    ).toBeVisible();
+    await page.getByTestId("kiosk-cancel-camera").click();
+    await expect(page.locator("[data-phase='incidencia']")).toBeVisible();
+    await expect(page.locator("[data-phase='identificando']")).toHaveCount(0);
     secondStatus.resolve();
-    await page.waitForTimeout(400);
+    await expect.poll(() => statusReleased).toBe(true);
     expect(evidenceCalls).toBe(evidenceBeforeResend);
     await expect(page.locator("[data-phase='enviando']")).toHaveCount(0);
   });
@@ -139,6 +117,7 @@ test.describe("kiosco aislamiento de intentos", () => {
     const gateA = deferred();
     const gateB = deferred();
     const identified: string[] = [];
+    let aReleased = false;
 
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") {
@@ -150,6 +129,7 @@ test.describe("kiosco aislamiento de intentos", () => {
         identified.push(String(body.identifier));
         if (String(body.identifier).includes("AAA")) {
           await gateA.promise;
+          aReleased = true;
           await fulfillApi(route, 200, identifyPayload("Ana", "tok-a"));
           return;
         }
@@ -171,13 +151,14 @@ test.describe("kiosco aislamiento de intentos", () => {
     await page.getByTestId("kiosk-identify").click();
     await expect.poll(() => identified.length).toBe(2);
     gateA.resolve();
-    await page.waitForTimeout(300);
+    await expect.poll(() => aReleased).toBe(true);
     await expect(page.getByTestId("kiosk-identify")).toBeDisabled();
+    await expect(page.getByTestId("kiosk-employee-name")).toHaveCount(0);
     gateB.resolve();
     await expect(page.getByTestId("kiosk-employee-name")).toContainText("Luis", { timeout: 10_000 });
   });
 
-  test("c) cancelar QR pendiente no identifica", async ({ page }) => {
+  test("c) detect QR pendiente se resuelve después de cancelar y no identifica", async ({ page }) => {
     let identifyCalls = 0;
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") {
@@ -193,18 +174,25 @@ test.describe("kiosco aislamiento de intentos", () => {
     });
 
     await page.goto("/asistencia");
+    await page.evaluate(() => (window as unknown as { __armHangingDetect: () => void }).__armHangingDetect());
     await page.getByTestId("kiosk-scan-qr").click();
     await expect(page.locator("[data-phase='escaneando_qr']")).toBeVisible();
+    await expect
+      .poll(async () => page.evaluate(() => (window as unknown as { __detectEnteredCount: number }).__detectEnteredCount))
+      .toBeGreaterThan(0);
     await page.getByTestId("kiosk-cancel-qr").click();
     await expect(page.locator("[data-phase='identificando']")).toBeVisible();
-    await page.evaluate(() => (window as unknown as { __pushQr: (v: string) => void }).__pushQr("AR:AAA"));
-    await page.waitForTimeout(600);
-    expect(identifyCalls).toBe(0);
+    await page.evaluate(() =>
+      (window as unknown as { __resolveHangingDetect: (value: string | null) => void }).__resolveHangingDetect("AR:AAA"),
+    );
+    await expect.poll(() => identifyCalls).toBe(0);
   });
 
-  test("d) respuesta antigua no cambia al trabajador actual", async ({ page }) => {
+  test("d) respuesta antigua de A no cambia al trabajador B ya activo", async ({ page }) => {
     const gateA = deferred();
     const gateB = deferred();
+    const identified: string[] = [];
+    let aReleased = false;
 
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") {
@@ -216,8 +204,10 @@ test.describe("kiosco aislamiento de intentos", () => {
         return;
       }
       const body = JSON.parse(route.request().postData() || "{}") as { identifier?: string };
+      identified.push(String(body.identifier));
       if (String(body.identifier).includes("AAA")) {
         await gateA.promise;
+        aReleased = true;
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-a"));
         return;
       }
@@ -229,11 +219,14 @@ test.describe("kiosco aislamiento de intentos", () => {
     await page.getByTestId("kiosk-scan-qr").click();
     await expect(page.locator("[data-phase='escaneando_qr']")).toBeVisible();
     await page.evaluate(() => (window as unknown as { __pushQr: (v: string) => void }).__pushQr("AR:AAA"));
+    await expect.poll(() => identified.length).toBe(1);
     await page.getByTestId("kiosk-cancel-qr").click();
     await page.getByTestId("kiosk-identifier").fill("EMP-B");
     await page.getByTestId("kiosk-identify").click();
+    await expect.poll(() => identified.length).toBe(2);
+    await expect(page.getByTestId("kiosk-identify")).toBeDisabled();
     gateA.resolve();
-    await page.waitForTimeout(300);
+    await expect.poll(() => aReleased).toBe(true);
     await expect(page.getByTestId("kiosk-employee-name")).toHaveCount(0);
     gateB.resolve();
     await expect(page.getByTestId("kiosk-employee-name")).toHaveText(/Luis/);
@@ -243,6 +236,7 @@ test.describe("kiosco aislamiento de intentos", () => {
     let evidenceCalls = 0;
     const statusGate = deferred();
     let statusCalls = 0;
+    let statusReleased = false;
 
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") {
@@ -266,25 +260,21 @@ test.describe("kiosco aislamiento de intentos", () => {
           return;
         }
         await statusGate.promise;
+        statusReleased = true;
         await fulfillApi(route, 200, { state: "PENDING", record: null });
         return;
       }
       await fulfillApi(route, 404, {});
     });
 
-    await page.goto("/asistencia");
-    await expect(page.getByTestId("kiosk-identify")).toBeVisible();
-    await page.getByTestId("kiosk-identifier").fill("EMP-001");
-    await page.getByTestId("kiosk-identify").click();
-    await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 20_000 });
+    await identifyUntilIncident(page);
     const afterFirst = evidenceCalls;
     await page.getByTestId("kiosk-resend").click();
     await page.getByTestId("kiosk-resend").click();
     await page.getByTestId("kiosk-resend").click();
-    await page.waitForTimeout(300);
-    expect(statusCalls).toBe(2);
+    await expect.poll(() => statusCalls).toBe(2);
     statusGate.resolve();
-    await page.waitForTimeout(400);
-    expect(evidenceCalls).toBeLessThanOrEqual(afterFirst + 1);
+    await expect.poll(() => statusReleased).toBe(true);
+    await expect.poll(() => evidenceCalls).toBeLessThanOrEqual(afterFirst + 1);
   });
 });

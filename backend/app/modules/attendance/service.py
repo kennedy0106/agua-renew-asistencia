@@ -243,20 +243,33 @@ class AttendanceService:
         decoded = decode_attendance_token_for_recovery(marking_token)
         if decoded is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if device_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Este equipo no está autorizado para consultar el intento",
+            )
+        token_did = decoded.get("did")
+        if not token_did or str(token_did) != str(device_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
         employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
         nonce = str(decoded["nonce"])
+        token_action = str(decoded.get("action") or "")
         consumed = self.db.get(AttendanceConsumedNonce, nonce)
         if consumed is None or not consumed.result_payload:
             return {"state": "PENDING", "record": None}
         if consumed.employee_id != employee_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if consumed.device_id is not None:
-            if device_id is None or consumed.device_id != device_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="El token no corresponde a este terminal",
-                )
+        if consumed.action != token_action:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if consumed.device_id is None or consumed.device_id != device_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
         created_at = consumed.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)

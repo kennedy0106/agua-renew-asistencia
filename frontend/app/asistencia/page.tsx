@@ -38,8 +38,39 @@ function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDet
   return (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector ?? null;
 }
 
-function isE2eKiosk(): boolean {
-  return typeof window !== "undefined" && Boolean((window as unknown as { __E2E_KIOSK?: boolean }).__E2E_KIOSK);
+/** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
+const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
+
+type StoredAttempt = {
+  marking_token: string;
+  marking_action: IdentifyResponse["marking_action"];
+  employee: IdentifyResponse["employee"];
+};
+
+function readStoredAttempt(): StoredAttempt | null {
+  try {
+    const raw = sessionStorage.getItem(KIOSK_ATTEMPT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredAttempt;
+    if (!parsed?.marking_token || !parsed?.employee?.id) return null;
+    if (parsed.marking_action !== "CHECK_IN" && parsed.marking_action !== "CHECK_OUT") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function persistSubmittedAttempt(info: IdentifyResponse) {
+  const payload: StoredAttempt = {
+    marking_token: info.marking_token,
+    marking_action: info.marking_action,
+    employee: info.employee,
+  };
+  sessionStorage.setItem(KIOSK_ATTEMPT_KEY, JSON.stringify(payload));
+}
+
+function clearStoredAttempt() {
+  sessionStorage.removeItem(KIOSK_ATTEMPT_KEY);
 }
 
 export default function AsistenciaPage() {
@@ -55,6 +86,7 @@ export default function AsistenciaPage() {
   const [qrSupported, setQrSupported] = useState(true);
   const [now, setNow] = useState<Date>(() => new Date());
   const [serverOffset, setServerOffset] = useState(0);
+  const [attemptSubmitted, setAttemptSubmitted] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -65,6 +97,7 @@ export default function AsistenciaPage() {
   const recoverLockRef = useRef(false);
   const generationRef = useRef(0);
   const infoRef = useRef<IdentifyResponse | null>(null);
+  const submittedRef = useRef(false);
 
   function bumpGeneration() {
     generationRef.current += 1;
@@ -82,6 +115,31 @@ export default function AsistenciaPage() {
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredAttempt();
+    if (!stored) return;
+    const restored: IdentifyResponse = {
+      employee: stored.employee,
+      state: {
+        has_open_entry: stored.marking_action === "CHECK_OUT",
+        open_check_in_at: null,
+        last_record: null,
+      },
+      server_time: new Date().toISOString(),
+      server_time_label: "",
+      marking_token: stored.marking_token,
+      marking_action: stored.marking_action,
+    };
+    infoRef.current = restored;
+    submittedRef.current = true;
+    setAttemptSubmitted(true);
+    setInfo(restored);
+    setError(
+      "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. No se afirma que no se haya marcado.",
+    );
+    setPhase("incidencia");
   }, []);
 
   useEffect(() => {
@@ -133,27 +191,39 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     if (phase !== "video_listo") return;
-    if (isE2eKiosk()) {
-      setPhase("capturando");
-      return;
-    }
     const gen = generationRef.current;
     const video = videoRef.current;
-    if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
-      const wait = window.setTimeout(() => {
-        if (gen !== generationRef.current) return;
-        if (videoRef.current && videoRef.current.videoWidth >= 320) {
-          setPhase("cuenta_regresiva");
-          setCountdown(3);
-        } else {
-          setError("La cámara no entregó un cuadro válido. No se tomó foto.");
-          setPhase("incidencia");
-        }
-      }, 800);
-      return () => window.clearTimeout(wait);
+    let cancelled = false;
+
+    const proceed = () => {
+      if (cancelled || gen !== generationRef.current) return;
+      const current = videoRef.current;
+      if (current && current.videoWidth >= 320 && current.videoHeight >= 240) {
+        setPhase("cuenta_regresiva");
+        setCountdown(3);
+        return;
+      }
+      setError("La cámara no entregó un cuadro válido. No se tomó foto.");
+      setPhase("incidencia");
+    };
+
+    if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
+      proceed();
+      return;
     }
-    setPhase("cuenta_regresiva");
-    setCountdown(3);
+    const wait = window.setTimeout(proceed, 800);
+    const onMeta = () => {
+      if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
+        window.clearTimeout(wait);
+        proceed();
+      }
+    };
+    video?.addEventListener("loadedmetadata", onMeta);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(wait);
+      video?.removeEventListener("loadedmetadata", onMeta);
+    };
   }, [phase]);
 
   useEffect(() => {
@@ -286,15 +356,7 @@ export default function AsistenciaPage() {
   function grabFrame(): string | null {
     const video = videoRef.current;
     if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
-      if (!isE2eKiosk()) return null;
-      const canvas = document.createElement("canvas");
-      canvas.width = 320;
-      canvas.height = 240;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      ctx.fillStyle = "#224466";
-      ctx.fillRect(0, 0, 320, 240);
-      return canvas.toDataURL("image/jpeg", 0.8).split(",")[1] ?? null;
+      return null;
     }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
@@ -324,8 +386,19 @@ export default function AsistenciaPage() {
 
   function showConfirmed(result: AttendanceRecordOut) {
     releaseAllCameras();
+    submittedRef.current = false;
+    setAttemptSubmitted(false);
+    clearStoredAttempt();
     setRecord(result);
     setPhase("confirmado");
+  }
+
+  function rememberSubmittedAttempt() {
+    const current = infoRef.current;
+    if (!current) return;
+    submittedRef.current = true;
+    setAttemptSubmitted(true);
+    persistSubmittedAttempt(current);
   }
 
   function showUncertain(message: string) {
@@ -338,6 +411,7 @@ export default function AsistenciaPage() {
     if (gen !== generationRef.current) return;
     if (sendingRef.current) return;
     sendingRef.current = true;
+    rememberSubmittedAttempt();
     setPhase("enviando");
     try {
       await attendanceApi.captureEvidence(markingToken, imageBase64);
@@ -361,12 +435,15 @@ export default function AsistenciaPage() {
         return;
       }
       if (recovered.kind === "unauthorized") {
-        setPhase("pairing");
-        setError("Este equipo no está autorizado para consultar el intento.");
+        showUncertain(
+          "Este equipo no está autorizado para consultar el intento. Conserve esta referencia y pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        );
         return;
       }
       if (recovered.kind === "gone") {
-        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
+        showUncertain(
+          "El plazo para recuperar este intento ya venció. Pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        );
         return;
       }
       setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
@@ -415,16 +492,23 @@ export default function AsistenciaPage() {
         return;
       }
       if (recovered.kind === "unauthorized") {
-        setPhase("pairing");
-        setError("Este equipo no está autorizado para consultar el intento.");
+        showUncertain(
+          "Este equipo no está autorizado para consultar el intento. Conserve esta referencia y pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        );
         return;
       }
       if (recovered.kind === "gone") {
-        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
+        showUncertain(
+          "El plazo para recuperar este intento ya venció. Pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        );
         return;
       }
       if (recovered.kind === "error") {
         showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
+        return;
+      }
+      if (!lastPhoto) {
+        showUncertain("El intento sigue pendiente. Conserve esta referencia; no se inició una marcación nueva.");
         return;
       }
       await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
@@ -433,24 +517,43 @@ export default function AsistenciaPage() {
     }
   }
 
-  function takeAnotherPhoto() {
-    bumpGeneration();
-    releaseAllCameras();
-    infoRef.current = null;
-    setInfo(null);
-    setLastPhoto(null);
+  function releaseInFlightLocks() {
     captureLock.current = false;
     identifyingRef.current = false;
     sendingRef.current = false;
     recoverLockRef.current = false;
     setIdentifying(false);
+  }
+
+  function takeAnotherPhoto() {
+    bumpGeneration();
+    releaseAllCameras();
+    releaseInFlightLocks();
     setError(null);
+    setLastPhoto(null);
+    if (infoRef.current) {
+      setPhase("abriendo_camara");
+      return;
+    }
     setPhase("identificando");
   }
 
   function reset() {
     bumpGeneration();
     releaseAllCameras();
+    releaseInFlightLocks();
+    if (submittedRef.current && phase !== "confirmado") {
+      setError(
+        "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. Cancelar no borra una asistencia ya registrada.",
+      );
+      setPhase("incidencia");
+      return;
+    }
+    if (phase === "confirmado") {
+      submittedRef.current = false;
+      setAttemptSubmitted(false);
+      clearStoredAttempt();
+    }
     setPhase("identificando");
     infoRef.current = null;
     setInfo(null);
@@ -458,11 +561,6 @@ export default function AsistenciaPage() {
     setError(null);
     setLastPhoto(null);
     setServerOffset(0);
-    captureLock.current = false;
-    identifyingRef.current = false;
-    sendingRef.current = false;
-    recoverLockRef.current = false;
-    setIdentifying(false);
   }
 
   function startQrScan() {
@@ -616,9 +714,24 @@ export default function AsistenciaPage() {
         {phase === "incidencia" && (
           <>
             {error && (
-              <p className="alert alert-error" role="alert">
+              <p className="alert alert-error" role="alert" data-testid="kiosk-incident-message">
                 {error}
               </p>
+            )}
+            {attemptSubmitted && (
+              <p className="muted" data-testid="kiosk-review-hint">
+                Conserve este intento. Un fallo de consulta no demuestra que la marcación no se haya registrado.
+              </p>
+            )}
+            {info && (
+              <button
+                className="btn btn-primary kiosk-btn"
+                type="button"
+                onClick={() => void resendSamePhoto()}
+                data-testid="kiosk-consult-attempt"
+              >
+                Consultar este intento
+              </button>
             )}
             {lastPhoto && info && (
               <button className="btn btn-primary kiosk-btn" type="button" onClick={() => void resendSamePhoto()} data-testid="kiosk-resend">
@@ -636,7 +749,7 @@ export default function AsistenciaPage() {
             <div className={`big-icon ${(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? "ok" : "blue"}`}>
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? <Droplet size={26} /> : <Check size={26} />}
             </div>
-            <h2>
+            <h2 data-testid="kiosk-confirmed-title">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? "Entrada registrada"
                 : "Salida registrada"}
@@ -646,7 +759,7 @@ export default function AsistenciaPage() {
                 ? `Ingresaste a las ${formatTime(record.check_in_at)}.`
                 : `Saliste a las ${formatTime(record.check_out_at)} · ${fmtMin(record.worked_minutes)} trabajadas.`}
             </p>
-            <button className="btn btn-outline kiosk-btn" onClick={reset}>
+            <button className="btn btn-outline kiosk-btn" onClick={reset} data-testid="kiosk-new-marking">
               <Clock size={17} />
               Nueva marcación
             </button>
