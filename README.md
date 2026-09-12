@@ -287,6 +287,23 @@ npm install
 npm run dev            # http://localhost:3000
 ```
 
+### Verificación local (equivalente al workflow CI)
+
+Con PostgreSQL desechable (`asistencia_test`) y MinIO local. No usa Neon ni R2 productivo.
+
+```powershell
+$env:TEST_DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5433/asistencia_test"
+$env:ALLOW_TEST_DB_RESET="1"
+$env:OBJECT_STORE_ENDPOINT="http://127.0.0.1:9002"
+$env:OBJECT_STORE_ACCESS_KEY="asistencia"
+$env:OBJECT_STORE_SECRET_KEY="asistencia-test-minio"
+$env:OBJECT_STORE_BUCKET="asistencia-evidence"
+uv --directory backend run python ../scripts/verify_local.py
+```
+
+El comando escribe un log en `.local-verify/` y conserva el código de error si un paso falla.
+
+
 ## Reglas que este repositorio respeta (no negociables)
 
 1. El backend es la única fuente de verdad: el frontend nunca calcula

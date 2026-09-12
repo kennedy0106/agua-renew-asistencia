@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
+from app.core.object_store import ObjectStoreError, evidence_object_key, get_object_store
 from app.core.config import get_settings
 from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
 from app.core.timezone import lima_tz
@@ -182,12 +183,22 @@ class AttendanceService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Esta marcación ya se confirmó; identifique de nuevo para tomar otra foto",
             )
+        try:
+            store = get_object_store()
+        except ObjectStoreError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        object_key = evidence_object_key(str(employee_id), nonce)
+        store.put_bytes(object_key, normalized, ctype)
         evidence = AttendanceEvidence(
             nonce=nonce,
             employee_id=employee_id,
             device_id=device_id,
             content_type=ctype,
-            image_bytes=normalized,
+            image_bytes=None,
+            object_key=object_key,
             image_sha256=digest,
         )
         self.db.add(evidence)
@@ -810,6 +821,26 @@ class AttendanceService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada")
         return evidence
 
+    def get_evidence_payload(self, evidence_id: uuid.UUID) -> tuple[bytes, str]:
+        evidence = self.get_evidence_image(evidence_id)
+        if evidence.object_key:
+            try:
+                payload = get_object_store().get_bytes(evidence.object_key)
+            except ObjectStoreError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Evidencia no encontrada",
+                ) from exc
+            return payload, evidence.content_type
+        if evidence.image_bytes:
+            return evidence.image_bytes, evidence.content_type
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada")
+
     def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
         rows = list(
@@ -821,9 +852,20 @@ class AttendanceService:
             )
         )
         deleted = 0
+        store = None
         for row in rows:
             consumed = self.db.get(AttendanceConsumedNonce, row.nonce)
             if consumed is None:
+                if row.object_key:
+                    if store is None:
+                        try:
+                            store = get_object_store()
+                        except ObjectStoreError as exc:
+                            raise HTTPException(
+                                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                detail=str(exc),
+                            ) from exc
+                    store.delete(row.object_key)
                 self.db.delete(row)
                 deleted += 1
         self.db.commit()

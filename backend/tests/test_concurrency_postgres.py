@@ -35,7 +35,16 @@ def pg_engine():
     except ValueError as exc:
         pytest.skip(str(exc))
     engine = create_engine(url)
+    if os.environ.get("ALLOW_TEST_DB_RESET") == "1":
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
     Base.metadata.create_all(engine)
+    evidence_tables = inspect(engine).get_table_names()
+    if "attendance_evidence" in evidence_tables:
+        evidence_cols = {col["name"] for col in inspect(engine).get_columns("attendance_evidence")}
+        if "object_key" not in evidence_cols:
+            pytest.skip("esquema de asistencia incompleto")
     yield engine
     engine.dispose()
 

@@ -63,6 +63,7 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "pairing_code_hash" in device_cols
     evidence_cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
     assert "image_sha256" in evidence_cols
+    assert "object_key" in evidence_cols
     nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
     assert "device_id" in nonce_cols
     assert "attendance_attempt_resolutions" in tables
@@ -552,3 +553,68 @@ def test_alembic_upgrade_f2a3b4c5d6e7_amplia_reason_sin_perder_datos(
             text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
         ).scalar_one()
         assert leftover == reason_80
+
+
+def test_alembic_upgrade_h4c5d6e7f8a9_conserva_bytes_y_anade_object_key(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "g3b4c5d6e7f8")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-S3', 'Nora', 'R2', :role_id, true, 'qr-s3')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes
+                ) VALUES (
+                    '14141414-1414-1414-1414-141414141414', 'nonce-s3-legacy', :employee_id,
+                    'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+
+    command.upgrade(cfg, "h4c5d6e7f8a9")
+    inspector = inspect(engine)
+    evidence_cols = {col["name"]: col for col in inspector.get_columns("attendance_evidence")}
+    assert "object_key" in evidence_cols
+    assert evidence_cols["image_bytes"]["nullable"] is True
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT object_key, encode(image_bytes, 'hex')
+                FROM attendance_evidence WHERE nonce = 'nonce-s3-legacy'
+                """
+            )
+        ).one()
+        assert row[0] is None
+        assert row[1] == "ffd8ff"

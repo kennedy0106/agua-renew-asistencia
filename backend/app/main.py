@@ -5,11 +5,14 @@ Endpoints de esta fase:
 - GET /health/db  → verifica conexión real a PostgreSQL (DATABASE_URL)
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.core.object_store import get_object_store
 from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
@@ -29,7 +32,14 @@ from app.modules.users.router import router as users_router
 
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    get_object_store()
+    yield
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 # CORS: solo orígenes conocidos (nunca "*" en producción con cookies).
 if settings.environment == "production":

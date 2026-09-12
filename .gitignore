@@ -37,3 +37,6 @@ Thumbs.db
 # Cobertura
 coverage/
 htmlcov/
+
+# Verificación local (reportes, logs, junit)
+.local-verify/

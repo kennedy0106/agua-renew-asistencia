@@ -270,10 +270,10 @@ def evidence_image(
     db: Session = Depends(get_db),
     _: object = Depends(can_view_evidence),
 ) -> RawResponse:
-    evidence = AttendanceService(db).get_evidence_image(evidence_id)
+    payload, content_type = AttendanceService(db).get_evidence_payload(evidence_id)
     return RawResponse(
-        content=evidence.image_bytes,
-        media_type=evidence.content_type,
+        content=payload,
+        media_type=content_type,
         headers={"Cache-Control": "private, no-store"},
     )
 

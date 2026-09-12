@@ -104,6 +104,11 @@ jobs:
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
       E2E_API_URL: http://127.0.0.1:8000
       E2E_INTEGRATION: "1"
+      OBJECT_STORE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORE_ACCESS_KEY: test-access
+      OBJECT_STORE_SECRET_KEY: test-secret-key
+      OBJECT_STORE_BUCKET: asistencia-evidence-test
+      OBJECT_STORE_REGION: us-east-1
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -121,6 +126,16 @@ jobs:
       - name: Arrancar FastAPI
         working-directory: backend
         run: |
+          docker run -d --name asistencia-ci-minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=test-access \
+            -e MINIO_ROOT_PASSWORD=test-secret-key \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+              break
+            fi
+            sleep 1
+          done
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asistencia-api.log 2>&1 &
           for i in $(seq 1 40); do
             if curl -sf http://127.0.0.1:8000/health; then

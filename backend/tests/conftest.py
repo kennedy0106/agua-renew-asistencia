@@ -3,6 +3,8 @@
 Los tests no tocan Neon: se sobreescribe la dependencia get_db.
 """
 
+import os
+
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -18,6 +20,40 @@ from app.main import app
 from app.modules.system_roles.repository import SystemRoleRepository
 from app.modules.users.repository import UserRepository
 from scripts.seed_roles import ROLES
+
+# boto3 con endpoint_url no entra en mock_aws salvo que moto conozca el host.
+os.environ.setdefault("MOTO_S3_CUSTOM_ENDPOINTS", "http://127.0.0.1:9000")
+
+
+@pytest.fixture(autouse=True)
+def _object_store(request, monkeypatch):
+    """S3 privado in-process (moto), salvo pruebas live_s3 contra MinIO."""
+    from app.core.config import get_settings
+    from app.core.object_store import get_object_store, reset_object_store
+
+    if request.node.get_closest_marker("live_s3"):
+        get_settings.cache_clear()
+        reset_object_store()
+        yield
+        reset_object_store()
+        get_settings.cache_clear()
+        return
+
+    monkeypatch.setenv("MOTO_S3_CUSTOM_ENDPOINTS", "http://127.0.0.1:9000")
+    monkeypatch.setenv("OBJECT_STORE_ENDPOINT", "http://127.0.0.1:9000")
+    monkeypatch.setenv("OBJECT_STORE_ACCESS_KEY", "test-access")
+    monkeypatch.setenv("OBJECT_STORE_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("OBJECT_STORE_BUCKET", "asistencia-evidence-test")
+    monkeypatch.setenv("OBJECT_STORE_REGION", "us-east-1")
+    get_settings.cache_clear()
+    reset_object_store()
+    from moto import mock_aws
+
+    with mock_aws():
+        get_object_store()
+        yield
+        reset_object_store()
+        get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

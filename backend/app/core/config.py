@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     session_cookie_samesite: str = "lax"
     terminal_token_days: int = 180
     attempt_recovery_minutes: int = 30
+    object_store_endpoint: str = ""
+    object_store_access_key: str = ""
+    object_store_secret_key: str = ""
+    object_store_bucket: str = "asistencia-evidence"
+    object_store_region: str = "us-east-1"
 
     @field_validator("secret_key")
     @classmethod

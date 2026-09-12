@@ -134,7 +134,7 @@ class AttendanceConsumedNonce(Base):
 
 
 class AttendanceEvidence(Base):
-    """Foto de marcación (bytes privados; no es reconocimiento facial)."""
+    """Foto de marcación (objeto privado S3/R2; no es reconocimiento facial)."""
 
     __tablename__ = "attendance_evidence"
 
@@ -146,7 +146,8 @@ class AttendanceEvidence(Base):
     )
     device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attendance_devices.id"), nullable=True, index=True)
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    image_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    image_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     exception_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
