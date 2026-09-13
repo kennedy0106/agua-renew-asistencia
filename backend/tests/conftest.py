@@ -29,7 +29,7 @@ os.environ.setdefault("MOTO_S3_CUSTOM_ENDPOINTS", "http://127.0.0.1:9000")
 def _object_store(request, monkeypatch):
     """S3 privado in-process (moto), salvo pruebas live_s3 contra MinIO."""
     from app.core.config import get_settings
-    from app.core.object_store import get_object_store, reset_object_store
+    from app.core.object_store import provision_test_bucket, reset_object_store
 
     if request.node.get_closest_marker("live_s3"):
         get_settings.cache_clear()
@@ -45,12 +45,13 @@ def _object_store(request, monkeypatch):
     monkeypatch.setenv("OBJECT_STORE_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("OBJECT_STORE_BUCKET", "asistencia-evidence-test")
     monkeypatch.setenv("OBJECT_STORE_REGION", "us-east-1")
+    monkeypatch.setenv("OBJECT_STORE_CREATE_BUCKET", "1")
     get_settings.cache_clear()
     reset_object_store()
     from moto import mock_aws
 
     with mock_aws():
-        get_object_store()
+        provision_test_bucket()
         yield
         reset_object_store()
         get_settings.cache_clear()

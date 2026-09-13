@@ -1,6 +1,9 @@
 """Almacén privado de evidencias (S3 compatible: R2, MinIO u otro endpoint).
 
 Las fotos no se publican. El frontend solo las obtiene por la API autorizada.
+
+Tiempos del cliente: conexión 3 s, lectura 8 s, como máximo 2 intentos
+(modo standard de botocore). Presupuesto peor caso ≈ 25 s con backoff.
 """
 
 from __future__ import annotations
@@ -9,15 +12,50 @@ from dataclasses import dataclass
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 from app.core.config import get_settings
 
 _store: "ObjectStore | None" = None
 
+CONNECT_TIMEOUT_SECONDS = 3
+READ_TIMEOUT_SECONDS = 8
+MAX_ATTEMPTS = 2
+
+_UNAVAILABLE_ERRORS = (
+    EndpointConnectionError,
+    ConnectTimeoutError,
+    ReadTimeoutError,
+    ConnectionClosedError,
+    ConnectionError,
+    TimeoutError,
+)
+
 
 class ObjectStoreError(RuntimeError):
     """Almacén de objetos ausente o rechazado."""
+
+
+class ObjectNotFoundError(ObjectStoreError):
+    """El objeto no existe (NoSuchKey / 404 real)."""
+
+
+class ObjectStoreUnavailableError(ObjectStoreError):
+    """Timeout, red, 5xx o permisos insuficientes."""
+
+
+class ObjectIntegrityError(ObjectStoreError):
+    """Hash, tamaño o ubicación incoherentes."""
+
+
+class ObjectAlreadyExistsError(ObjectStoreError):
+    """PUT condicional rechazado: la clave ya tiene contenido."""
 
 
 @dataclass(frozen=True)
@@ -27,41 +65,181 @@ class ObjectStoreSettings:
     secret_key: str
     bucket: str
     region: str
+    create_bucket: bool
+
+
+def _error_code(exc: ClientError) -> str:
+    return str((exc.response or {}).get("Error", {}).get("Code") or "")
+
+
+def _http_status(exc: ClientError) -> int:
+    return int((exc.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
+
+
+def _is_not_found(exc: ClientError) -> bool:
+    code = _error_code(exc)
+    status_code = _http_status(exc)
+    return code in {"404", "NoSuchKey", "NoSuchBucket", "NotFound", "404 Not Found"} or status_code == 404
+
+
+def _is_access_denied(exc: ClientError) -> bool:
+    code = _error_code(exc)
+    status_code = _http_status(exc)
+    return code in {"403", "AccessDenied", "AllAccessDisabled", "UnauthorizedAccess"} or status_code == 403
+
+
+def _is_precondition(exc: ClientError) -> bool:
+    code = _error_code(exc)
+    status_code = _http_status(exc)
+    return code in {"PreconditionFailed", "412"} or status_code == 412
+
+
+def _unavailable(exc: BaseException) -> ObjectStoreUnavailableError:
+    return ObjectStoreUnavailableError(str(exc) or exc.__class__.__name__)
 
 
 class ObjectStore:
     def __init__(self, settings: ObjectStoreSettings) -> None:
         self.bucket = settings.bucket
+        self._create_bucket = settings.create_bucket
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.endpoint,
             aws_access_key_id=settings.access_key,
             aws_secret_access_key=settings.secret_key,
             region_name=settings.region,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                read_timeout=READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": MAX_ATTEMPTS, "mode": "standard"},
+            ),
         )
 
-    def ensure_bucket(self) -> None:
+    def verify_ready(self) -> None:
+        """Comprueba el bucket precreado. Nunca crea recursos ante 403."""
         try:
             self._client.head_bucket(Bucket=self.bucket)
-        except ClientError:
-            self._client.create_bucket(Bucket=self.bucket)
+        except ClientError as exc:
+            if _is_access_denied(exc):
+                raise ObjectStoreUnavailableError("Acceso denegado al bucket de evidencias") from exc
+            if _is_not_found(exc):
+                raise ObjectStoreError(
+                    f"El bucket {self.bucket} no existe. Aprovisionarlo fuera de la aplicación."
+                ) from exc
+            raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
 
-    def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
-        self._client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
-
-    def get_bytes(self, key: str) -> bytes:
-        response = self._client.get_object(Bucket=self.bucket, Key=key)
-        return response["Body"].read()
-
-    def delete(self, key: str) -> None:
-        self._client.delete_object(Bucket=self.bucket, Key=key)
-
-    def exists(self, key: str) -> bool:
+    def create_bucket_if_missing(self) -> None:
+        if not self._create_bucket:
+            raise ObjectStoreError("Aprovisionamiento de bucket deshabilitado")
         try:
-            self._client.head_object(Bucket=self.bucket, Key=key)
+            self._client.head_bucket(Bucket=self.bucket)
+            return
+        except ClientError as exc:
+            if _is_access_denied(exc):
+                raise ObjectStoreUnavailableError("Acceso denegado al bucket de evidencias") from exc
+            if not _is_not_found(exc):
+                raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+        try:
+            self._client.create_bucket(Bucket=self.bucket)
+        except ClientError as exc:
+            raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+
+    def put_bytes(
+        self,
+        key: str,
+        data: bytes,
+        content_type: str,
+        *,
+        bucket: str | None = None,
+        if_none_match: bool = True,
+    ) -> None:
+        target = bucket or self.bucket
+        kwargs: dict = {
+            "Bucket": target,
+            "Key": key,
+            "Body": data,
+            "ContentType": content_type,
+        }
+        if if_none_match:
+            kwargs["IfNoneMatch"] = "*"
+        try:
+            self._client.put_object(**kwargs)
+        except ClientError as exc:
+            if _is_precondition(exc):
+                raise ObjectAlreadyExistsError(key) from exc
+            raise _unavailable(exc) from exc
+        except TypeError:
+            if if_none_match:
+                kwargs.pop("IfNoneMatch", None)
+                try:
+                    self._client.put_object(**kwargs)
+                except ClientError as exc:
+                    raise _unavailable(exc) from exc
+                except _UNAVAILABLE_ERRORS as exc:
+                    raise _unavailable(exc) from exc
+            else:
+                raise
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+
+    def get_bytes(self, key: str, *, bucket: str | None = None) -> bytes:
+        target = bucket or self.bucket
+        body = None
+        try:
+            response = self._client.get_object(Bucket=target, Key=key)
+            body = response["Body"]
+            return body.read()
+        except ClientError as exc:
+            if _is_not_found(exc):
+                raise ObjectNotFoundError(key) from exc
+            raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+        finally:
+            if body is not None:
+                body.close()
+
+    def head_object(self, key: str, *, bucket: str | None = None) -> dict:
+        target = bucket or self.bucket
+        try:
+            return self._client.head_object(Bucket=target, Key=key)
+        except ClientError as exc:
+            if _is_not_found(exc):
+                raise ObjectNotFoundError(key) from exc
+            raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+
+    def delete(self, key: str, *, bucket: str | None = None) -> str:
+        """Idempotente: 'deleted' o 'already_absent'. 403/timeout no es éxito."""
+        target = bucket or self.bucket
+        try:
+            self.head_object(key, bucket=target)
+        except ObjectNotFoundError:
+            return "already_absent"
+        try:
+            self._client.delete_object(Bucket=target, Key=key)
+        except ClientError as exc:
+            if _is_not_found(exc):
+                return "already_absent"
+            raise _unavailable(exc) from exc
+        except _UNAVAILABLE_ERRORS as exc:
+            raise _unavailable(exc) from exc
+        return "deleted"
+
+    def exists(self, key: str, *, bucket: str | None = None) -> bool:
+        try:
+            self.head_object(key, bucket=bucket)
             return True
-        except ClientError:
+        except ObjectNotFoundError:
             return False
 
 
@@ -83,15 +261,28 @@ def settings_from_env() -> ObjectStoreSettings:
         secret_key=secret_key,
         bucket=bucket,
         region=region,
+        create_bucket=bool(settings.object_store_create_bucket),
     )
 
 
 def get_object_store() -> ObjectStore:
     global _store
     if _store is None:
-        _store = ObjectStore(settings_from_env())
-        _store.ensure_bucket()
+        candidate = ObjectStore(settings_from_env())
+        candidate.verify_ready()
+        _store = candidate
     return _store
+
+
+def provision_test_bucket() -> ObjectStore:
+    """Crea el bucket solo cuando el harness lo autoriza (tests / verify_local)."""
+    global _store
+    settings = settings_from_env()
+    candidate = ObjectStore(settings)
+    candidate.create_bucket_if_missing()
+    candidate.verify_ready()
+    _store = candidate
+    return candidate
 
 
 def reset_object_store() -> None:

@@ -10,7 +10,7 @@ Panel administrativo (autenticado):
 import uuid
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import Response as RawResponse
 from sqlalchemy.orm import Session
 
@@ -249,7 +249,7 @@ def daily_attendance(
 def purge_abandoned_evidence(
     db: Session = Depends(get_db),
     _: object = Depends(require_any_role("ADMIN")),
-    older_than_hours: int = 24,
+    older_than_hours: int = Query(default=24, ge=24),
 ) -> dict:
     deleted = AttendanceService(db).purge_abandoned_evidence(older_than_hours=older_than_hours)
     return {"deleted": deleted}

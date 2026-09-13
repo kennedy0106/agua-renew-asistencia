@@ -109,6 +109,7 @@ jobs:
       OBJECT_STORE_SECRET_KEY: test-secret-key
       OBJECT_STORE_BUCKET: asistencia-evidence-test
       OBJECT_STORE_REGION: us-east-1
+      OBJECT_STORE_CREATE_BUCKET: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -136,6 +137,7 @@ jobs:
             fi
             sleep 1
           done
+          OBJECT_STORE_CREATE_BUCKET=1 uv run python -c "from app.core.object_store import provision_test_bucket; provision_test_bucket()"
           uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asistencia-api.log 2>&1 &
           for i in $(seq 1 40); do
             if curl -sf http://127.0.0.1:8000/health; then

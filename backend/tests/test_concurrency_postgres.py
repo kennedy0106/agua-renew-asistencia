@@ -875,3 +875,88 @@ def test_permiso_vence_esperando_el_lock(pg_engine):
         _cleanup_attempt(check, employee_id, device_id)
     finally:
         check.close()
+
+
+def test_purge_vs_marcacion_no_borra_confirmada(pg_engine):
+    if "attendance_attempt_resolutions" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de resoluciones incompleto")
+    from datetime import datetime, timedelta, timezone
+
+    from tests.image_helpers import valid_jpeg_b64
+    from app.modules.attendance.models import AttendanceEvidence, AttendanceRecord
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+    finally:
+        session.close()
+
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    nonce = str(decode_attendance_token(token)["nonce"])
+    setup = factory()
+    try:
+        AttendanceService(setup).store_evidence(
+            marking_token=token,
+            image_base64=valid_jpeg_b64(),
+            content_type="image/jpeg",
+            device_id=device_id,
+        )
+        row = setup.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        row.captured_at = datetime.now(timezone.utc) - timedelta(hours=48)
+        setup.add(row)
+        setup.commit()
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    results: dict[str, object] = {}
+
+    def marker():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            results["mark"] = AttendanceService(db).check_in(
+                employee_id,
+                nonce=nonce,
+                require_evidence=True,
+                device_id=device_id,
+                token_device_id=str(device_id),
+                marking_token=token,
+            )
+        except HTTPException as ext:
+            db.rollback()
+            results["mark"] = ext.status_code
+        finally:
+            db.close()
+
+    def purger():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            results["purge"] = AttendanceService(db).purge_abandoned_evidence(older_than_hours=24)
+        except HTTPException as ext:
+            db.rollback()
+            results["purge"] = ext.status_code
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=marker, name="purge-mark"),
+        threading.Thread(target=purger, name="purge-clean"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not isinstance(results.get("mark"), int)
+    assert results.get("purge") == 0
+    check = factory()
+    try:
+        evidence = check.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        records = list(check.scalars(select(AttendanceRecord).where(AttendanceRecord.employee_id == employee_id)))
+        assert evidence is not None
+        assert evidence.attendance_record_id is not None
+        assert len(records) == 1
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()

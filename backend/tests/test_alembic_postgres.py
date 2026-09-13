@@ -64,6 +64,9 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     evidence_cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
     assert "image_sha256" in evidence_cols
     assert "object_key" in evidence_cols
+    assert "storage_backend" in evidence_cols
+    assert "storage_bucket" in evidence_cols
+    assert "byte_size" in evidence_cols
     nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
     assert "device_id" in nonce_cols
     assert "attendance_attempt_resolutions" in tables
@@ -618,3 +621,96 @@ def test_alembic_upgrade_h4c5d6e7f8a9_conserva_bytes_y_anade_object_key(
         ).one()
         assert row[0] is None
         assert row[1] == "ffd8ff"
+
+
+def test_alembic_upgrade_i5d6e7f8a9b0_ubicacion_y_downgrade_seguro(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "h4c5d6e7f8a9")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71119999', 'EMP-LOC', 'Luis', 'S3', :role_id, true, 'qr-loc')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes
+                ) VALUES (
+                    '15151515-1515-1515-1515-151515151515', 'nonce-db-legacy', :employee_id,
+                    'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes, object_key
+                ) VALUES (
+                    '16161616-1616-1616-1616-161616161616', 'nonce-s3-orphan', :employee_id,
+                    'image/jpeg', NULL, 'attendance/orphan/key.jpg'
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+
+    command.upgrade(cfg, "i5d6e7f8a9b0")
+    inspector = inspect(engine)
+    cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
+    assert {"storage_backend", "storage_bucket", "byte_size"} <= cols
+    with engine.connect() as conn:
+        db_row = conn.execute(
+            text(
+                """
+                SELECT storage_backend, storage_bucket, byte_size, object_key
+                FROM attendance_evidence WHERE nonce = 'nonce-db-legacy'
+                """
+            )
+        ).one()
+        assert db_row[0] == "DATABASE"
+        assert db_row[1] is None
+        assert db_row[2] == 3
+        assert db_row[3] is None
+        orphan = conn.execute(
+            text(
+                """
+                SELECT storage_backend, storage_bucket, object_key
+                FROM attendance_evidence WHERE nonce = 'nonce-s3-orphan'
+                """
+            )
+        ).one()
+        assert orphan[0] is None
+        assert orphan[1] is None
+        assert orphan[2] == "attendance/orphan/key.jpg"
+
+    with pytest.raises(Exception, match="No se puede revertir i5d6e7f8a9b0"):
+        command.downgrade(cfg, "h4c5d6e7f8a9")

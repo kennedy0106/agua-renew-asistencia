@@ -303,16 +303,22 @@ def test_purge_no_borra_evidencia_confirmada(client, db_session):
     from sqlalchemy import select
     from datetime import datetime, timedelta, timezone
 
-    from app.modules.attendance.models import AttendanceEvidence
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceEvidence
 
     _login(client)
     _employee(client, db_session)
+    _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     abandoned_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": abandoned_token, "image_base64": valid_jpeg_b64(color=(1, 2, 3)), "content_type": "image/jpeg"},
     )
+    cancelled = client.post(
+        "/api/v1/attendance/attempt/resolve",
+        json={"marking_token": abandoned_token, "reason_code": "USER_CANCELLED"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -322,13 +328,45 @@ def test_purge_no_borra_evidencia_confirmada(client, db_session):
     for row in db_session.scalars(select(AttendanceEvidence)):
         row.captured_at = cutoff
         db_session.add(row)
+    for row in db_session.scalars(select(AttendanceAttemptResolution)):
+        row.resolved_at = cutoff
+        db_session.add(row)
     db_session.commit()
+    too_soon = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=0")
+    assert too_soon.status_code == 422
     purged = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=24")
     assert purged.status_code == 200
     assert purged.json()["deleted"] == 1
     remaining = list(db_session.scalars(select(AttendanceEvidence)))
     assert len(remaining) == 1
     assert remaining[0].attendance_record_id is not None
+
+
+def test_purge_conserva_pendiente_sin_cancelar(client, db_session):
+    from sqlalchemy import select
+    from datetime import datetime, timedelta, timezone
+
+    from app.modules.attendance.models import AttendanceEvidence
+
+    _login(client)
+    _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    for row in db_session.scalars(select(AttendanceEvidence)):
+        row.captured_at = cutoff
+        db_session.add(row)
+    db_session.commit()
+    purged = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=24")
+    assert purged.status_code == 200
+    assert purged.json()["deleted"] == 0
+    remaining = list(db_session.scalars(select(AttendanceEvidence)))
+    assert len(remaining) == 1
+    assert remaining[0].attendance_record_id is None
 
 
 def test_reenvio_misma_foto_tras_confirmar_devuelve_evidencia(client, db_session):

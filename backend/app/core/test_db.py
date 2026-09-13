@@ -52,8 +52,10 @@ def validated_test_url(url: str) -> str:
     return raw
 
 
-def require_explicit_test_authorization() -> None:
+def require_explicit_test_authorization(env: dict | None = None) -> None:
     import os
+    from collections.abc import Mapping
 
-    if os.environ.get("ALLOW_TEST_DB_RESET") != "1":
+    source: Mapping[str, str] = env if env is not None else os.environ
+    if source.get("ALLOW_TEST_DB_RESET") != "1":
         raise ValueError("ALLOW_TEST_DB_RESET=1 es obligatorio")

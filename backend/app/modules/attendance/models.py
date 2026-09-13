@@ -33,6 +33,8 @@ from app.db.base import Base
 
 ATTENDANCE_OPEN = "OPEN"
 ATTENDANCE_COMPLETE = "COMPLETE"
+STORAGE_DATABASE = "DATABASE"
+STORAGE_S3 = "S3"
 
 
 class AttendanceRecord(Base):
@@ -137,6 +139,19 @@ class AttendanceEvidence(Base):
     """Foto de marcación (objeto privado S3/R2; no es reconocimiento facial)."""
 
     __tablename__ = "attendance_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "("
+            "storage_backend = 'DATABASE' AND image_bytes IS NOT NULL AND object_key IS NULL"
+            ") OR ("
+            "storage_backend = 'S3' AND object_key IS NOT NULL AND storage_bucket IS NOT NULL "
+            "AND image_sha256 IS NOT NULL AND byte_size IS NOT NULL AND image_bytes IS NULL"
+            ") OR ("
+            "storage_backend IS NULL"
+            ")",
+            name="ck_attendance_evidence_location",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     nonce: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
@@ -148,6 +163,9 @@ class AttendanceEvidence(Base):
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
     image_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    storage_backend: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    storage_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     exception_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)

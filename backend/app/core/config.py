@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     object_store_secret_key: str = ""
     object_store_bucket: str = "asistencia-evidence"
     object_store_region: str = "us-east-1"
+    object_store_create_bucket: bool = False
 
     @field_validator("secret_key")
     @classmethod

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.core.object_store import get_object_store
+from app.core.object_store import ObjectStoreError, get_object_store
 from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
@@ -35,7 +35,10 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    get_object_store()
+    try:
+        get_object_store()
+    except ObjectStoreError as exc:
+        raise RuntimeError(f"Almacén de evidencias no disponible: {exc}") from exc
     yield
 
 

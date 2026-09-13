@@ -9,6 +9,7 @@
 """
 
 import base64
+import hashlib
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -18,11 +19,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
-from app.core.object_store import ObjectStoreError, evidence_object_key, get_object_store
+from app.core.object_store import (
+    ObjectAlreadyExistsError,
+    ObjectNotFoundError,
+    ObjectStoreError,
+    evidence_object_key,
+    get_object_store,
+)
 from app.core.config import get_settings
 from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
+    STORAGE_S3,
     AttendanceAttemptResolution,
     AttendanceConsumedNonce,
     AttendanceEvent,
@@ -191,7 +199,28 @@ class AttendanceService:
                 detail=str(exc),
             ) from exc
         object_key = evidence_object_key(str(employee_id), nonce)
-        store.put_bytes(object_key, normalized, ctype)
+        payload = normalized
+        try:
+            store.put_bytes(object_key, payload, ctype)
+        except ObjectAlreadyExistsError:
+            try:
+                payload = store.get_bytes(object_key, bucket=store.bucket)
+            except ObjectStoreError as exc:
+                self._raise_store_http(exc)
+            stored_digest = hashlib.sha256(payload).hexdigest()
+            if stored_digest != digest:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya hay una foto distinta para este intento; identifique de nuevo",
+                )
+            digest = stored_digest
+        except ObjectStoreError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        if decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         evidence = AttendanceEvidence(
             nonce=nonce,
             employee_id=employee_id,
@@ -199,6 +228,9 @@ class AttendanceService:
             content_type=ctype,
             image_bytes=None,
             object_key=object_key,
+            storage_backend=STORAGE_S3,
+            storage_bucket=store.bucket,
+            byte_size=len(payload),
             image_sha256=digest,
         )
         self.db.add(evidence)
@@ -208,7 +240,10 @@ class AttendanceService:
             self.db.rollback()
             existing = self.repo.get_evidence_by_nonce(nonce)
             if existing is None:
-                raise
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="La foto se almacenó pero no se publicó; reintente la misma foto",
+                )
             if existing.image_sha256 and existing.image_sha256 != digest:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -218,12 +253,42 @@ class AttendanceService:
         self.db.refresh(evidence)
         return evidence
 
+    def _raise_store_http(self, exc: ObjectStoreError) -> None:
+        if isinstance(exc, ObjectNotFoundError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada") from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "Almacén de evidencias no disponible",
+        ) from exc
+
     def _evidence_or_400(self, nonce: str, employee_id: uuid.UUID) -> AttendanceEvidence:
         evidence = self.repo.get_evidence_by_nonce(nonce)
         if evidence is None or evidence.employee_id != employee_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Debe capturar una foto nueva antes de marcar",
+            )
+        if evidence.image_bytes:
+            return evidence
+        if not evidence.object_key or not evidence.storage_bucket:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
+            )
+        try:
+            meta = get_object_store().head_object(evidence.object_key, bucket=evidence.storage_bucket)
+        except ObjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
+            ) from exc
+        except ObjectStoreError as exc:
+            self._raise_store_http(exc)
+        size = meta.get("ContentLength")
+        if evidence.byte_size is not None and size is not None and int(size) != evidence.byte_size:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
             )
         return evidence
 
@@ -823,52 +888,106 @@ class AttendanceService:
 
     def get_evidence_payload(self, evidence_id: uuid.UUID) -> tuple[bytes, str]:
         evidence = self.get_evidence_image(evidence_id)
+        if evidence.image_bytes:
+            return evidence.image_bytes, evidence.content_type
         if evidence.object_key:
-            try:
-                payload = get_object_store().get_bytes(evidence.object_key)
-            except ObjectStoreError as exc:
+            if not evidence.storage_bucket:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(exc),
-                ) from exc
-            except Exception as exc:
+                    detail="Ubicación de almacenamiento incompleta; requiere backfill explícito",
+                )
+            try:
+                payload = get_object_store().get_bytes(evidence.object_key, bucket=evidence.storage_bucket)
+            except ObjectNotFoundError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Evidencia no encontrada",
                 ) from exc
+            except ObjectStoreError as exc:
+                self._raise_store_http(exc)
             return payload, evidence.content_type
-        if evidence.image_bytes:
-            return evidence.image_bytes, evidence.content_type
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada")
 
+    MIN_PURGE_HOURS = 24
+
     def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> int:
+        if older_than_hours < self.MIN_PURGE_HOURS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"older_than_hours debe ser al menos {self.MIN_PURGE_HOURS}",
+            )
         cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
-        rows = list(
+        candidates = list(
             self.db.scalars(
-                select(AttendanceEvidence).where(
+                select(AttendanceEvidence)
+                .join(
+                    AttendanceAttemptResolution,
+                    AttendanceAttemptResolution.nonce == AttendanceEvidence.nonce,
+                )
+                .where(
                     AttendanceEvidence.attendance_record_id.is_(None),
                     AttendanceEvidence.captured_at < cutoff,
+                    AttendanceAttemptResolution.resolution == "CANCELLED_UNCONFIRMED",
+                    AttendanceAttemptResolution.resolved_at < cutoff,
                 )
             )
         )
         deleted = 0
         store = None
-        for row in rows:
-            consumed = self.db.get(AttendanceConsumedNonce, row.nonce)
-            if consumed is None:
-                if row.object_key:
-                    if store is None:
-                        try:
-                            store = get_object_store()
-                        except ObjectStoreError as exc:
-                            raise HTTPException(
-                                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                                detail=str(exc),
-                            ) from exc
-                    store.delete(row.object_key)
-                self.db.delete(row)
-                deleted += 1
-        self.db.commit()
+        for snapshot in candidates:
+            self.repo.lock_employee_for_attempt(snapshot.employee_id)
+            resolution, consumed, evidence = self._fresh_attempt_rows(snapshot.nonce)
+            if evidence is None:
+                self.db.commit()
+                continue
+            if evidence.attendance_record_id is not None:
+                self.db.commit()
+                continue
+            if consumed is not None and consumed.attendance_record_id is not None:
+                self.db.commit()
+                continue
+            if resolution is None or resolution.resolution != "CANCELLED_UNCONFIRMED":
+                self.db.commit()
+                continue
+            captured = evidence.captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            resolved_at = resolution.resolved_at
+            if resolved_at.tzinfo is None:
+                resolved_at = resolved_at.replace(tzinfo=timezone.utc)
+            if captured >= cutoff or resolved_at >= cutoff:
+                self.db.commit()
+                continue
+            linked_event = self.db.scalar(
+                select(AttendanceEvent).where(AttendanceEvent.external_event_id == evidence.nonce)
+            )
+            if linked_event is not None:
+                self.db.commit()
+                continue
+            if evidence.object_key:
+                if store is None:
+                    try:
+                        store = get_object_store()
+                    except ObjectStoreError as exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=str(exc),
+                        ) from exc
+                try:
+                    store.delete(evidence.object_key, bucket=evidence.storage_bucket or None)
+                except ObjectStoreError as exc:
+                    self.db.rollback()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(exc),
+                    ) from exc
+            self.db.delete(evidence)
+            try:
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+            deleted += 1
         return deleted
 
 

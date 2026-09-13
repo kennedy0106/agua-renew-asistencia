@@ -46,10 +46,10 @@ def _port_free(port: int) -> bool:
 
 
 def _pick_api_port() -> int:
-    for port in (8000, 8001, 8010):
+    for port in (8000, 8001, 8010, 8020, 8030, 8040):
         if _port_free(port):
             return port
-    raise LoggedError("No hay puerto libre para FastAPI (8000/8001/8010 ocupados)")
+    raise LoggedError("No hay puerto libre para FastAPI (8000/8001/8010/8020/8030/8040 ocupados)")
 
 
 def _require_env(name: str) -> str:
@@ -166,28 +166,15 @@ def _require_no_skipped_required(junit_path: Path) -> None:
 
 def main() -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = ROOT / ".local-verify" / stamp
-    out_dir.mkdir(parents=True, exist_ok=True)
-    log_path = out_dir / "verify.log"
-    env = os.environ.copy()
-    env["VERIFY_LOCAL"] = "1"
-    env["ALLOW_TEST_DB_RESET"] = env.get("ALLOW_TEST_DB_RESET") or "1"
-    env["TEST_DATABASE_URL"] = _require_env("TEST_DATABASE_URL")
-    env["DATABASE_URL"] = env.get("DATABASE_URL") or env["TEST_DATABASE_URL"]
-    env["DATABASE_URL_UNPOOLED"] = env.get("DATABASE_URL_UNPOOLED") or env["TEST_DATABASE_URL"]
-    env["OBJECT_STORE_ENDPOINT"] = _require_env("OBJECT_STORE_ENDPOINT")
-    env["OBJECT_STORE_ACCESS_KEY"] = _require_env("OBJECT_STORE_ACCESS_KEY")
-    env["OBJECT_STORE_SECRET_KEY"] = _require_env("OBJECT_STORE_SECRET_KEY")
-    env["OBJECT_STORE_BUCKET"] = env.get("OBJECT_STORE_BUCKET", "").strip() or "asistencia-evidence"
-    env["OBJECT_STORE_REGION"] = env.get("OBJECT_STORE_REGION", "").strip() or "us-east-1"
-    env["SECRET_KEY"] = env.get("SECRET_KEY") or "e2e-asistencia-secret-key-32chars!!"
-    env["ENVIRONMENT"] = "development"
-    env["E2E_INTEGRATION"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
+    if str(BACKEND) not in sys.path:
+        sys.path.insert(0, str(BACKEND))
+    from app.core.verify_env import prepare_child_env
 
-    if env["ALLOW_TEST_DB_RESET"] != "1":
-        raise LoggedError("ALLOW_TEST_DB_RESET=1 es obligatorio")
+    try:
+        env = prepare_child_env(os.environ, object_prefix=f"verify/{stamp}/")
+    except ValueError as exc:
+        raise LoggedError(str(exc)) from exc
+    env["OBJECT_STORE_CREATE_BUCKET"] = "1"
 
     _require_reachable(env["TEST_DATABASE_URL"], "PostgreSQL de prueba")
     _require_reachable(env["OBJECT_STORE_ENDPOINT"], "Almacén S3 de prueba")
@@ -195,12 +182,37 @@ def main() -> None:
         raise LoggedError(
             "El puerto 3000 está ocupado. Playwright con CI=true no reutiliza Next y no puede arrancar."
         )
+    _pick_api_port()
+
+    out_dir = ROOT / ".local-verify" / stamp
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / "verify.log"
 
     with log_path.open("w", encoding="utf-8") as log:
         log.write(f"verify_local {stamp}\n")
         try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            _emit(
+                f"validated_sha={(sha.stdout or '').strip()}\n{dirty.stdout or ''}",
+                log,
+            )
             _versions(env, log)
-            _run(["uv", "sync", "--group", "dev"], cwd=BACKEND, env=env, log=log)
+            _run(["uv", "sync", "--frozen", "--group", "dev"], cwd=BACKEND, env=env, log=log)
             _run(
                 [
                     "uv",
@@ -238,7 +250,21 @@ def main() -> None:
 
             _run(["uv", "run", "alembic", "upgrade", "head"], cwd=BACKEND, env=env, log=log)
             _run(["uv", "run", "python", "-m", "scripts.seed_e2e_kiosk"], cwd=BACKEND, env=env, log=log)
+            _run(
+                [
+                    "uv",
+                    "run",
+                    "python",
+                    "-c",
+                    "from app.core.object_store import provision_test_bucket; provision_test_bucket()",
+                ],
+                cwd=BACKEND,
+                env=env,
+                log=log,
+            )
             api_log = out_dir / "fastapi.log"
+            api_env = env.copy()
+            api_env["OBJECT_STORE_CREATE_BUCKET"] = "0"
             api_proc = subprocess.Popen(
                 [
                     "uv",
@@ -251,7 +277,7 @@ def main() -> None:
                     str(api_port),
                 ],
                 cwd=str(BACKEND),
-                env=env,
+                env=api_env,
                 stdout=api_log.open("w", encoding="utf-8"),
                 stderr=subprocess.STDOUT,
             )

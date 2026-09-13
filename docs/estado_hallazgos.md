@@ -46,16 +46,26 @@ Documento de seguimiento. No certifica seguridad global ni exactitud de toda la 
 | E506-01 | `AttendanceAttemptResolution.reason` y migración nueva `g3b4c5d6e7f8` (80→500). Schema y panel alineados a 500. No se edita `f2a3b4c5d6e7`. | Alembic PG (80/81/120/500, rechazo 501, downgrade sin recorte), HTTP SQLite y PostgreSQL | Tablet física |
 | E506-02 | `attempt_status` y `resolve_attempt` comprueban existencia, no `active`. Nuevas marcaciones/evidencia siguen 403 si el empleado está inactivo. | Hardening A06–A10 e integración A06–A08 | Tablet física |
 
+## CD10-01–CD10-04 (sobre `cd10b33`)
+
+| ID | Corrección | Prueba | Pendiente |
+|---|---|---|---|
+| CD10-01 | `verify_local` exige `ALLOW_TEST_DB_RESET=1`, valida destinos desechables y fuerza las tres URLs de BD. Live S3 rechaza R2 y usa keys UUID. | `test_verify_env.py`, live S3 | R2 real con procedimiento aparte |
+| CD10-02 | Purge exige `CANCELLED_UNCONFIRMED`, lock de empleado y antigüedad ≥ 24 h. Marcación nueva comprueba el objeto. | Hardening + concurrencia PG | Tablet física |
+| CD10-03 | Errores 404 vs 503, timeouts 3 s / 8 s / 2 intentos, bucket precreado en producción. | Fake client + HTTP 503 | Token R2 limitado al bucket |
+| CD10-04 | `storage_backend` / `storage_bucket` / `byte_size`; PUT+SQL y backfill bloqueado. Migración `i5d6e7f8a9b0`. | Alembic + object_store | Backfill explícito de keys huérfanas |
+
 ## Almacenamiento privado de fotos (S3/R2)
 
-Las fotos nuevas se guardan en un bucket S3-compatible privado (`OBJECT_STORE_*`). PostgreSQL conserva metadatos y `object_key`. El panel sigue leyendo por la API autorizada (`Cache-Control: private, no-store`); no hay URLs públicas. Las pruebas unitarias usan moto; la verificación local exige MinIO desechable. **No se usa el bucket productivo de R2 en tests.** Migración `h4c5d6e7f8a9` no aplicada a Neon.
+Las fotos nuevas se guardan en un bucket S3-compatible privado (`OBJECT_STORE_*`). PostgreSQL conserva `object_key`, `storage_backend`, `storage_bucket`, `byte_size` e `image_sha256`; no el JPEG. El panel sigue leyendo por la API autorizada (`Cache-Control: private, no-store`); no hay URLs públicas. Las pruebas unitarias usan moto; la verificación local exige MinIO desechable y `ALLOW_TEST_DB_RESET=1` explícito. **No se usa el bucket productivo de R2 en tests.** Un 403 o timeout del almacén es 503, no 404. FastAPI no crea buckets en producción. Migraciones `h4c5d6e7f8a9` e `i5d6e7f8a9b0` no aplicadas a Neon. Filas `object_key` sin `storage_bucket` no se rellenan con el bucket actual: requieren backfill explícito.
 
 ### Migraciones
 
 - `e1f2a3b4c5d6`: pertenencia de nonce. Probada en PostgreSQL local desechable. No aplicada a Neon en R45.
 - `f2a3b4c5d6e7`: tabla `attendance_attempt_resolutions`. Upgrade poblado desde `e1f2a3b4c5d6` en Postgres desechable. **No aplicada a Neon.** El backend nuevo necesita un esquema compatible antes de un despliegue autorizado. Un downgrade de esta revisión elimina la trazabilidad de resoluciones.
 - `g3b4c5d6e7f8`: amplia `attendance_attempt_resolutions.reason` de 80 a 500. Upgrade poblado desde `f2a3b4c5d6e7` en Postgres desechable. **No aplicada a Neon.** Un downgrade a 80 se niega si existen motivos más largos; no recorta.
-- `h4c5d6e7f8a9`: `attendance_evidence.object_key` y `image_bytes` nullable. **No aplicada a Neon.**
+- `h4c5d6e7f8a9`: `attendance_evidence.object_key` y `image_bytes` nullable. **No aplicada a Neon.** Un downgrade que ponga `image_bytes` NOT NULL se detiene si hay filas S3 sin bytes; no borra fotos.
+- `i5d6e7f8a9b0`: `storage_backend`, `storage_bucket`, `byte_size`. Históricos con JPEG se marcan `DATABASE`. Filas con `object_key` y sin bucket no se inventan. El downgrade se niega si hay referencias S3 sin JPEG. **No aplicada a Neon.**
 
 ### Referencia mínima del kiosco (R45-03 / EDB-01)
 
