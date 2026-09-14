@@ -9,11 +9,6 @@ import { Alert, Chart, Check, ChevronRight, ClipboardCheck, Clock, Info, Refresh
 import { ApiError, attendanceAdminApi, AttendanceListItem, AttendanceSummary, Employee, employeesApi } from "@/lib/api";
 
 type DashboardData = { summary: AttendanceSummary; records: AttendanceListItem[]; missingEmployees: Employee[] };
-const GLASS_SURFACE_STYLE: React.CSSProperties = {
-  backdropFilter: "blur(28px) saturate(165%)",
-  WebkitBackdropFilter: "blur(28px) saturate(165%)",
-};
-
 function limaDateKey(date = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Lima", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
@@ -100,7 +95,7 @@ export default function AdminDashboardPage() {
           </section>
 
           <div className="dashboard-workspace">
-            <section id="incidencias" className="operations-panel" style={GLASS_SURFACE_STYLE} aria-labelledby="incidents-title">
+            <section id="incidencias" className="operations-panel surface-material" aria-labelledby="incidents-title">
               <div className="operations-panel-head"><div><h2 id="incidents-title">Incidencias por resolver</h2><p>Personas sin entrada y jornadas que siguen abiertas.</p></div>{incidents.length > 0 && <span className="count-badge">{incidents.length}</span>}</div>
               {incidents.length > 0 ? (
                 <div className="operations-list">
@@ -116,7 +111,7 @@ export default function AdminDashboardPage() {
               )}
             </section>
 
-            <section className="operations-panel" style={GLASS_SURFACE_STYLE} aria-labelledby="activity-title">
+            <section className="operations-panel surface-material" aria-labelledby="activity-title">
               <div className="operations-panel-head"><div><h2 id="activity-title">Actividad reciente</h2><p>Últimas marcaciones registradas hoy.</p></div></div>
               {data.records.length > 0 ? (
                 <div className="operations-list">
@@ -139,5 +134,5 @@ export default function AdminDashboardPage() {
 }
 
 function StatCard({ href, label, value, icon, tone, featured = false }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red"; featured?: boolean }) {
-  return <Link href={href} className={`stat-card stat-card--${tone}${featured ? " stat-card--featured" : ""}`} style={GLASS_SURFACE_STYLE} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
+  return <Link href={href} className={`stat-card surface-material stat-card--${tone}${featured ? " stat-card--featured" : ""}`} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
 }

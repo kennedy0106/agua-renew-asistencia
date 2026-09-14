@@ -8,11 +8,6 @@ import { Spinner } from "@/components/Loading";
 import { ApiError, usersApi } from "@/lib/api";
 
 const ROLE_LABELS: Record<string, string> = { ADMIN: "Administrador", BOSS: "Jefe", SUPERVISOR: "Supervisor" };
-const GLASS_SURFACE_STYLE: React.CSSProperties = {
-  backdropFilter: "blur(28px) saturate(165%)",
-  WebkitBackdropFilter: "blur(28px) saturate(165%)",
-};
-
 export default function AccountPage() {
   const user = useAdminUser();
   const [current, setCurrent] = useState("");
@@ -47,12 +42,12 @@ export default function AccountPage() {
   return (
     <AdminShell title="Mi cuenta" subtitle="Perfil y seguridad de acceso">
       <div className="account-layout">
-        <section className="operations-panel account-profile" style={GLASS_SURFACE_STYLE} aria-labelledby="profile-title">
+        <section className="operations-panel surface-material account-profile" aria-labelledby="profile-title">
           <span className="account-avatar" aria-hidden>{user?.username.charAt(0).toUpperCase() ?? <User size={22} />}</span>
           <div><h2 id="profile-title">{user?.username ?? "Usuario"}</h2><p>{user ? ROLE_LABELS[user.role] ?? user.role : "Cuenta administrativa"}</p></div>
         </section>
 
-        <section className="operations-panel account-security" style={GLASS_SURFACE_STYLE} aria-labelledby="security-title">
+        <section className="operations-panel surface-material account-security" aria-labelledby="security-title">
           <div className="operations-panel-head">
             <div className="account-heading"><span><Shield size={19} /></span><div><h2 id="security-title">Cambiar contraseña</h2><p>Usa al menos 8 caracteres y evita contraseñas compartidas.</p></div></div>
           </div>

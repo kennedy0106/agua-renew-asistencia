@@ -3001,7 +3001,9 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
   min-height: 100dvh;
   margin: 0;
   padding: clamp(1rem, 3vw, 1.75rem);
-  overflow: clip;
+  overflow-x: clip;
+  overflow-y: visible;
+  animation: none;
   background:
     radial-gradient(34rem 22rem at 0% 100%, rgba(42, 211, 178, 0.2), transparent 64%),
     radial-gradient(32rem 24rem at 100% 0%, rgba(42, 180, 238, 0.24), transparent 64%),
@@ -3020,13 +3022,13 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 .login-wrap::before {
   width: 13rem;
   height: 13rem;
-  inset: auto auto -4rem -4rem;
+  inset: auto auto 0 -4rem;
   background: rgba(36, 213, 160, 0.28);
 }
 .login-wrap::after {
   width: 16rem;
   height: 16rem;
-  inset: -5rem -5rem auto auto;
+  inset: 0 -5rem auto auto;
   background: rgba(42, 183, 238, 0.26);
 }
 
@@ -3148,7 +3150,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 .login-form { gap: 1rem; }
 .login-input-wrap { min-height: 4rem; border-radius: 0.85rem; background: rgba(249, 253, 255, 0.96); }
 .login-input-wrap .input { min-height: 3.9rem; height: 3.9rem; font-size: 0.97rem; }
-.login-password-toggle { width: 3rem; height: 3rem; }
+.login-password-toggle { flex: 0 0 auto; width: 3rem; min-width: 2.75rem; height: 3rem; min-height: 2.75rem; }
 .login-submit {
   position: relative;
   justify-content: center;
@@ -3179,10 +3181,11 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
   .login-wrap {
     display: flex;
     width: 100%;
-    height: 100dvh;
+    height: auto;
     min-height: 100dvh;
     padding: max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom));
-    overflow: clip;
+    overflow-x: clip;
+    overflow-y: visible;
   }
   .login-hero { display: none; }
   .login-card { width: min(100%, 28rem); min-height: 0; margin: auto; padding: clamp(1.25rem, 4vw, 1.75rem); }
@@ -3218,4 +3221,23 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 
 @media (prefers-reduced-transparency: reduce) {
   .login-hero, .login-card, .login-input-wrap, .login-brand-plaque { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* Material compartido: el acabado queda en CSS para respetar preferencias de
+   transparencia y dispositivos táctiles sin duplicar estilos inline. */
+.sidebar-material {
+  backdrop-filter: blur(30px) saturate(165%);
+  -webkit-backdrop-filter: blur(30px) saturate(165%);
+}
+.surface-material {
+  backdrop-filter: blur(28px) saturate(165%);
+  -webkit-backdrop-filter: blur(28px) saturate(165%);
+}
+@media (pointer: coarse), (prefers-reduced-transparency: reduce) {
+  .sidebar-material,
+  .surface-material {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: rgba(255, 255, 255, 0.96);
+  }
 }

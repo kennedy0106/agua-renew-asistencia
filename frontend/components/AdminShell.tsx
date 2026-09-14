@@ -5,7 +5,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAdminSession } from "./AdminSession";
 import {
@@ -43,11 +43,6 @@ const ROLE_LABELS: Record<string, string> = {
   SUPERVISOR: "Supervisor",
 };
 
-const GLASS_SIDEBAR_STYLE: React.CSSProperties = {
-  backdropFilter: "blur(30px) saturate(165%)",
-  WebkitBackdropFilter: "blur(30px) saturate(165%)",
-};
-
 export default function AdminShell({
   children,
   title,
@@ -61,6 +56,14 @@ export default function AdminShell({
   const pathname = usePathname();
   const { user, ready } = useAdminSession();
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+
+  function closeMenu({ returnFocus = true }: { returnFocus?: boolean } = {}) {
+    const wasOpen = menuOpen;
+    setMenuOpen(false);
+    if (returnFocus && wasOpen) window.requestAnimationFrame(() => menuButtonRef.current?.focus());
+  }
 
   useEffect(() => {
     setMenuOpen(false);
@@ -70,13 +73,39 @@ export default function AdminShell({
     if (!menuOpen) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
+    const focusFirstItem = window.requestAnimationFrame(() => {
+      const focusable = sidebarRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      focusable?.[0]?.focus();
+    });
+    const keepFocusInDrawer = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMenuOpen(false);
+        window.requestAnimationFrame(() => menuButtonRef.current?.focus());
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? []);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", keepFocusInDrawer);
     return () => {
       document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", closeOnEscape);
+      window.cancelAnimationFrame(focusFirstItem);
+      window.removeEventListener("keydown", keepFocusInDrawer);
     };
   }, [menuOpen]);
 
@@ -127,6 +156,7 @@ export default function AdminShell({
       </div>
       <header className="mobile-header">
         <button
+          ref={menuButtonRef}
           type="button"
           className="mobile-menu-button"
           onClick={() => setMenuOpen(true)}
@@ -145,33 +175,33 @@ export default function AdminShell({
       <button
         type="button"
         className={`sidebar-scrim${menuOpen ? " is-open" : ""}`}
-        onClick={() => setMenuOpen(false)}
+        onClick={() => closeMenu()}
         aria-label="Cerrar menú"
         tabIndex={menuOpen ? 0 : -1}
       />
 
-      <aside id="admin-sidebar" className={`sidebar${menuOpen ? " is-open" : ""}`} style={GLASS_SIDEBAR_STYLE} aria-label="Navegación del sistema">
+      <aside ref={sidebarRef} id="admin-sidebar" className={`sidebar sidebar-material${menuOpen ? " is-open" : ""}`} aria-label="Navegación del sistema">
         <div className="sidebar-brand">
           <Link href="/admin/dashboard" aria-label="Ir al dashboard">
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
           </Link>
-          <button type="button" className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Cerrar menú">
+          <button type="button" className="sidebar-close" onClick={() => closeMenu()} aria-label="Cerrar menú">
             <X size={18} />
           </button>
         </div>
         <nav className="sidebar-nav" aria-label="Principal">
           <p className="nav-label">Operación</p>
           {visibleNav.slice(0, 4).map((item) => (
-            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} />
+            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} onNavigate={closeMenu} />
           ))}
           {visibleNav.length > 4 && <p className="nav-label">Remuneraciones</p>}
           {visibleNav.slice(4).map((item) => (
-            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} />
+            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} onNavigate={closeMenu} />
           ))}
         </nav>
         {user && (
           <div className="sidebar-user">
-            <Link href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta">
+            <Link href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta" onClick={() => closeMenu()}>
               <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
               <div className="meta">
                 <div className="name">{user.username}</div>
@@ -221,9 +251,11 @@ export default function AdminShell({
 function NavLink({
   item,
   active,
+  onNavigate,
 }: {
   item: { href: string; label: string; icon: React.ComponentType<{ size?: number }> };
   active: boolean;
+  onNavigate: () => void;
 }) {
   const Icon = item.icon;
   return (
@@ -231,6 +263,7 @@ function NavLink({
       href={item.href}
       className={`nav-link${active ? " active" : ""}`}
       aria-current={active ? "page" : undefined}
+      onClick={onNavigate}
     >
       <Icon size={17} />
       <span>{item.label}</span>

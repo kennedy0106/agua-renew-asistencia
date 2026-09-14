@@ -4,7 +4,7 @@
 // Semana Lu..Do, español, hoy con anillo, día elegido en azul sólido,
 // trigger 2.75rem glass, panel de vidrio con blur. Fechas en America/Lima.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Calendar } from "./Icons";
 
 const WEEKDAYS = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
@@ -47,7 +47,16 @@ export default function DateField({
 }) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<Date>(() => (value ? parseISO(value) : todayLima()));
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dayRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const dialogId = useId();
+
+  function closeCalendar({ returnFocus = true }: { returnFocus?: boolean } = {}) {
+    setOpen(false);
+    if (returnFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }
 
   const label = useMemo(() => {
     if (!value) return placeholder;
@@ -63,7 +72,7 @@ export default function DateField({
     if (!open) return;
     function onDoc(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        closeCalendar({ returnFocus: false });
       }
     }
     document.addEventListener("mousedown", onDoc);
@@ -87,33 +96,80 @@ export default function DateField({
   const today = todayLima();
   const selected = value ? parseISO(value) : null;
 
+  useEffect(() => {
+    if (!open) return;
+    const selectedDate = value ? parseISO(value) : null;
+    const currentDate = todayLima();
+    const selectedIndex = days.findIndex((day) => day && selectedDate && day.toDateString() === selectedDate.toDateString());
+    const todayIndex = days.findIndex((day) => day && day.toDateString() === currentDate.toDateString());
+    const firstDay = days.findIndex(Boolean);
+    const nextIndex = selectedIndex >= 0 ? selectedIndex : todayIndex >= 0 ? todayIndex : firstDay;
+    setFocusedIndex(nextIndex);
+    const frame = window.requestAnimationFrame(() => dayRefs.current[nextIndex]?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [days, open, value]);
+
   function pick(d: Date | null) {
     if (!d) return;
     onChange(toISO(d));
-    setOpen(false);
+    closeCalendar();
   }
 
   function shiftMonth(delta: number) {
     setView((v) => new Date(v.getFullYear(), v.getMonth() + delta, 1));
   }
 
+  function moveDayFocus(from: number, direction: "previous" | "next" | "first" | "last") {
+    const valid = days.map((day, index) => day ? index : -1).filter((index) => index >= 0);
+    if (!valid.length) return;
+    let target = valid[0];
+    if (direction === "last") target = valid[valid.length - 1];
+    if (direction === "previous") target = [...valid].reverse().find((index) => index < from) ?? valid[valid.length - 1];
+    if (direction === "next") target = valid.find((index) => index > from) ?? valid[0];
+    setFocusedIndex(target);
+    dayRefs.current[target]?.focus();
+  }
+
+  function handleDayKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    const delta = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" ? -7 : event.key === "ArrowDown" ? 7 : 0;
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      moveDayFocus(index, event.key === "Home" ? "first" : "last");
+      return;
+    }
+    if (!delta) return;
+    event.preventDefault();
+    const preferred = index + delta;
+    const valid = days.map((day, dayIndex) => day ? dayIndex : -1).filter((dayIndex) => dayIndex >= 0);
+    const target = valid.reduce((best, candidate) => Math.abs(candidate - preferred) < Math.abs(best - preferred) ? candidate : best, valid[0]);
+    setFocusedIndex(target);
+    dayRefs.current[target]?.focus();
+  }
+
   return (
     <div ref={rootRef} className="datefield" style={{ position: "relative" }}>
       <button
+        ref={triggerRef}
         type="button"
         data-required={required || undefined}
         className="datefield-trigger"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => open ? closeCalendar({ returnFocus: false }) : setOpen(true)}
         aria-label={ariaLabel ?? placeholder}
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-controls={open ? dialogId : undefined}
       >
         <Calendar size={15} />
         <span className={value ? "" : "datefield-placeholder"}>{label}</span>
       </button>
 
       {open && (
-        <div className="datefield-panel" role="dialog">
+        <div className="datefield-panel" id={dialogId} role="dialog" aria-label={`Calendario: ${ariaLabel ?? placeholder}`} onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            closeCalendar();
+          }
+        }}>
           <div className="datefield-head">
             <button type="button" className="datefield-nav" onClick={() => shiftMonth(-1)} aria-label="Mes anterior">
               ‹
@@ -148,6 +204,10 @@ export default function DateField({
                   }
                   disabled={d === null}
                   onClick={() => pick(d)}
+                  ref={(node) => { dayRefs.current[i] = node; }}
+                  tabIndex={d !== null && focusedIndex === i ? 0 : -1}
+                  onFocus={() => setFocusedIndex(i)}
+                  onKeyDown={(event) => handleDayKeyDown(event, i)}
                 >
                   {d ? d.getDate() : ""}
                 </button>
@@ -156,7 +216,7 @@ export default function DateField({
           </div>
 
           <div className="datefield-foot">
-            <button type="button" className="datefield-clear" onClick={() => { onChange(""); setOpen(false); }}>
+            <button type="button" className="datefield-clear" onClick={() => { onChange(""); closeCalendar(); }}>
               Borrar
             </button>
             <button type="button" className="datefield-clear" onClick={() => { pick(today); }}>
