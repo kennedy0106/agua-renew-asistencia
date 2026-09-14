@@ -303,6 +303,8 @@ uv --directory backend run python ../scripts/verify_local.py
 
 El comando exige `ALLOW_TEST_DB_RESET=1` (no lo completa), fuerza `DATABASE_URL`/`DATABASE_URL_UNPOOLED` a la URL de prueba validada, rechaza endpoints R2 y usa `uv sync --frozen`. Escribe un log en `.local-verify/` y conserva el código de error si un paso falla.
 
+Ensayo funcional en tablet (HTTPS, Postgres/MinIO aislados, sin despliegue ni R2): `docs/ensayo_tablet_https.md`. No se ejecuta hasta autorización explícita de certificados/túnel.
+
 
 ## Reglas que este repositorio respeta (no negociables)
 

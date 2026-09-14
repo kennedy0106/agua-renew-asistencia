@@ -49,6 +49,9 @@ if settings.environment == "production":
     origins = [settings.frontend_url]
 else:
     origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    extra = (settings.frontend_url or "").strip()
+    if extra and extra not in origins:
+        origins.append(extra)
 
 app.add_middleware(
     CORSMiddleware,

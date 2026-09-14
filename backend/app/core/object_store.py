@@ -2,8 +2,10 @@
 
 Las fotos no se publican. El frontend solo las obtiene por la API autorizada.
 
-Tiempos del cliente: conexión 3 s, lectura 8 s, como máximo 2 intentos
-(modo standard de botocore). Presupuesto peor caso ≈ 25 s con backoff.
+Tiempos del cliente: conexión 3 s, lectura 8 s, 2 intentos totales
+(modo standard de botocore, ``total_max_attempts``). Eso cubre una
+operación del SDK; una marcación puede hacer varias llamadas de red
+y esperar locks, así que no es un plazo máximo de toda la petición.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ _store: "ObjectStore | None" = None
 
 CONNECT_TIMEOUT_SECONDS = 3
 READ_TIMEOUT_SECONDS = 8
-MAX_ATTEMPTS = 2
+MAX_TOTAL_ATTEMPTS = 2
 
 _UNAVAILABLE_ERRORS = (
     EndpointConnectionError,
@@ -113,7 +115,7 @@ class ObjectStore:
                 s3={"addressing_style": "path"},
                 connect_timeout=CONNECT_TIMEOUT_SECONDS,
                 read_timeout=READ_TIMEOUT_SECONDS,
-                retries={"max_attempts": MAX_ATTEMPTS, "mode": "standard"},
+                retries={"total_max_attempts": MAX_TOTAL_ATTEMPTS, "mode": "standard"},
             ),
         )
 
@@ -176,17 +178,12 @@ class ObjectStore:
             if _is_precondition(exc):
                 raise ObjectAlreadyExistsError(key) from exc
             raise _unavailable(exc) from exc
-        except TypeError:
+        except TypeError as exc:
             if if_none_match:
-                kwargs.pop("IfNoneMatch", None)
-                try:
-                    self._client.put_object(**kwargs)
-                except ClientError as exc:
-                    raise _unavailable(exc) from exc
-                except _UNAVAILABLE_ERRORS as exc:
-                    raise _unavailable(exc) from exc
-            else:
-                raise
+                raise ObjectStoreError(
+                    "El almacén no admite escritura condicional IfNoneMatch; no se sustituyó el objeto"
+                ) from exc
+            raise
         except _UNAVAILABLE_ERRORS as exc:
             raise _unavailable(exc) from exc
 

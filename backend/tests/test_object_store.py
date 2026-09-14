@@ -11,10 +11,15 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from sqlalchemy import select
 
 from app.core.object_store import (
+    CONNECT_TIMEOUT_SECONDS,
+    MAX_TOTAL_ATTEMPTS,
     ObjectAlreadyExistsError,
     ObjectNotFoundError,
     ObjectStore,
+    ObjectStoreError,
+    ObjectStoreSettings,
     ObjectStoreUnavailableError,
+    READ_TIMEOUT_SECONDS,
     evidence_object_key,
     get_object_store,
     reset_object_store,
@@ -130,6 +135,43 @@ def test_put_condicional_existente():
         store.put_bytes("k.jpg", b"abc", "image/jpeg")
 
 
+def test_put_typeerror_no_reescribe_sin_condicion():
+    calls: list[dict] = []
+
+    def put_object(**kwargs):
+        calls.append(dict(kwargs))
+        if "IfNoneMatch" in kwargs:
+            raise TypeError("unexpected keyword argument 'IfNoneMatch'")
+        kwargs["Body"] = b"replaced"
+
+    fake = MagicMock()
+    fake.put_object.side_effect = put_object
+    store = _store_with_client(fake)
+    with pytest.raises(ObjectStoreError, match="IfNoneMatch"):
+        store.put_bytes("k.jpg", b"new", "image/jpeg")
+    assert len(calls) == 1
+    assert calls[0].get("IfNoneMatch") == "*"
+    assert calls[0].get("Body") == b"new"
+
+
+def test_cliente_s3_usa_dos_intentos_totales():
+    store = ObjectStore(
+        ObjectStoreSettings(
+            endpoint="http://127.0.0.1:9",
+            access_key="test",
+            secret_key="test-secret",
+            bucket="asistencia-evidence-test",
+            region="us-east-1",
+            create_bucket=False,
+        )
+    )
+    retries = store._client.meta.config.retries
+    assert retries.get("total_max_attempts") == MAX_TOTAL_ATTEMPTS == 2
+    assert "max_attempts" not in retries
+    assert store._client.meta.config.connect_timeout == CONNECT_TIMEOUT_SECONDS
+    assert store._client.meta.config.read_timeout == READ_TIMEOUT_SECONDS
+
+
 def test_foto_historica_no_consulta_s3(client, db_session, monkeypatch):
     _login(client)
     employee_id = _employee(client, db_session)
@@ -224,6 +266,7 @@ def test_put_ok_sql_falla_permite_reintento_misma_foto(client, db_session, monke
         json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
     )
     assert first.status_code == 503
+    assert first.json()["detail"] == "La foto se almacenó pero no se publicó; reintente la misma foto"
     db_session.expire_all()
     assert db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))) is None
     second = client.post(
@@ -234,6 +277,138 @@ def test_put_ok_sql_falla_permite_reintento_misma_foto(client, db_session, monke
     row = db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token)))
     assert row is not None
     assert get_object_store().exists(row.object_key, bucket=row.storage_bucket)
+
+
+def test_put_ok_sql_operacional_permite_reintento_misma_foto(client, db_session, monkeypatch):
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo = valid_jpeg_b64(color=(14, 15, 16))
+    from sqlalchemy.exc import OperationalError
+
+    original = db_session.commit
+    state = {"fail": True}
+
+    def flaky_commit():
+        if state["fail"]:
+            state["fail"] = False
+            raise OperationalError("server closed the connection unexpectedly", {}, Exception("lost"))
+        return original()
+
+    monkeypatch.setattr(db_session, "commit", flaky_commit)
+    first = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert first.status_code == 503
+    assert first.json()["detail"] == "La foto se almacenó pero no se publicó; reintente la misma foto"
+    key = evidence_object_key(employee_id, _nonce_of(token))
+    assert get_object_store().exists(key)
+    second = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert second.status_code == 201, second.text
+    rows = list(db_session.scalars(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))))
+    assert len(rows) == 1
+
+
+def test_put_ok_commit_incierto_no_duplica_fila(client, db_session, monkeypatch):
+    _login(client)
+    _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo = valid_jpeg_b64(color=(21, 22, 23))
+    from sqlalchemy.exc import OperationalError
+
+    original = db_session.commit
+    state = {"fail": True}
+
+    def commit_then_disconnect():
+        result = original()
+        if state["fail"]:
+            state["fail"] = False
+            raise OperationalError("terminating connection due to administrator command", {}, Exception("lost"))
+        return result
+
+    monkeypatch.setattr(db_session, "commit", commit_then_disconnect)
+    first = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert first.status_code == 201, first.text
+    assert "administrator command" not in first.text
+    evidence_id = first.json()["id"]
+    second = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] == evidence_id
+    rows = list(db_session.scalars(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))))
+    assert len(rows) == 1
+
+
+def test_put_ok_error_de_programacion_no_se_oculta(client, db_session, monkeypatch):
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo = valid_jpeg_b64(color=(30, 31, 32))
+
+    def boom():
+        raise AttributeError("bug interno de prueba")
+
+    monkeypatch.setattr(db_session, "commit", boom)
+    with pytest.raises(AttributeError, match="bug interno"):
+        client.post(
+            "/api/v1/attendance/evidence",
+            json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+        )
+    key = evidence_object_key(employee_id, _nonce_of(token))
+    assert get_object_store().exists(key)
+
+
+def test_put_ok_sql_falla_foto_distinta_es_409(client, db_session, monkeypatch):
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo_a = valid_jpeg_b64(color=(40, 41, 42))
+    photo_b = valid_jpeg_b64(color=(50, 51, 52))
+    from sqlalchemy.exc import IntegrityError
+
+    original = db_session.commit
+    state = {"fail": True}
+
+    def flaky_commit():
+        if state["fail"]:
+            state["fail"] = False
+            raise IntegrityError("insert", {}, Exception("sql"))
+        return original()
+
+    monkeypatch.setattr(db_session, "commit", flaky_commit)
+    first = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo_a, "content_type": "image/jpeg"},
+    )
+    assert first.status_code == 503
+    key = evidence_object_key(employee_id, _nonce_of(token))
+    original_bytes = get_object_store().get_bytes(key)
+    second = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo_b, "content_type": "image/jpeg"},
+    )
+    assert second.status_code == 409
+    assert get_object_store().get_bytes(key) == original_bytes
+    third = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo_a, "content_type": "image/jpeg"},
+    )
+    assert third.status_code == 201, third.text
+    rows = list(db_session.scalars(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))))
+    assert len(rows) == 1
 
 
 def test_cambio_de_bucket_global_sigue_la_fila(client, db_session, monkeypatch):

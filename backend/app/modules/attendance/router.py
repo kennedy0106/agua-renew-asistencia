@@ -251,8 +251,7 @@ def purge_abandoned_evidence(
     _: object = Depends(require_any_role("ADMIN")),
     older_than_hours: int = Query(default=24, ge=24),
 ) -> dict:
-    deleted = AttendanceService(db).purge_abandoned_evidence(older_than_hours=older_than_hours)
-    return {"deleted": deleted}
+    return AttendanceService(db).purge_abandoned_evidence(older_than_hours=older_than_hours)
 
 
 @router.get("/{record_id}/evidence")

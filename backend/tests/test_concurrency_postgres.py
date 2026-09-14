@@ -949,7 +949,8 @@ def test_purge_vs_marcacion_no_borra_confirmada(pg_engine):
         thread.start()
     _join_finished(threads)
     assert not isinstance(results.get("mark"), int)
-    assert results.get("purge") == 0
+    purge = results.get("purge")
+    assert isinstance(purge, dict) and purge.get("deleted") == 0
     check = factory()
     try:
         evidence = check.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))

@@ -340,6 +340,12 @@ def test_purge_no_borra_evidencia_confirmada(client, db_session):
     remaining = list(db_session.scalars(select(AttendanceEvidence)))
     assert len(remaining) == 1
     assert remaining[0].attendance_record_id is not None
+    again = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=24")
+    assert again.status_code == 200
+    assert again.json()["deleted"] == 0
+    leftover = list(db_session.scalars(select(AttendanceEvidence)))
+    assert len(leftover) == 1
+    assert leftover[0].id == remaining[0].id
 
 
 def test_purge_conserva_pendiente_sin_cancelar(client, db_session):
@@ -367,6 +373,121 @@ def test_purge_conserva_pendiente_sin_cancelar(client, db_session):
     remaining = list(db_session.scalars(select(AttendanceEvidence)))
     assert len(remaining) == 1
     assert remaining[0].attendance_record_id is None
+
+
+def test_purge_ubicacion_incompleta_no_usa_almacen(client, db_session, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceEvidence
+
+    _login(client)
+    _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    assert client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(2, 3, 4)), "content_type": "image/jpeg"},
+    ).status_code == 201
+    cancelled = client.post(
+        "/api/v1/attendance/attempt/resolve",
+        json={"marking_token": token, "reason_code": "USER_CANCELLED"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    row = db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token)))
+    assert row is not None
+    object_key = row.object_key
+    row.storage_backend = None
+    row.storage_bucket = None
+    row.captured_at = cutoff
+    db_session.add(row)
+    for resolution in db_session.scalars(select(AttendanceAttemptResolution)):
+        resolution.resolved_at = cutoff
+        db_session.add(resolution)
+    db_session.commit()
+
+    calls: list[str] = []
+
+    class ForbiddenStore:
+        def delete(self, *args, **kwargs):
+            calls.append("delete")
+            raise AssertionError("purge no debe borrar con ubicación incompleta")
+
+        def head_object(self, *args, **kwargs):
+            calls.append("head")
+            raise AssertionError("purge no debe hacer HEAD con ubicación incompleta")
+
+        def get_bytes(self, *args, **kwargs):
+            calls.append("get")
+            raise AssertionError("purge no debe hacer GET con ubicación incompleta")
+
+    monkeypatch.setattr("app.modules.attendance.service.get_object_store", lambda: ForbiddenStore())
+    purged = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=24")
+    assert purged.status_code == 200
+    body = purged.json()
+    assert body["deleted"] == 0
+    assert body["omitted"] == [{"nonce": _nonce_of(token), "reason": "incomplete_storage_location"}]
+    assert calls == []
+    db_session.expire_all()
+    leftover = db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token)))
+    assert leftover is not None
+    assert leftover.object_key == object_key
+    assert leftover.storage_bucket is None
+
+
+def test_purge_borra_solo_el_bucket_de_la_fila(client, db_session, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.core.object_store import get_object_store
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceEvidence
+
+    _login(client)
+    _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    assert client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(5, 6, 7)), "content_type": "image/jpeg"},
+    ).status_code == 201
+    cancelled = client.post(
+        "/api/v1/attendance/attempt/resolve",
+        json={"marking_token": token, "reason_code": "USER_CANCELLED"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+    row = db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token)))
+    assert row is not None
+    recorded_key = row.object_key
+    recorded_bucket = row.storage_bucket
+    row.captured_at = cutoff
+    db_session.add(row)
+    for resolution in db_session.scalars(select(AttendanceAttemptResolution)):
+        resolution.resolved_at = cutoff
+        db_session.add(resolution)
+    db_session.commit()
+
+    real = get_object_store()
+    calls: list[dict] = []
+
+    class SpyStore:
+        bucket = "bucket-global-B"
+
+        def delete(self, key, *, bucket=None):
+            calls.append({"key": key, "bucket": bucket})
+            return real.delete(key, bucket=bucket)
+
+    monkeypatch.setattr("app.modules.attendance.service.get_object_store", lambda: SpyStore())
+    purged = client.post("/api/v1/attendance/maintenance/purge-abandoned-evidence?older_than_hours=24")
+    assert purged.status_code == 200
+    assert purged.json()["deleted"] == 1
+    assert calls == [{"key": recorded_key, "bucket": recorded_bucket}]
+    assert recorded_bucket != "bucket-global-B"
+    db_session.expire_all()
+    assert db_session.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))) is None
 
 
 def test_reenvio_misma_foto_tras_confirmar_devuelve_evidencia(client, db_session):

@@ -17,7 +17,11 @@ def _login(client, username: str, password: str) -> None:
 
 
 def _today_lima():
-    return datetime.now(lima_tz()).date()
+    """Día de los escenarios A–E: laborable según el fixture (domingo = 0 min)."""
+    today = datetime.now(lima_tz()).date()
+    if today.weekday() == 6:
+        return today - timedelta(days=1)
+    return today
 
 
 def _create_employee(client, db_session, dni="72845632", code="EMP-001", name="Juan", last="Pérez") -> str:
@@ -64,13 +68,16 @@ def _set_salary(client, employee_id: str, amount: str, effective_from: str, **ov
 
 
 def _set_exact_times(client, record_id: str, start_hour: int, start_min: int, end_hour: int, end_min: int):
-    """Corrige un registro a horas exactas de HOY (Lima) y devuelve worked_minutes."""
+    """Corrige un registro a horas exactas del día laborable de escenario (Lima)."""
     today = _today_lima()
+    tz = lima_tz()
+    check_in = datetime(today.year, today.month, today.day, start_hour, start_min, tzinfo=tz)
+    check_out = datetime(today.year, today.month, today.day, end_hour, end_min, tzinfo=tz)
     response = client.patch(
         f"/api/v1/attendance/{record_id}",
         json={
-            "check_in_at": datetime(today.year, today.month, today.day, start_hour, start_min).isoformat(),
-            "check_out_at": datetime(today.year, today.month, today.day, end_hour, end_min).isoformat(),
+            "check_in_at": check_in.isoformat(),
+            "check_out_at": check_out.isoformat(),
             "reason": "Fijar horario del escenario",
         },
     )

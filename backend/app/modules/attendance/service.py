@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
@@ -236,22 +236,42 @@ class AttendanceService:
         self.db.add(evidence)
         try:
             self.db.commit()
-        except IntegrityError:
+        except (IntegrityError, OperationalError, InterfaceError):
             self.db.rollback()
-            existing = self.repo.get_evidence_by_nonce(nonce)
+            self.db.expire_all()
+            existing = self._recover_evidence_after_put(nonce, digest)
             if existing is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="La foto se almacenó pero no se publicó; reintente la misma foto",
                 )
-            if existing.image_sha256 and existing.image_sha256 != digest:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Ya hay una foto distinta para este intento; identifique de nuevo",
-                )
             return existing
         self.db.refresh(evidence)
         return evidence
+
+    def _recover_evidence_after_put(self, nonce: str, digest: str) -> AttendanceEvidence | None:
+        existing = self.repo.get_evidence_by_nonce(nonce)
+        if existing is None:
+            existing = self._lookup_evidence_via_new_session(nonce)
+        if existing is None:
+            return None
+        if existing.image_sha256 and existing.image_sha256 != digest:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya hay una foto distinta para este intento; identifique de nuevo",
+            )
+        return existing
+
+    def _lookup_evidence_via_new_session(self, nonce: str) -> AttendanceEvidence | None:
+        bind = self.db.get_bind()
+        if bind is None:
+            return None
+        with Session(bind) as other:
+            found = other.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+            if found is None:
+                return None
+            found_id = found.id
+        return self.db.get(AttendanceEvidence, found_id)
 
     def _raise_store_http(self, exc: ObjectStoreError) -> None:
         if isinstance(exc, ObjectNotFoundError):
@@ -910,7 +930,7 @@ class AttendanceService:
 
     MIN_PURGE_HOURS = 24
 
-    def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> int:
+    def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> dict:
         if older_than_hours < self.MIN_PURGE_HOURS:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -933,6 +953,7 @@ class AttendanceService:
             )
         )
         deleted = 0
+        omitted: list[dict[str, str]] = []
         store = None
         for snapshot in candidates:
             self.repo.lock_employee_for_attempt(snapshot.employee_id)
@@ -965,6 +986,13 @@ class AttendanceService:
                 self.db.commit()
                 continue
             if evidence.object_key:
+                bucket = (evidence.storage_bucket or "").strip()
+                if not bucket:
+                    omitted.append(
+                        {"nonce": evidence.nonce, "reason": "incomplete_storage_location"}
+                    )
+                    self.db.commit()
+                    continue
                 if store is None:
                     try:
                         store = get_object_store()
@@ -974,7 +1002,7 @@ class AttendanceService:
                             detail=str(exc),
                         ) from exc
                 try:
-                    store.delete(evidence.object_key, bucket=evidence.storage_bucket or None)
+                    store.delete(evidence.object_key, bucket=bucket)
                 except ObjectStoreError as exc:
                     self.db.rollback()
                     raise HTTPException(
@@ -984,11 +1012,11 @@ class AttendanceService:
             self.db.delete(evidence)
             try:
                 self.db.commit()
-            except Exception:
+            except (IntegrityError, OperationalError, InterfaceError):
                 self.db.rollback()
                 raise
             deleted += 1
-        return deleted
+        return {"deleted": deleted, "omitted": omitted}
 
 
     def _record_event(

@@ -55,9 +55,19 @@ Documento de seguimiento. No certifica seguridad global ni exactitud de toda la 
 | CD10-03 | Errores 404 vs 503, timeouts 3 s / 8 s / 2 intentos, bucket precreado en producción. | Fake client + HTTP 503 | Token R2 limitado al bucket |
 | CD10-04 | `storage_backend` / `storage_bucket` / `byte_size`; PUT+SQL y backfill bloqueado. Migración `i5d6e7f8a9b0`. | Alembic + object_store | Backfill explícito de keys huérfanas |
 
+## 7A-01–7A-03 (sobre `7add8ed`)
+
+| ID | Corrección | Prueba | Pendiente |
+|---|---|---|---|
+| 7A-01 | Purge no usa el bucket global si falta `storage_bucket`; omite con `incomplete_storage_location` y conserva la fila. | Hardening (ubicación incompleta + bucket de la fila) | Backfill explícito si esas filas existen en un destino autorizado |
+| 7A-02 | PUT condicional sin fallback `TypeError` → PUT incondicional. 412 + hash para adoptar o 409. | Fake client TypeError; PUT+SQL con foto distinta | R2 real autorizado |
+| 7A-03 | `total_max_attempts=2`. Tras PUT, `IntegrityError`/`OperationalError`/`InterfaceError` responden 503 o recuperan la fila; no se capturan errores de programación. | object_store (operacional, commit incierto, AttributeError) | Corte real de PostgreSQL |
+
+Procedimiento de ensayo en tablet (HTTPS, datos aislados, sin despliegue): `docs/ensayo_tablet_https.md`. No autoriza R2, Neon ni publicación.
+
 ## Almacenamiento privado de fotos (S3/R2)
 
-Las fotos nuevas se guardan en un bucket S3-compatible privado (`OBJECT_STORE_*`). PostgreSQL conserva `object_key`, `storage_backend`, `storage_bucket`, `byte_size` e `image_sha256`; no el JPEG. El panel sigue leyendo por la API autorizada (`Cache-Control: private, no-store`); no hay URLs públicas. Las pruebas unitarias usan moto; la verificación local exige MinIO desechable y `ALLOW_TEST_DB_RESET=1` explícito. **No se usa el bucket productivo de R2 en tests.** Un 403 o timeout del almacén es 503, no 404. FastAPI no crea buckets en producción. Migraciones `h4c5d6e7f8a9` e `i5d6e7f8a9b0` no aplicadas a Neon. Filas `object_key` sin `storage_bucket` no se rellenan con el bucket actual: requieren backfill explícito.
+Las fotos nuevas se guardan en un bucket S3-compatible privado (`OBJECT_STORE_*`). PostgreSQL conserva `object_key`, `storage_backend`, `storage_bucket`, `byte_size` e `image_sha256`; no el JPEG. El panel sigue leyendo por la API autorizada (`Cache-Control: private, no-store`); no hay URLs públicas. Las pruebas unitarias usan moto; la verificación local exige MinIO desechable y `ALLOW_TEST_DB_RESET=1` explícito. **No se usa el bucket productivo de R2 en tests.** Un 403 o timeout del almacén es 503, no 404. FastAPI no crea buckets en producción. Un PUT de evidencia nueva lleva `IfNoneMatch='*'`; un error de compatibilidad no autoriza un PUT incondicional. La limpieza de abandonadas no borra contra el bucket global si la fila no tiene `storage_bucket`. Migraciones `h4c5d6e7f8a9` e `i5d6e7f8a9b0` no aplicadas a Neon. Filas `object_key` sin `storage_bucket` no se rellenan con el bucket actual: requieren backfill explícito.
 
 ### Migraciones
 
