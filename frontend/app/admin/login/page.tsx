@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { ApiError, authApi } from "@/lib/api";
-import { Check, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
+import { Check, ChevronRight, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
 export default function AdminLoginPage() {
@@ -36,8 +36,10 @@ export default function AdminLoginPage() {
     <div className="login-wrap">
       <section className="login-hero" aria-labelledby="login-hero-title">
         <div className="login-caustic" aria-hidden />
-        <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
-        <h1 id="login-hero-title">El tiempo del equipo, claro y en orden</h1>
+        <div className="login-brand-plaque">
+          <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+        </div>
+        <h1 id="login-hero-title"><span>Asistencia</span> diaria</h1>
         <p>
           Registra jornadas, revisa incidencias y calcula remuneraciones con la
           misma precisión con la que Agua Renew cuida cada operación.
@@ -58,14 +60,12 @@ export default function AdminLoginPage() {
           <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
         </div>
 
+        <div className="login-drop" aria-hidden>
+          <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
+        </div>
         <div className="login-card-heading">
-          <div className="login-drop" aria-hidden>
-            <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
-          </div>
-          <div>
-            <h2 id="login-title">Iniciar sesión</h2>
-            <p>Entra con tu usuario de Agua Renew para administrar la asistencia.</p>
-          </div>
+          <h2 id="login-title">Iniciar sesión</h2>
+          <p>Entra con tu usuario de Agua Renew para administrar la asistencia.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="login-form">
@@ -126,8 +126,10 @@ export default function AdminLoginPage() {
           <button type="submit" className="btn btn-primary login-submit" disabled={busy}>
             {busy && <Spinner />}
             {busy ? "Ingresando…" : "Ingresar al sistema"}
+            {!busy && <ChevronRight className="login-submit-arrow" size={18} />}
           </button>
         </form>
+        <div className="login-security-divider" aria-hidden><span><Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} /></span></div>
         <p className="login-security">
           <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} aria-hidden />
           Acceso solo para el equipo Agua Renew.

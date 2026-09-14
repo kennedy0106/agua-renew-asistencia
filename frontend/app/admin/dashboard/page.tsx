@@ -92,7 +92,7 @@ export default function AdminDashboardPage() {
             </div>
             <div className="stat-grid">
               <StatCard href="/admin/employees" label="Empleados activos" value={data.summary.employees_active} icon={<Users size={16} />} tone="blue" />
-              <StatCard href="/admin/attendance" label="Presentes hoy" value={data.summary.present_today} icon={<Clock size={16} />} tone="green" />
+              <StatCard href="/admin/attendance" label="Presentes hoy" value={data.summary.present_today} icon={<Clock size={16} />} tone="green" featured />
               <StatCard href="#incidencias" label="Sin entrada hoy" value={data.summary.no_entry_today} icon={<Alert size={16} />} tone="red" />
               <StatCard href="#incidencias" label="Entradas abiertas" value={data.summary.open_entries} icon={<ClipboardCheck size={16} />} tone="blue" />
               <StatCard href="/admin/attendance" label="Con salida hoy" value={data.summary.checked_out_today} icon={<Chart size={16} />} tone="green" />
@@ -138,6 +138,6 @@ export default function AdminDashboardPage() {
   );
 }
 
-function StatCard({ href, label, value, icon, tone }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red" }) {
-  return <Link href={href} className={`stat-card stat-card--${tone}`} style={GLASS_SURFACE_STYLE} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
+function StatCard({ href, label, value, icon, tone, featured = false }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red"; featured?: boolean }) {
+  return <Link href={href} className={`stat-card stat-card--${tone}${featured ? " stat-card--featured" : ""}`} style={GLASS_SURFACE_STYLE} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
 }

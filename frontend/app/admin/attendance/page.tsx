@@ -39,6 +39,24 @@ function formatDifference(minutes: number | null): string {
   return `${sign}${formatMinutes(minutes)}`;
 }
 
+function formatIncidentCode(code: string): string {
+  const labels: Record<string, string> = {
+    EARLY_ENTRY: "Entrada anticipada",
+    LATE_ENTRY: "Entrada tardía",
+    EARLY_EXIT: "Salida anticipada",
+    MISSING_ENTRY: "Sin entrada",
+    MISSING_EXIT: "Sin salida",
+    OVERTIME: "Horas extra",
+    INCOMPLETE: "Jornada incompleta",
+    LONG_ATTENDANCE: "Jornada excesivamente larga",
+    OPEN_ATTENDANCE: "Entrada sin salida",
+    OVERLAPPING_SESSIONS: "Sesiones superpuestas",
+  };
+  if (labels[code]) return labels[code];
+  const fallback = code.replace(/[_-]+/g, " ").trim().toLocaleLowerCase("es-PE");
+  return fallback ? `${fallback.charAt(0).toLocaleUpperCase("es-PE")}${fallback.slice(1)}` : "Incidencia sin detalle";
+}
+
 function toLocalInput(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -267,58 +285,66 @@ export default function AdminAttendancePage() {
       </div>
 
       {canManage && (
-        <form className="card card-pad" style={{ marginBottom: "1rem" }} onSubmit={reviewKioskAttempt}>
-          <h2 className="card-title">Revisar intento de kiosco</h2>
-          <p className="muted" style={{ fontSize: "0.8rem", margin: "0.35rem 0 0.7rem" }}>
-            Use la referencia mostrada en la tablet. Conserva el evento original; no corrige horas ni borra fotos.
-          </p>
-          <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
-            <div>
-              <label className="label" htmlFor="kiosk-attempt-nonce">
-                Referencia del intento
-              </label>
-              <input
-                id="kiosk-attempt-nonce"
-                className="input"
-                value={attemptNonce}
-                onChange={(e) => setAttemptNonce(e.target.value)}
-                placeholder="nonce del kiosco"
-                data-testid="admin-attempt-nonce"
-              />
-            </div>
-            <div>
-              <label className="label" htmlFor="kiosk-attempt-reason">
-                Motivo
-              </label>
-              <input
-                id="kiosk-attempt-reason"
-                className="input"
-                value={attemptReason}
-                onChange={(e) => setAttemptReason(e.target.value)}
-                minLength={3}
-                maxLength={500}
-                placeholder="Revisión autorizada"
-                data-testid="admin-attempt-reason"
-              />
-              <p className="muted" style={{ fontSize: "0.75rem", margin: "0.25rem 0 0" }}>
-                Máximo 500 caracteres. El servidor rechaza textos más largos o solo espacios.
-              </p>
-            </div>
-          </div>
-          {attemptLookup && (
-            <p className="muted" style={{ marginTop: "0.6rem" }} data-testid="admin-attempt-lookup">
-              {attemptLookup}
+        <details className="recovery-panel">
+          <summary>
+            <span>
+              <strong>Recuperar un intento de kiosco</strong>
+              <small>Solo si la tablet muestra una referencia de recuperación.</small>
+            </span>
+            <span className="recovery-panel-action">Abrir revisión</span>
+          </summary>
+          <form className="card card-pad recovery-panel-form" onSubmit={reviewKioskAttempt}>
+            <p className="muted recovery-panel-copy">
+              Use la referencia mostrada en la tablet. Conserva el evento original; no corrige horas ni borra fotos.
             </p>
-          )}
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
-            <button type="button" className="btn btn-outline btn-sm" disabled={reviewingAttempt || !attemptNonce.trim()} onClick={() => void lookupKioskAttempt()}>
-              Consultar intento
-            </button>
-            <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
-              {reviewingAttempt ? "Guardando…" : "Revisar y liberar kiosco"}
-            </button>
-          </div>
-        </form>
+            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
+              <div>
+                <label className="label" htmlFor="kiosk-attempt-nonce">
+                  Referencia del intento
+                </label>
+                <input
+                  id="kiosk-attempt-nonce"
+                  className="input"
+                  value={attemptNonce}
+                  onChange={(e) => setAttemptNonce(e.target.value)}
+                  placeholder="nonce del kiosco"
+                  data-testid="admin-attempt-nonce"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="kiosk-attempt-reason">
+                  Motivo
+                </label>
+                <input
+                  id="kiosk-attempt-reason"
+                  className="input"
+                  value={attemptReason}
+                  onChange={(e) => setAttemptReason(e.target.value)}
+                  minLength={3}
+                  maxLength={500}
+                  placeholder="Revisión autorizada"
+                  data-testid="admin-attempt-reason"
+                />
+                <p className="muted" style={{ fontSize: "0.75rem", margin: "0.25rem 0 0" }}>
+                  Máximo 500 caracteres. El servidor rechaza textos más largos o solo espacios.
+                </p>
+              </div>
+            </div>
+            {attemptLookup && (
+              <p className="muted" style={{ marginTop: "0.6rem" }} data-testid="admin-attempt-lookup">
+                {attemptLookup}
+              </p>
+            )}
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
+              <button type="button" className="btn btn-outline btn-sm" disabled={reviewingAttempt || !attemptNonce.trim()} onClick={() => void lookupKioskAttempt()}>
+                Consultar intento
+              </button>
+              <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
+                {reviewingAttempt ? "Guardando…" : "Revisar y liberar kiosco"}
+              </button>
+            </div>
+          </form>
+        </details>
       )}
 
       {photosFor && !correcting && (
@@ -442,7 +468,7 @@ export default function AdminAttendancePage() {
                 <td className="num">{formatMinutes(day.worked_minutes)}</td>
                 <td className="num">{formatMinutes(day.expected_minutes)}</td>
                 <td className="num">{formatDifference(day.difference_minutes)}</td>
-                <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
+                <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
               </tr>
             ))}
           </tbody>
