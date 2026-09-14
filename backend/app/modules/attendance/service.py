@@ -237,9 +237,16 @@ class AttendanceService:
         try:
             self.db.commit()
         except (IntegrityError, OperationalError, InterfaceError):
-            self.db.rollback()
+            # Después de un PUT el resultado SQL es incierto. No se borra el
+            # objeto: se intenta reconciliar una sola vez, sin reutilizar una
+            # transacción que no haya podido volver a un estado válido.
+            session_reusable = True
+            try:
+                self.db.rollback()
+            except (OperationalError, InterfaceError):
+                session_reusable = False
             self.db.expire_all()
-            existing = self._recover_evidence_after_put(nonce, digest)
+            existing = self._recover_evidence_after_put(nonce, digest, session_reusable=session_reusable)
             if existing is None:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -249,8 +256,15 @@ class AttendanceService:
         self.db.refresh(evidence)
         return evidence
 
-    def _recover_evidence_after_put(self, nonce: str, digest: str) -> AttendanceEvidence | None:
-        existing = self.repo.get_evidence_by_nonce(nonce)
+    def _recover_evidence_after_put(
+        self, nonce: str, digest: str, *, session_reusable: bool = True
+    ) -> AttendanceEvidence | None:
+        try:
+            existing = self.repo.get_evidence_by_nonce(nonce) if session_reusable else None
+        except (OperationalError, InterfaceError):
+            # La conexión que falló al confirmar puede seguir caída. Una sola
+            # sesión nueva permite detectar un commit que sí llegó al servidor.
+            existing = None
         if existing is None:
             existing = self._lookup_evidence_via_new_session(nonce)
         if existing is None:
@@ -263,15 +277,16 @@ class AttendanceService:
         return existing
 
     def _lookup_evidence_via_new_session(self, nonce: str) -> AttendanceEvidence | None:
-        bind = self.db.get_bind()
-        if bind is None:
-            return None
-        with Session(bind) as other:
-            found = other.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
-            if found is None:
+        try:
+            bind = self.db.get_bind()
+            if bind is None:
                 return None
-            found_id = found.id
-        return self.db.get(AttendanceEvidence, found_id)
+            with Session(bind) as other:
+                # Se devuelve la fila de la sesión alternativa para no volver a
+                # consultar la sesión original, potencialmente inválida.
+                return other.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        except (OperationalError, InterfaceError):
+            return None
 
     def _raise_store_http(self, exc: ObjectStoreError) -> None:
         if isinstance(exc, ObjectNotFoundError):

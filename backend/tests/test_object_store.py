@@ -24,6 +24,9 @@ from app.core.object_store import (
     get_object_store,
     reset_object_store,
 )
+from app.modules.attendance.repository import AttendanceRepository
+from app.modules.attendance.service import AttendanceService
+import app.modules.attendance.service as attendance_service
 from app.modules.attendance.models import STORAGE_DATABASE, STORAGE_S3, AttendanceEvidence, AttendanceRecord
 from tests.image_helpers import valid_jpeg_b64
 from tests.test_attendance_hardening import _employee, _login, _nonce_of, _pair_kiosk
@@ -310,6 +313,70 @@ def test_put_ok_sql_operacional_permite_reintento_misma_foto(client, db_session,
         json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
     )
     assert second.status_code == 201, second.text
+    rows = list(db_session.scalars(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))))
+    assert len(rows) == 1
+
+
+def test_put_ok_db_sigue_inaccesible_devuelve_503_y_reintento_reconcilia(client, db_session, monkeypatch):
+    """Un segundo fallo de PostgreSQL no borra la foto ni se propaga como 500."""
+    _login(client)
+    employee_id = _employee(client, db_session)
+    _pair_kiosk(client)
+    token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    photo = valid_jpeg_b64(color=(17, 18, 19))
+    from sqlalchemy.exc import OperationalError
+
+    original_commit = db_session.commit
+    original_lookup = AttendanceRepository.get_evidence_by_nonce
+    original_session = attendance_service.Session
+    state = {"commit_fails": True, "lookup_fails": True, "recovery_phase": False}
+
+    def disconnect_on_commit():
+        if state["commit_fails"]:
+            state["commit_fails"] = False
+            state["recovery_phase"] = True
+            raise OperationalError("server closed", {}, Exception("lost"))
+        return original_commit()
+
+    def unavailable_lookup(self, nonce):
+        if state["recovery_phase"] and state["lookup_fails"]:
+            raise OperationalError("server still unavailable", {}, Exception("lost"))
+        return original_lookup(self, nonce)
+
+    class UnavailableSession:
+        def __init__(self, bind):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def scalar(self, statement):
+            raise OperationalError("server still unavailable", {}, Exception("lost"))
+
+    monkeypatch.setattr(db_session, "commit", disconnect_on_commit)
+    monkeypatch.setattr(AttendanceRepository, "get_evidence_by_nonce", unavailable_lookup)
+    monkeypatch.setattr(attendance_service, "Session", UnavailableSession)
+    first = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert first.status_code == 503
+    assert first.json()["detail"] == "La foto se almacenó pero no se publicó; reintente la misma foto"
+    key = evidence_object_key(employee_id, _nonce_of(token))
+    stored_bytes = get_object_store().get_bytes(key)
+    assert stored_bytes
+
+    monkeypatch.setattr(AttendanceRepository, "get_evidence_by_nonce", original_lookup)
+    monkeypatch.setattr(attendance_service, "Session", original_session)
+    second = client.post(
+        "/api/v1/attendance/evidence",
+        json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
+    )
+    assert second.status_code == 201, second.text
+    assert get_object_store().get_bytes(key) == stored_bytes
     rows = list(db_session.scalars(select(AttendanceEvidence).where(AttendanceEvidence.nonce == _nonce_of(token))))
     assert len(rows) == 1
 

@@ -147,6 +147,9 @@ def test_seed_repetido_no_duplica_admin(monkeypatch: pytest.MonkeyPatch) -> None
 
     from app.core.test_db import assert_disposable_postgres_url
     from app.modules.users.models import User
+    from app.modules.employees.models import Employee
+    from app.modules.salary.models import SalarySetting
+    from app.modules.schedules.models import WorkSchedule
 
     url = os.environ.get("TEST_DATABASE_URL", "").strip()
     if not url:
@@ -178,5 +181,10 @@ def test_seed_repetido_no_duplica_admin(monkeypatch: pytest.MonkeyPatch) -> None
         with Session(engine) as db:
             count = db.scalar(select(func.count()).select_from(User).where(User.username == "admin"))
             assert count == 1
+            employees = list(db.scalars(select(Employee).where(Employee.employee_code.in_(("TBL-ANA-01", "TBL-BRU-02")))))
+            assert len(employees) == 2
+            assert all(employee.qr_token for employee in employees)
+            assert db.scalar(select(func.count()).select_from(WorkSchedule)) == 2
+            assert db.scalar(select(func.count()).select_from(SalarySetting)) == 2
     finally:
         engine.dispose()
