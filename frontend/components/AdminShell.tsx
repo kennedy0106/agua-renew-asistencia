@@ -20,7 +20,6 @@ import {
   Receipt,
   Shield,
   Users,
-  X,
   Zap,
 } from "./Icons";
 
@@ -56,6 +55,7 @@ export default function AdminShell({
   const pathname = usePathname();
   const { user, ready } = useAdminSession();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [topbarCompact, setTopbarCompact] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
 
@@ -68,6 +68,13 @@ export default function AdminShell({
   useEffect(() => {
     setMenuOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    const syncTopbar = () => setTopbarCompact(window.scrollY > 8);
+    syncTopbar();
+    window.addEventListener("scroll", syncTopbar, { passive: true });
+    return () => window.removeEventListener("scroll", syncTopbar);
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -186,9 +193,6 @@ export default function AdminShell({
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
             <span className="sidebar-product">OPERACIÓN · ASISTENCIA</span>
           </Link>
-          <button type="button" className="sidebar-close" onClick={() => closeMenu()} aria-label="Cerrar menú">
-            <X size={18} />
-          </button>
         </div>
         <nav className="sidebar-nav" aria-label="Principal">
           <p className="nav-label">Operación</p>
@@ -222,7 +226,7 @@ export default function AdminShell({
       </aside>
 
       <div className="main">
-        <header className="topbar">
+        <header className={`topbar${topbarCompact ? " is-compact" : ""}`}>
           <div className="topbar-copy">
             <span className="topbar-drop" aria-hidden>
               <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
