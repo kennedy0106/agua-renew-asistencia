@@ -502,6 +502,9 @@ textarea {
 /* --- Tablas --- */
 .table-wrap {
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 103, 200, 0.42) transparent;
   border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   background: var(--glass-strong);
@@ -510,7 +513,11 @@ textarea {
   box-shadow: var(--shadow-panel);
 }
 .table {
-  width: 100%;
+  /* Keep operational values whole. The wrapper becomes the responsive
+     affordance on constrained screens instead of compressing a date, hour,
+     amount, name or action into unreadable fragments. */
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
   text-align: left;
@@ -531,6 +538,25 @@ textarea {
   border-bottom: 1px solid rgba(21, 67, 153, 0.1);
   color: var(--text);
   vertical-align: middle;
+  white-space: nowrap;
+}
+.table td[colspan],
+.table .empty {
+  /* Empty, expanded and explanatory table rows retain comfortable reading
+     rather than inheriting the compact operational-data treatment. */
+  white-space: normal;
+}
+.table-wrap::-webkit-scrollbar {
+  height: 0.52rem;
+}
+.table-wrap::-webkit-scrollbar-thumb {
+  border: 0.14rem solid transparent;
+  border-radius: 999px;
+  background: rgba(21, 103, 200, 0.42);
+  background-clip: padding-box;
+}
+.table-wrap::-webkit-scrollbar-track {
+  background: transparent;
 }
 .table tbody tr:last-child td {
   border-bottom: none;
