@@ -13,7 +13,7 @@ import uuid
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user, require_any_role
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
 from app.modules.employees.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.modules.employees.service import EmployeeService
@@ -47,7 +47,7 @@ def list_employees(
     job_role_id: uuid.UUID | None = None,
     search: str | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[EmployeeOut]:
     employees = EmployeeService(db).list_all(active=active, job_role_id=job_role_id, search=search)
     return [_to_out(e) for e in employees]
@@ -66,7 +66,7 @@ def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db), _: o
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)
-def get_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> EmployeeOut:
+def get_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_operational_user)) -> EmployeeOut:
     return _to_out(EmployeeService(db).get(employee_id))
 
 
@@ -104,7 +104,7 @@ def rotate_employee_qr(
 
 
 @router.get("/{employee_id}/qr", response_class=Response)
-def get_employee_qr(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> Response:
+def get_employee_qr(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_operational_user)) -> Response:
     """QR único del empleado (SVG). Escanea a un identificador estable: AR:<qr_token>.
 
     El token es aleatorio y único (server-side); la imagen se genera al vuelo

@@ -1313,6 +1313,26 @@ textarea {
 .app-dialog { width: min(100%, 31rem); display: grid; gap: 0.8rem; padding: 1.25rem; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: #fff; box-shadow: var(--shadow-panel); }
 .app-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.65rem; }
 .app-dialog-actions .btn { min-height: 2.75rem; }
+.credential-dialog { max-width: 34rem; }
+.credential-dialog h2 { color: var(--brand-ink); font-size: 1.2rem; }
+.credential-dialog > p { color: var(--muted); line-height: 1.5; }
+.credential-dialog-icon,
+.password-change-icon { display: grid; place-items: center; width: 2.8rem; height: 2.8rem; border-radius: 50%; color: var(--brand-blue); background: var(--blue-soft); }
+.credential-dialog-value { display: grid; gap: 0.25rem; padding: 0.9rem; border: 1px solid color-mix(in srgb, var(--brand-blue) 18%, white); border-radius: var(--radius-control); background: #f7fbff; }
+.credential-dialog-value span { color: var(--muted); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.credential-dialog-value strong,
+.credential-dialog-value code { overflow-wrap: anywhere; color: var(--brand-ink); font-size: 0.95rem; }
+.credential-dialog-value code { margin-bottom: 0.35rem; padding: 0.45rem 0.55rem; border-radius: 0.3rem; background: #e7f1ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.credential-dialog-notice { min-height: 1.25rem; color: var(--brand-ink); font-size: 0.78rem; line-height: 1.4; }
+.admin-route-guard { display: grid; min-height: 100dvh; place-items: center; padding: 1rem; color: var(--brand-ink); background: var(--page-bg); }
+.password-change-wrap { display: grid; min-height: 100dvh; place-items: center; padding: 1rem; background: radial-gradient(circle at 20% 90%, color-mix(in srgb, var(--brand-green) 18%, transparent), transparent 35%), var(--page-bg); }
+.password-change-card { width: min(100%, 31rem); display: grid; gap: 0.9rem; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: rgba(255, 255, 255, 0.94); box-shadow: var(--shadow-panel); }
+.password-change-brand { width: min(14rem, 76%); height: auto; }
+.password-change-card h1 { color: var(--brand-ink); font-size: clamp(1.5rem, 5vw, 2rem); letter-spacing: -0.035em; }
+.password-change-copy { color: var(--muted); line-height: 1.5; }
+.password-change-form { display: grid; gap: 0.85rem; margin-top: 0.25rem; }
+.password-change-submit { min-height: 2.75rem; justify-content: center; }
+.password-change-note { display: flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.78rem; }
 .schedule-form { display: grid; gap: 1rem; }
 .schedule-form-section { display: grid; gap: 0.65rem; }
 .schedule-hours-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.65rem; }

@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user, require_admin_or_boss
+from app.core.permissions import get_current_operational_user, require_admin_or_boss
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.repository import AttendanceRepository
@@ -60,7 +60,7 @@ def export_attendance(
     date_to: date | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> Response:
     records = AttendanceRepository(db).list_records(
         employee_id=employee_id, date_from=date_from, date_to=date_to, status=status

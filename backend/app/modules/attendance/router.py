@@ -15,13 +15,15 @@ from fastapi.responses import Response as RawResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.permissions import get_current_user, require_any_role
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.core.rate_limit import RateLimiter, client_ip
 from app.core.security import create_terminal_token, decode_attendance_token, decode_terminal_token, terminal_cookie_kwargs
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
     AttendanceCorrection,
+    AttendanceBreakOverrideDeleteRequest,
+    AttendanceBreakOverrideRequest,
     AttendanceDailyItem,
     AttendanceListItem,
     AttendanceRecordOut,
@@ -219,7 +221,7 @@ def list_attendance(
     date_to: date | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[AttendanceListItem]:
     return AttendanceService(db).list_records(
         employee_id=employee_id, date_from=date_from, date_to=date_to, status_filter=status
@@ -227,7 +229,7 @@ def list_attendance(
 
 
 @router.get("/summary", response_model=AttendanceSummary)
-def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> AttendanceSummary:
+def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_operational_user)) -> AttendanceSummary:
     today = datetime.now(lima_tz()).date()
     return AttendanceService(db).summary(today)
 
@@ -238,10 +240,37 @@ def daily_attendance(
     date_from: date | None = None,
     date_to: date | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[AttendanceDailyItem]:
     return AttendanceService(db).list_daily(
         employee_id=employee_id, date_from=date_from, date_to=date_to
+    )
+
+
+@router.put("/daily/{employee_id}/{work_date}/break", response_model=AttendanceDailyItem)
+def set_daily_break_override(
+    employee_id: uuid.UUID,
+    work_date: date,
+    payload: AttendanceBreakOverrideRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> AttendanceDailyItem:
+    return AttendanceService(db).set_break_override(
+        employee_id, work_date, requested_break_minutes=payload.requested_break_minutes,
+        reason=payload.reason, current_user_id=user.id,
+    )
+
+
+@router.delete("/daily/{employee_id}/{work_date}/break", response_model=AttendanceDailyItem)
+def clear_daily_break_override(
+    employee_id: uuid.UUID,
+    work_date: date,
+    payload: AttendanceBreakOverrideDeleteRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> AttendanceDailyItem:
+    return AttendanceService(db).clear_break_override(
+        employee_id, work_date, reason=payload.reason, current_user_id=user.id,
     )
 
 

@@ -32,6 +32,7 @@ from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
     STORAGE_S3,
     AttendanceAttemptResolution,
+    AttendanceBreakOverride,
     AttendanceConsumedNonce,
     AttendanceEvent,
     AttendanceEvidence,
@@ -40,6 +41,7 @@ from app.modules.attendance.models import (
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
+from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PERIOD_OPEN, PayrollPeriod
 from app.modules.schedules.repository import WorkScheduleRepository
 from app.modules.schedules.service import ScheduleService
 
@@ -1076,10 +1078,7 @@ class AttendanceService:
             cursor = max(cursor, end) if cursor is not None else end
 
         gross = sum(contributions)
-        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
-        break_to_apply = 0
-        if schedule and gross >= schedule.break_applies_after_minutes:
-            break_to_apply = min(schedule.break_minutes, gross)
+        break_to_apply, _source, _requested, _limited = self._break_details(employee_id, work_date, gross)
         remaining_break = break_to_apply
         for index in range(len(contributions) - 1, -1, -1):
             deducted = min(contributions[index], remaining_break)
@@ -1093,6 +1092,130 @@ class AttendanceService:
         else:
             self.db.flush()
         return gross - break_to_apply
+
+    def _break_override(self, employee_id: uuid.UUID, work_date: date) -> AttendanceBreakOverride | None:
+        return self.db.scalar(
+            select(AttendanceBreakOverride).where(
+                AttendanceBreakOverride.employee_id == employee_id,
+                AttendanceBreakOverride.work_date == work_date,
+            )
+        )
+
+    def _break_details(self, employee_id: uuid.UUID, work_date: date, gross: int) -> tuple[int, str, int | None, bool]:
+        """Devuelve descuento efectivo y su procedencia sin perder el pedido real."""
+        override = self._break_override(employee_id, work_date)
+        if override is not None:
+            effective = min(override.requested_break_minutes, gross)
+            return effective, "OVERRIDE", override.requested_break_minutes, effective != override.requested_break_minutes
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        if schedule and gross >= schedule.break_applies_after_minutes:
+            return min(schedule.break_minutes, gross), "SCHEDULE", None, False
+        return 0, "NONE", None, False
+
+    @staticmethod
+    def _gross_for_records(records: list[AttendanceRecord]) -> int:
+        complete = sorted(
+            [item for item in records if item.check_out_at is not None], key=lambda item: _as_utc(item.check_in_at)
+        )
+        gross = 0
+        cursor: datetime | None = None
+        for item in complete:
+            start, end = _as_utc(item.check_in_at), _as_utc(item.check_out_at)
+            effective_start = max(start, cursor) if cursor is not None else start
+            gross += max(0, int((end - effective_start).total_seconds() // 60))
+            cursor = max(cursor, end) if cursor is not None else end
+        return gross
+
+    def _ensure_break_override_allowed(self, employee_id: uuid.UUID, work_date: date) -> list[AttendanceRecord]:
+        today = datetime.now(lima_tz()).date()
+        if work_date > today:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El refrigerio solo se ajusta hasta la fecha actual")
+        self._get_employee_or_404(employee_id)
+        records = self.repo.list_records(employee_id=employee_id, date_from=work_date, date_to=work_date)
+        complete = [record for record in records if record.status == "COMPLETE" and record.check_out_at is not None]
+        if not complete:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Debe existir al menos una sesión completada para ajustar el refrigerio")
+        if any(record.status == "OPEN" or record.check_out_at is None for record in records):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cierre todas las marcaciones del día antes de ajustar el refrigerio")
+        return records
+
+    def _invalidate_open_payroll_for_day(self, work_date: date) -> None:
+        """Evita snapshots obsoletos sin tocar un periodo cerrado.
+
+        Un CLOSED exige una rectificación OPEN/CALCULATED para el mismo root;
+        de existir, esa versión queda OPEN y deberá recalcularse explícitamente.
+        """
+        periods = list(self.db.scalars(select(PayrollPeriod).where(PayrollPeriod.start_date <= work_date, PayrollPeriod.end_date >= work_date)))
+        closed = [period for period in periods if period.status == PERIOD_CLOSED]
+        for period in closed:
+            editable = self.db.scalar(
+                select(PayrollPeriod).where(
+                    PayrollPeriod.root_period_id == period.root_period_id,
+                    PayrollPeriod.status.in_((PERIOD_OPEN, PERIOD_CALCULATED)),
+                    PayrollPeriod.start_date <= work_date,
+                    PayrollPeriod.end_date >= work_date,
+                )
+            )
+            if editable is None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La planilla está cerrada: cree una rectificación antes de ajustar el refrigerio")
+        for period in periods:
+            if period.status == PERIOD_CALCULATED:
+                period.status = PERIOD_OPEN
+                period.inputs_fingerprint = None
+                self.db.add(period)
+
+    def _daily_item(self, employee_id: uuid.UUID, work_date: date) -> dict:
+        item = next((item for item in self.list_daily(employee_id=employee_id, date_from=work_date, date_to=work_date) if item["work_date"] == work_date), None)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró resumen diario")
+        return item
+
+    def set_break_override(self, employee_id: uuid.UUID, work_date: date, *, requested_break_minutes: int, reason: str, current_user_id: uuid.UUID | None) -> dict:
+        records = self._ensure_break_override_allowed(employee_id, work_date)
+        gross = self._gross_for_records(records)
+        if requested_break_minutes > gross:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El refrigerio no puede superar la presencia efectiva del día")
+        self._invalidate_open_payroll_for_day(work_date)
+        override = self._break_override(employee_id, work_date)
+        old_values = None if override is None else {"requested_break_minutes": override.requested_break_minutes, "reason": override.reason}
+        if override is None:
+            override = AttendanceBreakOverride(employee_id=employee_id, work_date=work_date, requested_break_minutes=requested_break_minutes, reason=reason.strip(), created_by_user_id=current_user_id)
+            self.db.add(override)
+            action = "break_override_created"
+        else:
+            override.requested_break_minutes, override.reason, override.created_by_user_id = requested_break_minutes, reason.strip(), current_user_id
+            self.db.add(override)
+            action = "break_override_updated"
+        self._recompute_day(employee_id, work_date, commit=False)
+        self.db.flush()
+        AuditRepository(self.db).create(entity_type="attendance_break_override", entity_id=override.id, action=action, old_values=old_values, new_values={"employee_id": str(employee_id), "work_date": work_date.isoformat(), "requested_break_minutes": requested_break_minutes}, reason=reason.strip(), performed_by=current_user_id, commit=False)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El refrigerio fue actualizado por otra operación; vuelva a consultar") from exc
+        return self._daily_item(employee_id, work_date)
+
+    def clear_break_override(self, employee_id: uuid.UUID, work_date: date, *, reason: str, current_user_id: uuid.UUID | None) -> dict:
+        self._ensure_break_override_allowed(employee_id, work_date)
+        self._invalidate_open_payroll_for_day(work_date)
+        override = self._break_override(employee_id, work_date)
+        if override is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La jornada ya usa el cálculo automático de refrigerio")
+        old_values = {"employee_id": str(employee_id), "work_date": work_date.isoformat(), "requested_break_minutes": override.requested_break_minutes, "reason": override.reason}
+        override_id = override.id
+        self.db.delete(override)
+        self.db.flush()
+        self._recompute_day(employee_id, work_date, commit=False)
+        gross = self._gross_for_records(self.repo.list_records(employee_id=employee_id, date_from=work_date, date_to=work_date))
+        _effective, break_source, _requested, _limited = self._break_details(employee_id, work_date, gross)
+        AuditRepository(self.db).create(entity_type="attendance_break_override", entity_id=override_id, action="break_override_cleared", old_values=old_values, new_values={"break_source": break_source}, reason=reason.strip(), performed_by=current_user_id, commit=False)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El refrigerio fue actualizado por otra operación; vuelva a consultar") from exc
+        return self._daily_item(employee_id, work_date)
 
     # --- Panel administrativo (Fase 7) ---
 
@@ -1184,7 +1307,12 @@ class AttendanceService:
             has_open = any(item.check_out_at is None for item in sessions)
             if has_open:
                 incidents.add("OPEN_ATTENDANCE")
-            worked = sum(item.worked_minutes or 0 for item in complete)
+            break_minutes, break_source, override_requested_minutes, override_limited = self._break_details(
+                group_employee_id, work_date, gross
+            )
+            # El neto se deriva del total efectivo y conserva coherencia incluso
+            # si una fila antigua fue creada antes del recálculo diario.
+            worked = gross - break_minutes
             expected = schedules.expected_minutes(group_employee_id, work_date)
             employee = sessions[0].employee
             result.append(
@@ -1194,7 +1322,10 @@ class AttendanceService:
                     "work_date": work_date,
                     "session_count": len(sessions),
                     "gross_minutes": gross,
-                    "break_minutes": max(0, gross - worked),
+                    "break_minutes": break_minutes,
+                    "break_source": break_source,
+                    "override_requested_minutes": override_requested_minutes,
+                    "override_limited": override_limited,
                     "worked_minutes": worked,
                     "expected_minutes": expected,
                     "difference_minutes": worked - expected,

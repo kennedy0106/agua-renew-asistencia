@@ -38,6 +38,7 @@ export type UserOut = {
   username: string;
   role: string;
   active: boolean;
+  must_change_password: boolean;
   last_login_at: string | null;
   created_at: string;
 };
@@ -329,6 +330,9 @@ export type AttendanceDailyItem = {
   session_count: number;
   gross_minutes: number;
   break_minutes: number;
+  break_source: "SCHEDULE" | "OVERRIDE" | "NONE";
+  override_requested_minutes: number | null;
+  override_limited: boolean;
   worked_minutes: number;
   expected_minutes: number;
   difference_minutes: number;
@@ -350,6 +354,16 @@ export const attendanceAdminApi = {
   ) => apiFetch<AttendanceListItem[]>(`/api/v1/attendance${toQueryString(params)}`),
   daily: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) =>
     apiFetch<AttendanceDailyItem[]>(`/api/v1/attendance/daily${toQueryString(params)}`),
+  setBreakOverride: (employeeId: string, workDate: string, requestedBreakMinutes: number, reason: string) =>
+    apiFetch<AttendanceDailyItem>(`/api/v1/attendance/daily/${employeeId}/${workDate}/break`, {
+      method: "PUT",
+      body: JSON.stringify({ requested_break_minutes: requestedBreakMinutes, reason }),
+    }),
+  clearBreakOverride: (employeeId: string, workDate: string, reason: string) =>
+    apiFetch<AttendanceDailyItem>(`/api/v1/attendance/daily/${employeeId}/${workDate}/break`, {
+      method: "DELETE",
+      body: JSON.stringify({ reason }),
+    }),
   summary: () => apiFetch<AttendanceSummary>("/api/v1/attendance/summary"),
   correct: (
     recordId: string,
@@ -690,6 +704,7 @@ export type AdminUser = {
   employee_id: string | null;
   employee_name: string | null;
   active: boolean;
+  must_change_password: boolean;
   last_login_at: string | null;
   created_at: string;
 };
@@ -708,11 +723,10 @@ export const usersApi = {
   list: () => apiFetch<AdminUser[]>("/api/v1/users"),
   create: (payload: {
     username: string;
-    password: string;
     system_role_id: string;
     employee_id?: string | null;
   }) =>
-    apiFetch<AdminUser>("/api/v1/users", { method: "POST", body: JSON.stringify(payload) }),
+    apiFetch<AdminUser & { temporary_password: string }>("/api/v1/users", { method: "POST", body: JSON.stringify(payload) }),
   update: (
     userId: string,
     payload: { system_role_id?: string; active?: boolean; employee_id?: string | null },

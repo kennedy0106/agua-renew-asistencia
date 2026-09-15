@@ -14,7 +14,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user, require_any_role
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
 from app.modules.adjustments.schemas import (
     AdjustmentCreate,
@@ -70,7 +70,7 @@ def create_adjustment(
 def list_adjustments(
     employee_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[AdjustmentOut]:
     return [_to_out(a) for a in AdjustmentService(db).list_for_employee(employee_id)]
 
@@ -81,7 +81,7 @@ def get_balance(
     date_from: date | None = None,
     date_to: date | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> BalanceOut:
     today = date.today()
     return AdjustmentService(db).balance(

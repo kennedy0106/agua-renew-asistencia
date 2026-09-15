@@ -3,12 +3,13 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(min_length=3, max_length=50)
-    password: str = Field(min_length=8, max_length=128)
     system_role_id: uuid.UUID
     employee_id: uuid.UUID | None = None
 
@@ -36,5 +37,12 @@ class AdminUserOut(BaseModel):
     employee_id: uuid.UUID | None
     employee_name: str | None
     active: bool
+    must_change_password: bool
     last_login_at: datetime | None
     created_at: datetime
+
+
+class CreatedAdminUserOut(AdminUserOut):
+    """Única respuesta que contiene la clave temporal, solo al crear."""
+
+    temporary_password: str

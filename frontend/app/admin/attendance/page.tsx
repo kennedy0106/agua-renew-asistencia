@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -100,6 +100,14 @@ export default function AdminAttendancePage() {
   const [attemptReason, setAttemptReason] = useState("");
   const [attemptLookup, setAttemptLookup] = useState<string | null>(null);
   const [reviewingAttempt, setReviewingAttempt] = useState(false);
+  const [adjustingBreak, setAdjustingBreak] = useState<AttendanceDailyItem | null>(null);
+  const [breakMinutes, setBreakMinutes] = useState("0");
+  const [breakReason, setBreakReason] = useState("");
+  const [savingBreak, setSavingBreak] = useState(false);
+  const [breakError, setBreakError] = useState<string | null>(null);
+  const breakInputRef = useRef<HTMLInputElement>(null);
+  const breakDialogRef = useRef<HTMLFormElement>(null);
+  const breakTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
   const dailyPagination = useTablePagination(daily, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${daily.length}`);
@@ -139,6 +147,20 @@ export default function AdminAttendancePage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!adjustingBreak) return;
+    breakInputRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !savingBreak) {
+        setAdjustingBreak(null);
+        setBreakError(null);
+        window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [adjustingBreak, savingBreak]);
 
   async function loadPhotos(recordId: string) {
     setPhotosFor(recordId);
@@ -185,6 +207,60 @@ export default function AdminAttendancePage() {
       setError(err instanceof ApiError ? err.message : "No se pudo corregir el registro");
     } finally {
       setSavingCorrection(false);
+    }
+  }
+
+  function openBreakDialog(day: AttendanceDailyItem, trigger: HTMLButtonElement) {
+    breakTriggerRef.current = trigger;
+    setAdjustingBreak(day);
+    setBreakMinutes(String(day.override_requested_minutes ?? day.break_minutes));
+    setBreakReason("");
+    setBreakError(null);
+    setError(null);
+  }
+
+  function closeBreakDialog() {
+    if (savingBreak) return;
+    setAdjustingBreak(null);
+    setBreakError(null);
+    window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
+  }
+
+  async function saveBreak(event: React.FormEvent) {
+    event.preventDefault();
+    if (!adjustingBreak) return;
+    const minutes = Number(breakMinutes);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > adjustingBreak.gross_minutes) {
+      setBreakError("Ingrese minutos enteros entre 0 y la presencia efectiva.");
+      return;
+    }
+    setSavingBreak(true);
+    setBreakError(null);
+    try {
+      await attendanceAdminApi.setBreakOverride(adjustingBreak.employee_id, adjustingBreak.work_date, minutes, breakReason.trim());
+      setAdjustingBreak(null);
+      await load();
+      window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
+    } catch (err) {
+      setBreakError(err instanceof ApiError ? err.message : "No se pudo actualizar el refrigerio");
+    } finally {
+      setSavingBreak(false);
+    }
+  }
+
+  async function resetBreakToAutomatic() {
+    if (!adjustingBreak) return;
+    setSavingBreak(true);
+    setBreakError(null);
+    try {
+      await attendanceAdminApi.clearBreakOverride(adjustingBreak.employee_id, adjustingBreak.work_date, breakReason.trim());
+      setAdjustingBreak(null);
+      await load();
+      window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
+    } catch (err) {
+      setBreakError(err instanceof ApiError ? err.message : "No se pudo volver al cálculo automático");
+    } finally {
+      setSavingBreak(false);
     }
   }
 
@@ -455,29 +531,56 @@ export default function AdminAttendancePage() {
           <thead>
             <tr>
               <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Presencia</th>
-              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>
+              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>{canManage && <th>Acción</th>}
             </tr>
           </thead>
           <tbody>
-            {loading && <TableSkeleton rows={3} cols={9} />}
-            {!loading && daily.length === 0 && <tr><td colSpan={9} className="empty">Sin jornadas en el rango.</td></tr>}
+            {loading && <TableSkeleton rows={3} cols={canManage ? 10 : 9} />}
+            {!loading && daily.length === 0 && <tr><td colSpan={canManage ? 10 : 9} className="empty">Sin jornadas en el rango.</td></tr>}
             {dailyPagination.pageItems.map((day) => (
               <tr key={`${day.employee_id}-${day.work_date}`}>
                 <td style={{ fontWeight: 600 }}>{day.employee_name ?? "—"}</td>
                 <td className="num">{day.work_date}</td>
                 <td className="num">{day.session_count}</td>
                 <td className="num">{formatMinutes(day.gross_minutes)}</td>
-                <td className="num">{formatMinutes(day.break_minutes)}</td>
+                <td className="num" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
                 <td className="num">{formatMinutes(day.worked_minutes)}</td>
                 <td className="num">{formatMinutes(day.expected_minutes)}</td>
                 <td className="num">{formatDifference(day.difference_minutes)}</td>
                 <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
+                {canManage && <td><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></td>}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <TablePagination {...dailyPagination} />
+
+      {adjustingBreak && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={closeBreakDialog}>
+          <form ref={breakDialogRef} className="app-dialog" role="dialog" aria-modal="true" aria-labelledby="break-dialog-title" aria-describedby="break-dialog-description" onMouseDown={(event) => event.stopPropagation()} onSubmit={saveBreak} onKeyDown={(event) => {
+            if (event.key !== "Tab") return;
+            const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
+            const first = focusable[0]; const last = focusable.at(-1);
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+          }}>
+          <h2 id="break-dialog-title">Ajustar refrigerio</h2>
+          <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {adjustingBreak.work_date}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
+          {breakError && <p className="alert alert-error" role="alert" aria-live="assertive">{breakError}</p>}
+          <label className="label" htmlFor="daily-break-minutes">Refrigerio real (minutos)</label>
+          <input ref={breakInputRef} id="daily-break-minutes" className="input" inputMode="numeric" type="number" min="0" max={adjustingBreak.gross_minutes} value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required />
+          <p className="muted" role="status">Neto previsto: {formatMinutes(Math.max(0, adjustingBreak.gross_minutes - (Number(breakMinutes) || 0)))}</p>
+          <label className="label" htmlFor="daily-break-reason">Motivo</label>
+          <input id="daily-break-reason" className="input" minLength={3} maxLength={500} value={breakReason} onChange={(event) => setBreakReason(event.target.value)} placeholder="Ej.: mayor demanda" required />
+          <div className="app-dialog-actions">
+            <button type="button" className="btn btn-ghost" onClick={closeBreakDialog} disabled={savingBreak}>Cancelar</button>
+            {adjustingBreak.break_source === "OVERRIDE" && <button type="button" className="btn btn-outline" disabled={savingBreak || breakReason.trim().length < 3} onClick={() => void resetBreakToAutomatic()}>Volver al cálculo automático</button>}
+            <button type="submit" className="btn btn-primary" disabled={savingBreak || breakReason.trim().length < 3}>{savingBreak ? "Guardando…" : "Guardar refrigerio"}</button>
+          </div>
+          </form>
+        </div>
+      )}
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>
       <div className="table-wrap">

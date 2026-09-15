@@ -20,8 +20,8 @@ export default function AdminLoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await authApi.login(username, password);
-      router.replace("/admin/dashboard");
+      const loggedIn = await authApi.login(username, password);
+      router.replace(loggedIn.must_change_password ? "/admin/change-password" : "/admin/dashboard");
     } catch (err) {
       setError(
         err instanceof ApiError

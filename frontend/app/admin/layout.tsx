@@ -15,7 +15,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // La página de login no necesita sesión previa.
+    // Login no consulta una sesión previa. La pantalla de cambio sí puede
+    // resolver /me porque es el único destino permitido con clave temporal.
     if (pathname === "/admin/login") {
       setUser(null);
       setReady(true);
@@ -23,7 +24,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
     authApi
       .me()
-      .then((u) => setUser(u))
+      .then((u) => {
+        setUser(u);
+        if (u.must_change_password && pathname !== "/admin/change-password") {
+          router.replace("/admin/change-password");
+        } else if (!u.must_change_password && pathname === "/admin/change-password") {
+          router.replace("/admin/dashboard");
+        }
+      })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
           router.replace("/admin/login");
@@ -33,9 +41,14 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       .finally(() => setReady(true));
   }, [pathname, router]);
 
+  const awaitingSession = pathname !== "/admin/login" && (!ready || user === null);
+  const passwordChangeRequired = ready && user?.must_change_password && pathname !== "/admin/change-password";
+  const passwordChangeNoLongerRequired = ready && user && !user.must_change_password && pathname === "/admin/change-password";
+  const blockPrivateContent = awaitingSession || passwordChangeRequired || passwordChangeNoLongerRequired;
+
   return (
     <AdminSessionContext.Provider value={{ user, ready }}>
-      {children}
+      {blockPrivateContent ? <div className="admin-route-guard" role="status">{passwordChangeNoLongerRequired ? "Redirigiendo al panel…" : passwordChangeRequired ? "Redirigiendo al cambio de contraseña…" : "Comprobando sesión…"}</div> : children}
     </AdminSessionContext.Provider>
   );
 }

@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
-import { Alert, Key, Plus, Refresh, X } from "@/components/Icons";
+import { Alert, Check, Key, Plus, Refresh, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -29,10 +29,14 @@ export default function AdminUsersPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     username: "",
-    password: "",
     system_role_id: "",
     employee_id: "",
   });
+  const [createdCredential, setCreatedCredential] = useState<{ username: string; password: string } | null>(null);
+  const [credentialNotice, setCredentialNotice] = useState<string | null>(null);
+  const credentialCloseRef = useRef<HTMLButtonElement>(null);
+  const newUserButtonRef = useRef<HTMLButtonElement>(null);
+  const credentialDialogRef = useRef<HTMLElement>(null);
 
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [resetPassword, setResetPassword] = useState("");
@@ -66,6 +70,45 @@ export default function AdminUsersPage() {
     load();
   }, [load]);
 
+  function closeCredential() {
+    setCreatedCredential(null);
+    setCredentialNotice(null);
+    window.requestAnimationFrame(() => newUserButtonRef.current?.focus());
+  }
+
+  useEffect(() => {
+    if (!createdCredential) return;
+    credentialCloseRef.current?.focus();
+
+    const keepFocusInDialog = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        // Es una credencial de una sola visualización: Escape no la descarta
+        // accidentalmente. La acción explícita vuelve el foco al disparador.
+        event.preventDefault();
+        setCredentialNotice("Guarda la credencial antes de cerrar esta ventana con «Entendido».");
+        credentialCloseRef.current?.focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(credentialDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ) ?? []);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", keepFocusInDialog);
+    return () => window.removeEventListener("keydown", keepFocusInDialog);
+  }, [createdCredential]);
+
+
   async function reload() {
     const [list, roleList, empList] = await Promise.all([
       usersApi.list(),
@@ -82,14 +125,15 @@ export default function AdminUsersPage() {
     setBusy(true);
     setError(null);
     try {
-      await usersApi.create({
+      const created = await usersApi.create({
         username: form.username,
-        password: form.password,
         system_role_id: form.system_role_id,
         employee_id: form.employee_id || null,
       });
       setShowForm(false);
-      setForm({ username: "", password: "", system_role_id: form.system_role_id, employee_id: "" });
+      setForm({ username: "", system_role_id: form.system_role_id, employee_id: "" });
+      setCredentialNotice(null);
+      setCreatedCredential({ username: created.username, password: created.temporary_password });
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el usuario");
@@ -167,7 +211,7 @@ export default function AdminUsersPage() {
       {isAdmin && (
         <div className="toolbar">
           <span className="spacer" />
-          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+          <button ref={newUserButtonRef} className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
             {showForm ? (
               <>
                 <X size={15} /> Cancelar
@@ -187,10 +231,6 @@ export default function AdminUsersPage() {
             <div>
               <label className="label">Usuario</label>
               <input type="text" className="input" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required minLength={3} />
-            </div>
-            <div>
-              <label className="label">Contraseña</label>
-              <input type="password" className="input" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={8} />
             </div>
             <div>
               <label className="label">Rol</label>
@@ -308,6 +348,7 @@ export default function AdminUsersPage() {
                   ) : (
                     <span className="badge badge-neutral">Inactivo</span>
                   )}
+                  {item.must_change_password && <span className="badge badge-amber" style={{ marginLeft: "0.35rem" }}>Clave temporal</span>}
                 </td>
                 <td className="num" style={{ color: "var(--muted)" }}>
                   {item.last_login_at
@@ -375,6 +416,33 @@ export default function AdminUsersPage() {
         </table>
       </div>
       <TablePagination {...pagination} />
+      {createdCredential && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setCredentialNotice("Guarda la credencial antes de cerrar esta ventana con «Entendido».");
+        }}>
+          <section ref={credentialDialogRef} className="app-dialog credential-dialog" role="dialog" aria-modal="true" aria-labelledby="credential-title" aria-describedby="credential-description">
+            <div className="credential-dialog-icon" aria-hidden><Key size={21} /></div>
+            <h2 id="credential-title">Credencial temporal creada</h2>
+            <p id="credential-description">Entrega esta contraseña al usuario por un canal seguro. Se muestra una sola vez y deberá cambiarla al ingresar.</p>
+            <div className="credential-dialog-value">
+              <span>Usuario</span><strong>{createdCredential.username}</strong>
+              <span>Contraseña temporal</span><code>{createdCredential.password}</code>
+            </div>
+            <div className="app-dialog-actions">
+              <button type="button" className="btn btn-secondary" onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(`Usuario: ${createdCredential.username}\nContraseña temporal: ${createdCredential.password}`);
+                  setCredentialNotice("Credencial copiada. Compártela únicamente por un canal seguro.");
+                } catch {
+                  setCredentialNotice("No se pudo copiar. Selecciona la credencial y guárdala de forma segura.");
+                }
+              }}>Copiar credencial</button>
+              <button ref={credentialCloseRef} type="button" className="btn btn-primary" onClick={closeCredential}><Check size={15} /> Entendido</button>
+            </div>
+            <p className="credential-dialog-notice" role="status" aria-live="polite">{credentialNotice}</p>
+          </section>
+        </div>
+      )}
     </AdminShell>
   );
 }

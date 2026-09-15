@@ -12,6 +12,7 @@ from app.modules.attendance.models import (  # noqa: F401
     AttendanceDevice,
     AttendanceEvent,
     AttendanceEvidence,
+    AttendanceBreakOverride,
     AttendanceRecord,
 )
 from app.modules.audit.models import AuditLog  # noqa: F401

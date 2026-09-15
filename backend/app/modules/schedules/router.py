@@ -10,7 +10,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user, require_any_role
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
 from app.modules.schedules.schemas import WorkScheduleCreate, WorkScheduleOut
 from app.modules.schedules.service import ScheduleService
@@ -25,7 +25,7 @@ def get_schedule(
     employee_id: uuid.UUID,
     date: date | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> WorkScheduleOut:
     service = ScheduleService(db)
     if date is not None:
@@ -37,7 +37,7 @@ def get_schedule(
 def get_schedule_history(
     employee_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[WorkScheduleOut]:
     return ScheduleService(db).list_history(employee_id)
 

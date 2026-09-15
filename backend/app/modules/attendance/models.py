@@ -71,6 +71,32 @@ class AttendanceRecord(Base):
     employee = relationship("Employee")
 
 
+class AttendanceBreakOverride(Base):
+    """Refrigerio real decidido después de cerrar una jornada.
+
+    El valor solicitado se conserva incluso si una corrección posterior deja
+    menos minutos brutos; el cálculo operativo usa el mínimo seguro.
+    """
+
+    __tablename__ = "attendance_break_overrides"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "work_date", name="uq_attendance_break_override_employee_day"),
+        CheckConstraint("requested_break_minutes >= 0 AND requested_break_minutes <= 1440", name="ck_attendance_break_override_minutes"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    requested_break_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    employee = relationship("Employee")
+    created_by_user = relationship("User")
+
+
 class AttendanceDevice(Base):
     """Dispositivo autorizado para producir eventos de asistencia."""
 
