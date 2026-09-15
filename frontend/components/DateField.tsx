@@ -52,6 +52,7 @@ export default function DateField({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dayRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const dialogId = useId();
+  const [alignEnd, setAlignEnd] = useState(false);
 
   function closeCalendar({ returnFocus = true }: { returnFocus?: boolean } = {}) {
     setOpen(false);
@@ -77,6 +78,18 @@ export default function DateField({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const root = rootRef.current;
+      if (!root) return;
+      setAlignEnd(root.getBoundingClientRect().left + Math.min(292, window.innerWidth - 16) > window.innerWidth - 8);
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [open]);
 
   const days = useMemo(() => {
@@ -164,7 +177,7 @@ export default function DateField({
       </button>
 
       {open && (
-        <div className="datefield-panel" id={dialogId} role="dialog" aria-label={`Calendario: ${ariaLabel ?? placeholder}`} onKeyDown={(event) => {
+        <div className={`datefield-panel${alignEnd ? " is-end-aligned" : ""}`} id={dialogId} role="dialog" aria-label={`Calendario: ${ariaLabel ?? placeholder}`} onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
             closeCalendar();

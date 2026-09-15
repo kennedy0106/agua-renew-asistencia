@@ -546,7 +546,8 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
         },
     )
     assert other.status_code == 201
-    other_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-009"}).json()["marking_token"]
+    other_code = other.json()["employee_code"]
+    other_token = client.post("/api/v1/attendance/identify", json={"identifier": other_code}).json()["marking_token"]
     isolated = client.post("/api/v1/attendance/attempt/status", json={"marking_token": other_token})
     assert isolated.status_code == 200
     assert isolated.json()["state"] == "PENDING"
@@ -1187,8 +1188,9 @@ def test_review_motivo_3_80_81_y_rechazo_501(client, db_session):
     _pair_kiosk(client)
     cases = ((3, "abc"), (80, "W" * 80), (81, "X" * 81), (120, "Y" * 120), (500, "C" * 500))
     for index, (length, reason) in enumerate(cases, start=1):
-        code = f"EMP-R{index}"
-        _employee(client, db_session, dni=f"7284503{index}", employee_code=code, first_name=f"R{index}")
+        created = client.post("/api/v1/employees", json={"dni": f"7284503{index}", "employee_code": f"EMP-R{index}", "first_name": f"R{index}", "last_name": "López", "job_role_id": str(db_session._test_job_roles["Operario"])})
+        assert created.status_code == 201
+        code = created.json()["employee_code"]
         token, marked = _mark(client, code)
         nonce = _nonce_of(token)
         reviewed = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": reason})
@@ -1210,8 +1212,9 @@ def test_review_motivo_3_80_81_y_rechazo_501(client, db_session):
         )
         assert audit is not None
 
-    _employee(client, db_session, dni="72845099", employee_code="EMP-R501", first_name="R501")
-    token, _marked = _mark(client, "EMP-R501")
+    created = client.post("/api/v1/employees", json={"dni": "72845099", "employee_code": "EMP-R501", "first_name": "R501", "last_name": "López", "job_role_id": str(db_session._test_job_roles["Operario"])})
+    assert created.status_code == 201
+    token, _marked = _mark(client, created.json()["employee_code"])
     nonce = _nonce_of(token)
     before_resolutions = db_session.scalar(select(func.count()).select_from(AttendanceAttemptResolution))
     before_audits = db_session.scalar(

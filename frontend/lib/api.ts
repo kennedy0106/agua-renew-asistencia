@@ -105,7 +105,6 @@ export const employeesApi = {
     apiFetch<Employee[]>(`/api/v1/employees${toQueryString(params)}`),
   create: (payload: {
     dni: string;
-    employee_code: string;
     first_name: string;
     last_name: string;
     job_role_id: string;
@@ -118,7 +117,7 @@ export const employeesApi = {
   update: (
     id: string,
     patch: Partial<
-      Pick<Employee, "dni" | "employee_code" | "first_name" | "last_name" | "job_role_id" | "hire_date" | "termination_date">
+      Pick<Employee, "dni" | "first_name" | "last_name" | "job_role_id" | "hire_date" | "termination_date">
     >,
   ) =>
     apiFetch<Employee>(`/api/v1/employees/${id}`, {

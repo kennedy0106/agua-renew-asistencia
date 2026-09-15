@@ -25,6 +25,9 @@ class EmployeeRepository:
     def get_by_employee_code(self, code: str) -> Employee | None:
         return self.db.scalar(select(Employee).where(Employee.employee_code == code))
 
+    def employee_codes(self) -> list[str]:
+        return list(self.db.scalars(select(Employee.employee_code).where(Employee.employee_code.like("EMP-%"))))
+
     def get_by_qr_token(self, qr_token: str) -> Employee | None:
         return self.db.scalar(
             select(Employee)

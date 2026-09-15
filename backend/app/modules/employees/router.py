@@ -57,7 +57,6 @@ def list_employees(
 def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db), _: object = Depends(can_manage_employees)) -> EmployeeOut:
     employee = EmployeeService(db).create(
         dni=payload.dni,
-        employee_code=payload.employee_code,
         first_name=payload.first_name,
         last_name=payload.last_name,
         job_role_id=payload.job_role_id,
@@ -76,7 +75,6 @@ def update_employee(employee_id: uuid.UUID, payload: EmployeeUpdate, db: Session
     employee = EmployeeService(db).update(
         employee_id,
         dni=payload.dni,
-        employee_code=payload.employee_code,
         first_name=payload.first_name,
         last_name=payload.last_name,
         job_role_id=payload.job_role_id,

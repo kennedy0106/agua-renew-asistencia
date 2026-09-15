@@ -80,12 +80,30 @@ def test_dni_duplicado_conflict(client, db_session):
     assert response.status_code == 409
 
 
-def test_codigo_duplicado_conflict(client, db_session):
+def test_codigo_se_asigna_correlativamente_por_servidor(client, db_session):
     _login(client, "admin", "Admin123!")
     role_id = db_session._test_job_roles["Operario"]
-    assert _create(client, _payload(role_id)).status_code == 201
-    response = _create(client, _payload(role_id, dni="99999999"))
-    assert response.status_code == 409
+    first = _create(client, _payload(role_id)).json()
+    second = _create(client, _payload(role_id, dni="99999999")).json()
+    assert first["employee_code"] == "EMP-001"
+    assert second["employee_code"] == "EMP-002"
+
+
+def test_codigo_enviado_por_cliente_no_controla_correlativo_ni_se_puede_editar(client, db_session):
+    _login(client, "admin", "Admin123!")
+    role_id = db_session._test_job_roles["Operario"]
+    payload = {
+        "dni": "72845632", "first_name": "Juan", "last_name": "Pérez",
+        "job_role_id": str(role_id), "employee_code": "MALICIOSO-999",
+    }
+    created = client.post("/api/v1/employees", json=payload)
+    assert created.status_code == 201
+    body = created.json()
+    assert body["employee_code"] == "EMP-001"
+
+    updated = client.patch(f"/api/v1/employees/{body['id']}", json={"employee_code": "OTRO-001"})
+    assert updated.status_code == 200
+    assert updated.json()["employee_code"] == "EMP-001"
 
 
 def test_cargo_inexistente_rechazado(client):

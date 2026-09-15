@@ -15,7 +15,6 @@ const MANAGE_ROLES = ["ADMIN", "BOSS"]; // crear/editar/desactivar: ADMIN y JEFE
 
 const EMPTY_FORM = {
   dni: "",
-  employee_code: "",
   first_name: "",
   last_name: "",
   job_role_id: "",
@@ -81,7 +80,6 @@ export default function AdminEmployeesPage() {
     try {
       await employeesApi.create({
         dni: form.dni,
-        employee_code: form.employee_code,
         first_name: form.first_name,
         last_name: form.last_name,
         job_role_id: form.job_role_id,
@@ -108,7 +106,6 @@ export default function AdminEmployeesPage() {
     try {
       await employeesApi.update(edit.id, {
         dni: edit.dni,
-        employee_code: edit.employee_code,
         first_name: edit.first_name,
         last_name: edit.last_name,
         job_role_id: edit.job_role_id,
@@ -204,7 +201,7 @@ export default function AdminEmployeesPage() {
             </div>
             <div>
               <label className="label">Código interno</label>
-              <input type="text" className="input" value={form.employee_code} onChange={(e) => setForm({ ...form, employee_code: e.target.value })} required placeholder="EMP-001" />
+              <input type="text" className="input" value="Se asignará automáticamente" readOnly aria-readonly="true" />
             </div>
             <div>
               <label className="label">Cargo laboral</label>
@@ -287,9 +284,7 @@ export default function AdminEmployeesPage() {
                     <td>
                       <input type="text" className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={edit.dni} onChange={(e) => setEdit({ ...edit, dni: e.target.value })} />
                     </td>
-                    <td>
-                      <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={edit.employee_code} onChange={(e) => setEdit({ ...edit, employee_code: e.target.value })} />
-                    </td>
+                    <td className="num">{employee.employee_code}</td>
                     <td>
                       <Select value={edit.job_role_id} onValueChange={(v) => setEdit({ ...edit, job_role_id: v })}>
                         <SelectTrigger aria-label="Cargo" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>

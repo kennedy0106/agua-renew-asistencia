@@ -587,12 +587,16 @@ export default function EmployeeDetailPage() {
         </div>
 
         {canManage && showForm && (
-          <form onSubmit={handleSaveSchedule} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
-            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+          <form onSubmit={handleSaveSchedule} className="card schedule-form" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+            <section className="schedule-form-section">
               <div>
                 <label className="label">Vigente desde</label>
                 <DateField value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
               </div>
+            </section>
+            <section className="schedule-form-section" aria-labelledby="schedule-hours-title">
+              <h3 id="schedule-hours-title" className="label">Horas pactadas por día</h3>
+              <div className="schedule-hours-grid">
               {DAYS.map((day) => (
                 <div key={day.key}>
                   <label className="label">{day.label} (horas)</label>
@@ -607,6 +611,11 @@ export default function EmployeeDetailPage() {
                   />
                 </div>
               ))}
+              </div>
+            </section>
+            <section className="schedule-form-section" aria-labelledby="schedule-break-title">
+              <h3 id="schedule-break-title" className="label">Reglas de refrigerio</h3>
+              <div className="schedule-break-grid">
               <div>
                 <label className="label">Refrigerio (min)</label>
                 <input
@@ -631,7 +640,8 @@ export default function EmployeeDetailPage() {
                   onChange={(e) => setForm({ ...form, break_applies_after_minutes: Number(e.target.value) })}
                 />
               </div>
-            </div>
+              </div>
+            </section>
             <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
               <Check size={15} />
               {saving ? "Guardando…" : "Guardar jornada"}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -43,6 +43,11 @@ export default function AdminPayrollPage() {
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustNotes, setAdjustNotes] = useState("");
+  const [rectifyingId, setRectifyingId] = useState<string | null>(null);
+  const [rectificationReason, setRectificationReason] = useState("");
+  const [rectificationError, setRectificationError] = useState<string | null>(null);
+  const rectificationInputRef = useRef<HTMLTextAreaElement>(null);
+  const rectificationTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
   const recordsPagination = useTablePagination(records, `${selectedId ?? ""}:${records.length}`);
@@ -62,6 +67,10 @@ export default function AdminPayrollPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (rectifyingId) rectificationInputRef.current?.focus();
+  }, [rectifyingId]);
 
   const selected = periods.find((p) => p.id === selectedId) ?? null;
 
@@ -171,16 +180,33 @@ export default function AdminPayrollPage() {
     }
   }
 
+  function closeRectification() {
+    if (busy) return;
+    setRectifyingId(null);
+    setRectificationReason("");
+    setRectificationError(null);
+    window.requestAnimationFrame(() => rectificationTriggerRef.current?.focus());
+  }
+
   async function handleRectification(periodId: string) {
-    const reason = window.prompt("Motivo de la rectificación")?.trim() ?? "";
-    if (reason.length < 3) return;
+    const reason = rectificationReason.trim();
+    if (reason.length < 3) {
+      setRectificationError("Indica un motivo de al menos 3 caracteres.");
+      return;
+    }
     setBusy(true);
     setActionKey(`rectify:${periodId}`);
     try {
       await payrollApi.rectify(periodId, reason);
       setPeriods(await payrollApi.periods());
+      setRectifyingId(null);
+      setRectificationReason("");
+      setRectificationError(null);
+      window.requestAnimationFrame(() => rectificationTriggerRef.current?.focus());
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo crear la rectificación");
+      const message = err instanceof ApiError ? err.message : "No se pudo crear la rectificación";
+      setRectificationError(message);
+      setError(message);
     } finally {
       setBusy(false);
       setActionKey(null);
@@ -311,7 +337,7 @@ export default function AdminPayrollPage() {
                 </>
               )}
               {period.status === "CLOSED" && (
-                <button className="btn btn-outline btn-sm" onClick={() => handleRectification(period.id)} disabled={busy}>
+                <button className="btn btn-outline btn-sm" onClick={(event) => { rectificationTriggerRef.current = event.currentTarget; setRectifyingId(period.id); setRectificationReason(""); setRectificationError(null); }} disabled={busy}>
                   {actionKey === `rectify:${period.id}` && <Spinner />}
                   {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
                 </button>
@@ -320,6 +346,30 @@ export default function AdminPayrollPage() {
           </div>
         ))}
       </div>
+
+      {rectifyingId && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={closeRectification}>
+          <form className="app-dialog" role="dialog" aria-modal="true" aria-labelledby="rectification-title" onSubmit={(event) => { event.preventDefault(); void handleRectification(rectifyingId); }} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+            if (event.key === "Escape") { event.preventDefault(); closeRectification(); }
+            if (event.key === "Tab") {
+              const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), textarea:not([disabled])'));
+              const first = focusable[0]; const last = focusable[focusable.length - 1];
+              if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
+          }}>
+            <h2 id="rectification-title" className="card-title">Rectificar periodo cerrado</h2>
+            <p className="card-sub">Indica el motivo. Se conservará el historial y se abrirá una nueva versión.</p>
+            <label className="label" htmlFor="rectification-reason">Motivo de la rectificación</label>
+            <textarea id="rectification-reason" ref={rectificationInputRef} className="input" value={rectificationReason} onChange={(event) => setRectificationReason(event.target.value)} minLength={3} required rows={3} />
+            {rectificationError && <p className="alert alert-error" role="alert">{rectificationError}</p>}
+            <div className="app-dialog-actions">
+              <button className="btn btn-outline" type="button" onClick={closeRectification} disabled={busy}>Cancelar</button>
+              <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3}>{busy ? "Creando…" : "Crear rectificación"}</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {selected && (
         <div className="card">
