@@ -52,7 +52,7 @@
   --shadow-panel: 0 16px 32px -26px rgba(0, 102, 204, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.5);
   --shadow-btn: 0 10px 22px -14px rgba(0, 102, 204, 0.8);
   --shadow-btn-green: 0 10px 22px -14px rgba(0, 200, 83, 0.7);
-  --sidebar-width: 13.5rem;
+  --sidebar-width: 15rem;
   --ease-water: cubic-bezier(0.23, 1, 0.32, 1);
 
   --font: var(--font-geist-sans), "Segoe UI", "Trebuchet MS", sans-serif;
