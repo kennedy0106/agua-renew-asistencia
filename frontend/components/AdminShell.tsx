@@ -184,6 +184,7 @@ export default function AdminShell({
         <div className="sidebar-brand">
           <Link href="/admin/dashboard" aria-label="Ir al dashboard">
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+            <span className="sidebar-product">OPERACIÓN · ASISTENCIA</span>
           </Link>
           <button type="button" className="sidebar-close" onClick={() => closeMenu()} aria-label="Cerrar menú">
             <X size={18} />

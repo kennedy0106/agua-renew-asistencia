@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { StatSkeleton } from "@/components/Loading";
-import { Alert, Chart, Check, ChevronRight, ClipboardCheck, Clock, Info, Refresh, Users } from "@/components/Icons";
+import { Alert, Chart, Check, ChevronRight, ClipboardCheck, Clock, Refresh, Users } from "@/components/Icons";
 import { ApiError, attendanceAdminApi, AttendanceListItem, AttendanceSummary, Employee, employeesApi } from "@/lib/api";
 
 type DashboardData = { summary: AttendanceSummary; records: AttendanceListItem[]; missingEmployees: Employee[] };
@@ -80,18 +80,34 @@ export default function AdminDashboardPage() {
 
       {loading ? <StatSkeleton count={5} /> : data ? (
         <>
-          <section aria-labelledby="team-status-title">
-            <div className="dashboard-section-head">
-              <div><h2 id="team-status-title">Estado del equipo</h2><p>Las cifras muestran marcaciones registradas hoy en hora de Lima.</p></div>
-              <div className="dashboard-help" title="Rojo requiere revisión; verde indica una jornada completada."><Info size={15} /> Cómo leerlo</div>
+          <section className="dashboard-overview" aria-labelledby="team-status-title">
+            <div className="dashboard-command surface-material">
+              <div className="dashboard-command-copy">
+                <h2 id="team-status-title">El equipo, de un vistazo.</h2>
+                <p>Seguimiento de marcaciones registradas hoy en hora de Lima.</p>
+              </div>
+              <div className="dashboard-presence" aria-label={`${data.summary.present_today} de ${data.summary.employees_active} empleados activos presentes hoy`}>
+                <span className="dashboard-presence-status"><i aria-hidden />Jornada activa</span>
+                <strong>{data.summary.present_today}<small>/{data.summary.employees_active}</small></strong>
+                <span>presentes hoy</span>
+              </div>
+              <div className="dashboard-progress">
+                <div className="dashboard-progress-track" aria-hidden><span style={{ width: `${data.summary.employees_active ? Math.min(100, (data.summary.present_today / data.summary.employees_active) * 100) : 0}%` }} /></div>
+                <Link href="/admin/attendance" className="dashboard-command-link">Ver marcaciones <ChevronRight size={16} /></Link>
+              </div>
             </div>
-            <div className="stat-grid">
-              <StatCard href="/admin/employees" label="Empleados activos" value={data.summary.employees_active} icon={<Users size={16} />} tone="blue" />
-              <StatCard href="/admin/attendance" label="Presentes hoy" value={data.summary.present_today} icon={<Clock size={16} />} tone="green" featured />
-              <StatCard href="#incidencias" label="Sin entrada hoy" value={data.summary.no_entry_today} icon={<Alert size={16} />} tone="red" />
-              <StatCard href="#incidencias" label="Entradas abiertas" value={data.summary.open_entries} icon={<ClipboardCheck size={16} />} tone="blue" />
-              <StatCard href="/admin/attendance" label="Con salida hoy" value={data.summary.checked_out_today} icon={<Chart size={16} />} tone="green" />
-            </div>
+            <aside className="dashboard-attention" aria-label="Resumen de atención">
+              <div className="dashboard-attention-icon"><Alert size={19} /></div>
+              <div><span>Requiere atención</span><strong>{data.summary.no_entry_today + data.summary.open_entries}</strong><p>{data.summary.no_entry_today} sin entrada · {data.summary.open_entries} jornadas abiertas</p></div>
+              <Link href="#incidencias" className="dashboard-attention-link" aria-label="Ver incidencias"><ChevronRight size={18} /></Link>
+            </aside>
+          </section>
+
+          <section className="dashboard-metrics" aria-label="Indicadores de la jornada">
+            <StatCard href="/admin/employees" label="Empleados activos" value={data.summary.employees_active} icon={<Users size={16} />} tone="blue" />
+            <StatCard href="#incidencias" label="Sin entrada hoy" value={data.summary.no_entry_today} icon={<Alert size={16} />} tone="red" />
+            <StatCard href="#incidencias" label="Entradas abiertas" value={data.summary.open_entries} icon={<ClipboardCheck size={16} />} tone="blue" />
+            <StatCard href="/admin/attendance" label="Con salida hoy" value={data.summary.checked_out_today} icon={<Chart size={16} />} tone="green" />
           </section>
 
           <div className="dashboard-workspace">
