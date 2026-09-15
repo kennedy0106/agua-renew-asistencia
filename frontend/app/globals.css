@@ -2232,11 +2232,11 @@ body::after {
 }
 
 /* Cuenta: el nombre completo importa más que compactar el cierre de sesión. */
-.sidebar-user { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
-.sidebar-account { width: 100%; }
+.sidebar-user { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.35rem; padding: 0.55rem 0.6rem; }
+.sidebar-user .sidebar-account { width: 100%; gap: 0.4rem; }
 .sidebar-user .meta { min-width: 0; overflow: visible; }
-.sidebar-user .name { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
-.sidebar-logout { justify-self: start; }
+.sidebar-user .name { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: break-word; }
+.sidebar-user .sidebar-logout { justify-self: end; min-width: auto; min-height: 2.75rem; padding: 0.5rem 0.5rem; gap: 0.3rem; }
 
 .glass-select-content {
   transform-origin: var(--radix-select-content-transform-origin);
