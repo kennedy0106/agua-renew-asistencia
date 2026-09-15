@@ -967,16 +967,18 @@ textarea {
   margin-bottom: 0.8rem;
 }
 .kiosk-countdown {
-  font-size: 3rem;
+  font-size: 1rem;
   font-weight: 700;
   text-align: center;
   color: var(--text);
   margin: 0 0 0.6rem;
 }
+.kiosk-countdown span { font-size: 1.5rem; font-variant-numeric: tabular-nums; }
 .kiosk-done {
   text-align: center;
   padding: 0.5rem 0;
 }
+.kiosk-confirmed-employee { margin: 0 0 0.45rem; color: var(--brand-ink); font-size: 1.1rem; font-weight: 720; }
 .kiosk-done .big-icon {
   width: 3.4rem;
   height: 3.4rem;

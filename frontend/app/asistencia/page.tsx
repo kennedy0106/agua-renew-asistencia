@@ -44,6 +44,7 @@ function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDet
 
 /** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
 const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
+const CAMERA_COUNTDOWN_SECONDS = 10;
 
 type DeliveryStage = "EVIDENCE_REQUESTED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
 
@@ -123,7 +124,7 @@ export default function AsistenciaPage() {
   const [info, setInfo] = useState<IdentifyResponse | null>(null);
   const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(3);
+  const [countdown, setCountdown] = useState(CAMERA_COUNTDOWN_SECONDS);
   const [lastPhoto, setLastPhoto] = useState<string | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const [consulting, setConsulting] = useState(false);
@@ -247,7 +248,7 @@ export default function AsistenciaPage() {
       const current = videoRef.current;
       if (current && current.videoWidth >= 320 && current.videoHeight >= 240) {
         setPhase("cuenta_regresiva");
-        setCountdown(3);
+        setCountdown(CAMERA_COUNTDOWN_SECONDS);
         return;
       }
       setError("La cámara no entregó un cuadro válido. No se tomó foto.");
@@ -575,6 +576,11 @@ export default function AsistenciaPage() {
     }
     setLastPhoto(imageBase64);
     await sendPhoto(imageBase64, current.marking_token, current.marking_action, gen);
+  }
+
+  function captureNow() {
+    if ((phase !== "video_listo" && phase !== "cuenta_regresiva") || !infoRef.current || captureLock.current) return;
+    setPhase("capturando");
   }
 
   useEffect(() => {
@@ -933,8 +939,17 @@ export default function AsistenciaPage() {
               </div>
             </div>
             <video ref={videoRef} className="kiosk-video" playsInline muted autoPlay />
-            {phase === "cuenta_regresiva" && <p className="kiosk-countdown">{countdown}</p>}
+            {phase === "cuenta_regresiva" && (
+              <p className="kiosk-countdown" role="status" aria-live="polite" aria-label="Cuenta regresiva activa. Puede tomar la foto ahora.">
+                Acomódate frente a la cámara… <span aria-hidden>{countdown}</span> segundos
+              </p>
+            )}
             {phase === "abriendo_camara" && <p className="muted">Abriendo cámara…</p>}
+            {(phase === "video_listo" || phase === "cuenta_regresiva") && (
+              <button className="btn btn-primary kiosk-btn" type="button" onClick={captureNow} disabled={captureLock.current} data-testid="kiosk-capture-now">
+                {info.marking_action === "CHECK_OUT" ? "Registrar ahora" : "Tomar foto ahora"}
+              </button>
+            )}
             <button className="btn btn-outline btn-sm" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
               Cancelar
             </button>
@@ -1041,6 +1056,7 @@ export default function AsistenciaPage() {
                 ? "Entrada registrada"
                 : "Salida registrada"}
             </h2>
+            {info && <p className="kiosk-confirmed-employee" data-testid="kiosk-confirmed-employee">{info.employee.first_name} {info.employee.last_name}</p>}
             <p className="detail">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? `Ingresaste a las ${formatTime(record.check_in_at)}.`

@@ -52,12 +52,44 @@ async function identifyUntilIncident(page: Page) {
   await expect(page.getByTestId("kiosk-identify")).toBeVisible();
   await page.getByTestId("kiosk-identifier").fill("EMP-001");
   await page.getByTestId("kiosk-identify").click();
+  await expect(page.getByTestId("kiosk-capture-now")).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("kiosk-capture-now").click();
   await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 20_000 });
 }
 
 test.describe("kiosco UI con API simulada", () => {
   test.beforeEach(async ({ page }) => {
     await installKioskCameraHarness(page);
+  });
+
+  test("la cámara espera diez segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
+    let evidenceCalls = 0;
+    await page.route("**/api/v1/attendance/**", async (route: Route) => {
+      if (route.request().method() === "OPTIONS") return fulfillApi(route, 204, {});
+      const url = route.request().url();
+      if (url.includes("/identify")) return fulfillApi(route, 200, identifyPayload("María", "tok-maria"));
+      if (url.includes("/evidence")) {
+        evidenceCalls += 1;
+        return fulfillApi(route, 201, { id: "ev-1", content_type: "image/jpeg" });
+      }
+      if (url.includes("/check-in")) return fulfillApi(route, 201, {
+        id: "rec-1", employee_id: "11111111-1111-1111-1111-111111111111", work_date: "2026-09-11",
+        check_in_at: "2026-09-11T13:00:00+00:00", check_out_at: null, worked_minutes: null,
+        status: "OPEN", notes: null, created_at: "2026-09-11T13:00:00+00:00", updated_at: "2026-09-11T13:00:00+00:00", event_type: "CHECK_IN",
+      });
+      return fulfillApi(route, 404, {});
+    });
+
+    await page.goto("/asistencia");
+    await page.getByTestId("kiosk-identifier").fill("EMP-001");
+    await page.getByTestId("kiosk-identify").click();
+    await expect(page.getByTestId("kiosk-capture-now")).toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(3_500);
+    expect(evidenceCalls).toBe(0);
+    await page.getByTestId("kiosk-capture-now").click();
+    await expect(page.getByTestId("kiosk-confirmed-title")).toHaveText("Entrada registrada");
+    await expect(page.getByTestId("kiosk-confirmed-employee")).toHaveText("María López");
+    expect(evidenceCalls).toBe(1);
   });
 
   test("a) cancelar durante consulta de reintento no sube evidencia vieja", async ({ page }) => {
