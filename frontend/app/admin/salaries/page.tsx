@@ -5,12 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Coins, Download, Receipt, Refresh } from "@/components/Icons";
-import { StatSkeleton, TableSkeleton } from "@/components/Loading";
+import { Skeleton, StatSkeleton, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
   ApiError,
+  PayrollDailyReport,
   PayrollPeriod,
   PayrollRecord,
   PayrollSummary,
@@ -39,6 +40,9 @@ export default function AdminSalariesPage() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
+  const [dailyReport, setDailyReport] = useState<PayrollDailyReport | null>(null);
+  const [dailyReportLoading, setDailyReportLoading] = useState(false);
+  const [dailyReportError, setDailyReportError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +88,29 @@ export default function AdminSalariesPage() {
       })
       .finally(() => {
         if (active) setDetailsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedId, canView]);
+
+  useEffect(() => {
+    if (!selectedId || !canView) return;
+    let active = true;
+    setDailyReport(null);
+    setDailyReportError(null);
+    setDailyReportLoading(true);
+    payrollApi.dailyReport(selectedId)
+      .then((report) => {
+        if (active) setDailyReport(report);
+      })
+      .catch((err) => {
+        if (active) {
+          setDailyReportError(err instanceof ApiError ? err.message : "No se pudo cargar el desglose diario.");
+        }
+      })
+      .finally(() => {
+        if (active) setDailyReportLoading(false);
       });
     return () => {
       active = false;
@@ -187,7 +214,15 @@ export default function AdminSalariesPage() {
               ...(record.payable === false && (index === 0 || pagination.pageItems[index - 1]?.payable !== false)
                 ? [<tr key={`separator-${record.id}`}><td colSpan={6} style={{ background: "var(--gray-100)", fontWeight: 600 }}>Historial excluido (no suma al pago)</td></tr>]
                 : []),
-              <FragmentRow key={record.id} record={record} expanded={expanded === record.id} onToggle={() => setExpanded(expanded === record.id ? null : record.id)} />,
+              <FragmentRow
+                key={record.id}
+                record={record}
+                daily={dailyReport?.daily.filter((item) => item.employee_id === record.employee_id) ?? []}
+                dailyLoading={dailyReportLoading}
+                dailyError={dailyReportError}
+                expanded={expanded === record.id}
+                onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
+              />,
             ])}
           </tbody>
         </table>
@@ -210,10 +245,16 @@ function Stat({ label, value, green }: { label: string; value: string; green?: b
 
 function FragmentRow({
   record,
+  daily,
+  dailyLoading,
+  dailyError,
   expanded,
   onToggle,
 }: {
   record: PayrollRecord;
+  daily: PayrollDailyReport["daily"];
+  dailyLoading: boolean;
+  dailyError: string | null;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -295,6 +336,54 @@ function FragmentRow({
                   <p className="label" style={{ marginBottom: "0.1rem" }}>Notas del ajuste manual</p>
                   <p style={{ fontWeight: 600 }}>{record.notes}</p>
                 </div>
+              )}
+            </div>
+            <div style={{ marginTop: "1rem" }}>
+              <p className="label" style={{ marginBottom: "0.55rem" }}>Desglose diario del periodo</p>
+              {dailyLoading ? (
+                <div aria-live="polite" aria-label="Cargando desglose diario" style={{ display: "grid", gap: "0.45rem", maxWidth: 640 }}>
+                  <Skeleton width="100%" height={12} />
+                  <Skeleton width="82%" height={12} />
+                  <Skeleton width="92%" height={12} />
+                </div>
+              ) : dailyError ? (
+                <p className="muted" role="status" style={{ fontSize: "0.84rem" }}>{dailyError}</p>
+              ) : daily.length === 0 ? (
+                <p className="muted" style={{ fontSize: "0.84rem" }}>No hay jornadas programadas ni movimientos para este empleado.</p>
+              ) : (
+                <div className="table-wrap" style={{ margin: 0 }}>
+                  <table className="table" style={{ minWidth: 760 }}>
+                    <thead>
+                      <tr>
+                        <th>Fecha</th>
+                        <th style={{ textAlign: "right" }}>Neto</th>
+                        <th style={{ textAlign: "right" }}>Esperado</th>
+                        <th style={{ textAlign: "right" }}>Base diaria</th>
+                        <th style={{ textAlign: "right" }}>HE aprobadas</th>
+                        <th style={{ textAlign: "right" }}>Ajustes aprobados</th>
+                        <th style={{ textAlign: "right" }}>Total diario</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {daily.map((item) => (
+                        <tr key={item.work_date}>
+                          <td>{new Date(`${item.work_date}T12:00:00`).toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.worked_minutes)}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.expected_minutes)}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{formatMoney(item.base_amount)}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{item.overtime_minutes > 0 ? formatMoney(item.overtime_amount) : "—"}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{item.approved_adjustment_minutes !== 0 ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto` : "—"}</td>
+                          <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>{formatMoney(item.total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {Number(record.manual_adjustment) !== 0 && (
+                <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.65rem" }}>
+                  Ajuste manual del periodo: {formatMoney(record.manual_adjustment)}. No se asigna a un día porque aún no tiene fecha propia.
+                </p>
               )}
             </div>
           </td>

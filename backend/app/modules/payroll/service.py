@@ -372,6 +372,183 @@ class PayrollService:
             "total": sum((r.total for r in records), Decimal("0.00")),
         }
 
+    def daily_report(self, period_id: uuid.UUID) -> dict:
+        """Descompone un periodo calculado por empleado y jornada.
+
+        Es una vista de consulta: parte de los importes ya almacenados en
+        ``PayrollRecord`` y no escribe ni recalcula el periodo. El sueldo base
+        de cada empleado se distribuye proporcionalmente a los minutos de
+        jornada vigentes dentro del periodo; el redondeo se ajusta en la última
+        jornada para que el acumulado sea exactamente el snapshot.
+
+        Los ajustes de horas aprobados no alteran dinero automáticamente por
+        la regla actual del producto, por lo que su importe es siempre 0.00.
+        Un ajuste manual de planilla tampoco tiene fecha en el esquema actual:
+        se entrega únicamente en el resumen del empleado, sin atribuirlo a una
+        jornada artificial.
+        """
+        period = self._get_period_or_404(period_id)
+        records = self.repo.list_records(period_id, payable_only=True)
+        schedules = ScheduleService(self.db)
+        overtime = OvertimeService(self.db)
+        daily: list[dict] = []
+        employee_summaries: list[dict] = []
+
+        for record in records:
+            employee = record.employee
+            if employee is None:
+                continue
+            active_from, active_to = self._employment_bounds(employee, period)
+            if active_from > active_to:
+                continue
+
+            worked_by_day = self._worked_minutes_by_day(employee.id, active_from, active_to)
+            approved_by_day = self._approved_adjustments_by_day(employee.id, active_from, active_to)
+            overtime_by_day = {
+                item["adjustment_date"]: {
+                    "minutes": int(item["minutes"]),
+                    "amount": item["value"],
+                }
+                for item in overtime.value(employee.id, active_from, active_to)["breakdown"]
+            }
+
+            days: list[dict] = []
+            day = active_from
+            while day <= active_to:
+                expected_minutes = schedules.expected_minutes(employee.id, day)
+                overtime_item = overtime_by_day.get(day, {"minutes": 0, "amount": Decimal("0.00")})
+                approved_minutes = approved_by_day.get(day, 0)
+                worked_minutes = worked_by_day.get(day, 0)
+                if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0:
+                    days.append(
+                        {
+                            "work_date": day,
+                            "worked_minutes": worked_minutes,
+                            "expected_minutes": expected_minutes,
+                            "overtime_minutes": overtime_item["minutes"],
+                            "overtime_amount": overtime_item["amount"],
+                            "approved_adjustment_minutes": approved_minutes,
+                        }
+                    )
+                day += timedelta(days=1)
+
+            self._allocate_base_amount(days, record.base_salary)
+            self._allocate_overtime_amount(days, record.overtime_amount)
+            for item in days:
+                item["approved_adjustment_amount"] = Decimal("0.00")
+                item["total"] = (
+                    item["base_amount"] + item["overtime_amount"] + item["approved_adjustment_amount"]
+                ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+                daily.append(
+                    {
+                        "employee_id": employee.id,
+                        "employee_name": f"{employee.first_name} {employee.last_name}",
+                        **item,
+                    }
+                )
+
+            daily_total = sum((item["total"] for item in days), Decimal("0.00"))
+            employee_summaries.append(
+                {
+                    "employee_id": employee.id,
+                    "employee_name": f"{employee.first_name} {employee.last_name}",
+                    "worked_minutes": sum(item["worked_minutes"] for item in days),
+                    "expected_minutes": sum(item["expected_minutes"] for item in days),
+                    "base_amount": sum((item["base_amount"] for item in days), Decimal("0.00")),
+                    "overtime_minutes": sum(item["overtime_minutes"] for item in days),
+                    "overtime_amount": sum((item["overtime_amount"] for item in days), Decimal("0.00")),
+                    "approved_adjustment_minutes": sum(item["approved_adjustment_minutes"] for item in days),
+                    "approved_adjustment_amount": Decimal("0.00"),
+                    "daily_total": daily_total,
+                    "manual_adjustment": record.manual_adjustment,
+                    "total": (daily_total + record.manual_adjustment).quantize(_CENTS, rounding=ROUND_HALF_UP),
+                }
+            )
+
+        daily.sort(key=lambda item: (item["employee_name"] or "", item["work_date"]))
+        employee_summaries.sort(key=lambda item: item["employee_name"] or "")
+        return {
+            "period_id": period.id,
+            "start_date": period.start_date,
+            "end_date": period.end_date,
+            "daily": daily,
+            "employees": employee_summaries,
+        }
+
+    def _worked_minutes_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
+        rows = self.db.execute(
+            select(AttendanceRecord.work_date, func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0))
+            .where(
+                AttendanceRecord.employee_id == employee_id,
+                AttendanceRecord.status == "COMPLETE",
+                AttendanceRecord.work_date >= date_from,
+                AttendanceRecord.work_date <= date_to,
+            )
+            .group_by(AttendanceRecord.work_date)
+        )
+        return {work_date: int(minutes or 0) for work_date, minutes in rows}
+
+    def _approved_adjustments_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
+        rows = self.db.execute(
+            select(HourAdjustment.adjustment_date, func.coalesce(func.sum(HourAdjustment.minutes), 0))
+            .where(
+                HourAdjustment.employee_id == employee_id,
+                HourAdjustment.status == "APPROVED",
+                HourAdjustment.adjustment_type != "OVERTIME",
+                HourAdjustment.adjustment_date >= date_from,
+                HourAdjustment.adjustment_date <= date_to,
+            )
+            .group_by(HourAdjustment.adjustment_date)
+        )
+        return {adjustment_date: int(minutes or 0) for adjustment_date, minutes in rows}
+
+    @staticmethod
+    def _allocate_base_amount(days: list[dict], total_base: Decimal) -> None:
+        """Reparte el snapshot por minutos pactados y conserva los céntimos."""
+        scheduled = [item for item in days if item["expected_minutes"] > 0]
+        for item in days:
+            item["base_amount"] = Decimal("0.00")
+        if not scheduled:
+            return
+        total_minutes = sum(item["expected_minutes"] for item in scheduled)
+        allocated = Decimal("0.00")
+        for item in scheduled[:-1]:
+            amount = (total_base * Decimal(item["expected_minutes"]) / Decimal(total_minutes)).quantize(
+                _CENTS, rounding=ROUND_HALF_UP
+            )
+            item["base_amount"] = amount
+            allocated += amount
+        scheduled[-1]["base_amount"] = (total_base - allocated).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _allocate_overtime_amount(days: list[dict], total_overtime: Decimal) -> None:
+        """Atribuye el snapshot de HE a sus días sin perder céntimos.
+
+        La valoración en vivo aporta la distribución por día, pero el total
+        visible siempre es el que quedó almacenado en el registro de planilla.
+        Si una valoración histórica ya no aporta peso monetario, los minutos
+        aprobados funcionan como ponderador de respaldo.
+        """
+        overtime_days = [item for item in days if item["overtime_minutes"] > 0]
+        if not overtime_days:
+            return
+        monetary_weight = sum((item["overtime_amount"] for item in overtime_days), Decimal("0.00"))
+        if monetary_weight > 0:
+            weights = [item["overtime_amount"] for item in overtime_days]
+        else:
+            weights = [Decimal(item["overtime_minutes"]) for item in overtime_days]
+        total_weight = sum(weights, Decimal("0"))
+        for item in days:
+            item["overtime_amount"] = Decimal("0.00")
+        if total_weight <= 0:
+            return
+        allocated = Decimal("0.00")
+        for item, weight in zip(overtime_days[:-1], weights[:-1], strict=True):
+            amount = (total_overtime * weight / total_weight).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            item["overtime_amount"] = amount
+            allocated += amount
+        overtime_days[-1]["overtime_amount"] = (total_overtime - allocated).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
     # --- Ajuste manual y cierre ---
 
     def set_manual_adjustment(

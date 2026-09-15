@@ -95,3 +95,47 @@ class PayrollSummaryOut(BaseModel):
     total_overtime: Decimal
     total_manual: Decimal
     total: Decimal
+
+
+class PayrollDailyReportItemOut(BaseModel):
+    """Importe informativo de una jornada dentro de un periodo calculado.
+
+    El sueldo base se reparte entre los minutos pactados de cada día. Los
+    ajustes manuales siguen siendo propios del periodo porque el modelo actual
+    no les asigna una fecha concreta.
+    """
+
+    employee_id: uuid.UUID
+    employee_name: str | None = None
+    work_date: date
+    worked_minutes: int
+    expected_minutes: int
+    base_amount: Decimal
+    overtime_minutes: int
+    overtime_amount: Decimal
+    approved_adjustment_minutes: int
+    approved_adjustment_amount: Decimal
+    total: Decimal
+
+
+class PayrollEmployeeDailySummaryOut(BaseModel):
+    employee_id: uuid.UUID
+    employee_name: str | None = None
+    worked_minutes: int
+    expected_minutes: int
+    base_amount: Decimal
+    overtime_minutes: int
+    overtime_amount: Decimal
+    approved_adjustment_minutes: int
+    approved_adjustment_amount: Decimal
+    daily_total: Decimal
+    manual_adjustment: Decimal
+    total: Decimal
+
+
+class PayrollDailyReportOut(BaseModel):
+    period_id: uuid.UUID
+    start_date: date
+    end_date: date
+    daily: list[PayrollDailyReportItemOut]
+    employees: list[PayrollEmployeeDailySummaryOut]

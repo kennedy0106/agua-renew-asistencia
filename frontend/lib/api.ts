@@ -672,6 +672,8 @@ export const payrollApi = {
     }),
   summary: (periodId: string) =>
     apiFetch<PayrollSummary>(`/api/v1/payroll/periods/${periodId}/summary`),
+  dailyReport: (periodId: string) =>
+    apiFetch<PayrollDailyReport>(`/api/v1/payroll/periods/${periodId}/daily-report`),
   readiness: (periodId: string) =>
     apiFetch<PayrollReadiness>(`/api/v1/payroll/periods/${periodId}/readiness`),
   rectify: (periodId: string, reason: string) =>
@@ -705,6 +707,43 @@ export type PayrollSummary = {
   total_overtime: string;
   total_manual: string;
   total: string;
+};
+
+export type PayrollDailyReportItem = {
+  employee_id: string;
+  employee_name: string | null;
+  work_date: string;
+  worked_minutes: number;
+  expected_minutes: number;
+  base_amount: string;
+  overtime_minutes: number;
+  overtime_amount: string;
+  approved_adjustment_minutes: number;
+  approved_adjustment_amount: string;
+  total: string;
+};
+
+export type PayrollEmployeeDailySummary = {
+  employee_id: string;
+  employee_name: string | null;
+  worked_minutes: number;
+  expected_minutes: number;
+  base_amount: string;
+  overtime_minutes: number;
+  overtime_amount: string;
+  approved_adjustment_minutes: number;
+  approved_adjustment_amount: string;
+  daily_total: string;
+  manual_adjustment: string;
+  total: string;
+};
+
+export type PayrollDailyReport = {
+  period_id: string;
+  start_date: string;
+  end_date: string;
+  daily: PayrollDailyReportItem[];
+  employees: PayrollEmployeeDailySummary[];
 };
 
 // --- Usuarios del sistema (Fase 13, solo ADMIN) ---

@@ -4,6 +4,7 @@ import csv as csv_module
 import io
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from app.core.timezone import lima_tz
 
@@ -391,6 +392,55 @@ def test_summary_periodo_inexistente_404(client):
     assert client.get(f"/api/v1/payroll/periods/{uuid.uuid4()}/summary").status_code == 404
 
 
+def test_reporte_diario_distribuye_snapshot_y_resume_por_empleado(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    _add_approved_overtime(client, emp, minutes=60)
+    adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-26",
+            "minutes": 30,
+            "adjustment_type": "OTRO",
+            "reason": "Recuperación aprobada sin valor monetario automático",
+        },
+    ).json()
+    assert client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve").status_code == 200
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    assert client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "50.00", "notes": "Bono del periodo"},
+    ).status_code == 200
+
+    response = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report")
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["period_id"] == period["id"]
+    assert len(report["employees"]) == 1
+    summary = report["employees"][0]
+    assert summary["base_amount"] == "1500.00"
+    assert summary["overtime_amount"] == "7.81"
+    assert summary["approved_adjustment_minutes"] == 30  # HE se informa en su propia columna.
+    assert summary["approved_adjustment_amount"] == "0.00"
+    assert summary["manual_adjustment"] == "50.00"
+    assert summary["daily_total"] == "1507.81"
+    assert summary["total"] == "1557.81"
+    assert sum(Decimal(row["base_amount"]) for row in report["daily"]) == Decimal("1500.00")
+    assert sum(Decimal(row["overtime_amount"]) for row in report["daily"]) == Decimal("7.81")
+    assert sum(Decimal(row["total"]) for row in report["daily"]) == Decimal("1507.81")
+    overtime_day = next(row for row in report["daily"] if row["work_date"] == "2026-08-25")
+    assert overtime_day["overtime_amount"] == "7.81"
+
+
+def test_reporte_diario_supervisor_forbidden(client, db_session):
+    _login(client, "admin", "Admin123!")
+    period = _create_period(client)
+    _login(client, "supervisor", "Sup123!")
+    assert client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").status_code == 403
+
+
 def test_esperado_acotado_a_alta(client, db_session):
     _login(client, "admin", "Admin123!")
     role = str(db_session._test_job_roles["Operario"])
@@ -521,4 +571,3 @@ def test_motivo_solo_espacios_es_rechazado(client, db_session):
         json={"amount": "10.00", "notes": "   "},
     )
     assert response.status_code == 422
-

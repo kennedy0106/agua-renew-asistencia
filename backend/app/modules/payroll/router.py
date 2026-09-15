@@ -16,6 +16,7 @@ from app.modules.payroll.schemas import (
     ManualAdjustmentRequest,
     PayrollPeriodCreate,
     PayrollPeriodOut,
+    PayrollDailyReportOut,
     PayrollReadinessOut,
     PayrollRecordOut,
     PayrollSummaryOut,
@@ -118,6 +119,16 @@ def period_summary(
     _: object = Depends(require_salary_access),
 ) -> PayrollSummaryOut:
     return PayrollService(db).summary(period_id)
+
+
+@router.get("/periods/{period_id}/daily-report", response_model=PayrollDailyReportOut)
+def period_daily_report(
+    period_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_salary_access),
+) -> PayrollDailyReportOut:
+    """Desglose diario informativo anclado al snapshot del periodo."""
+    return PayrollService(db).daily_report(period_id)
 
 
 @router.get("/periods/{period_id}/readiness", response_model=PayrollReadinessOut)
