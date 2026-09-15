@@ -4,10 +4,10 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { clearAdminSessionHint, useAdminSession } from "./AdminSession";
+import IntentLink from "./IntentLink";
 import {
   Briefcase,
   Chart,
@@ -56,8 +56,18 @@ export default function AdminShell({
   const { user, ready } = useAdminSession();
   const [menuOpen, setMenuOpen] = useState(false);
   const [topbarCompact, setTopbarCompact] = useState(false);
+  const [navigating, setNavigating] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const navigationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function beginNavigation(isCurrent: boolean) {
+    if (isCurrent) return;
+    if (navigationTimeoutRef.current) clearTimeout(navigationTimeoutRef.current);
+    setNavigating(true);
+    // Evita dejar aria-busy visible si una navegación es cancelada o falla.
+    navigationTimeoutRef.current = setTimeout(() => setNavigating(false), 5000);
+  }
 
   function closeMenu({ returnFocus = true }: { returnFocus?: boolean } = {}) {
     const wasOpen = menuOpen;
@@ -67,7 +77,13 @@ export default function AdminShell({
 
   useEffect(() => {
     setMenuOpen(false);
+    setNavigating(false);
+    if (navigationTimeoutRef.current) clearTimeout(navigationTimeoutRef.current);
   }, [pathname]);
+
+  useEffect(() => () => {
+    if (navigationTimeoutRef.current) clearTimeout(navigationTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     const syncTopbar = () => setTopbarCompact(window.scrollY > 8);
@@ -174,9 +190,9 @@ export default function AdminShell({
         >
           <Menu size={19} />
         </button>
-        <Link href="/admin/dashboard" prefetch={false} className="mobile-brand" aria-label="Ir al dashboard">
+        <IntentLink href="/admin/dashboard" className="mobile-brand" aria-label="Ir al dashboard" onNavigate={() => beginNavigation(pathname === "/admin/dashboard")}>
           <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
-        </Link>
+        </IntentLink>
         <span className="mobile-product">Asistencia</span>
       </header>
 
@@ -190,30 +206,30 @@ export default function AdminShell({
 
       <aside ref={sidebarRef} id="admin-sidebar" className={`sidebar sidebar-material${menuOpen ? " is-open" : ""}`} aria-label="Navegación del sistema">
         <div className="sidebar-brand">
-          <Link href="/admin/dashboard" prefetch={false} aria-label="Ir al dashboard">
+          <IntentLink href="/admin/dashboard" aria-label="Ir al dashboard" onNavigate={() => beginNavigation(pathname === "/admin/dashboard")}>
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
             <span className="sidebar-product">OPERACIÓN · ASISTENCIA</span>
-          </Link>
+          </IntentLink>
         </div>
         <nav className="sidebar-nav" aria-label="Principal">
           <p className="nav-label">Operación</p>
           {visibleNav.slice(0, 4).map((item) => (
-            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} onNavigate={closeMenu} />
+            <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
           ))}
           {visibleNav.length > 4 && <p className="nav-label">Remuneraciones</p>}
           {visibleNav.slice(4).map((item) => (
-            <NavLink key={item.href} item={item} active={pathname.startsWith(item.href)} onNavigate={closeMenu} />
+            <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
           ))}
         </nav>
         {user && (
           <div className="sidebar-user">
-            <Link href="/admin/account" prefetch={false} className="sidebar-account" aria-label="Abrir mi cuenta" onClick={() => closeMenu()}>
+            <IntentLink href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta" onNavigate={() => { beginNavigation(pathname === "/admin/account"); closeMenu(); }}>
               <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
               <div className="meta">
                 <div className="name">{user.username}</div>
                 <div className="role">{ROLE_LABELS[user.role] ?? user.role}</div>
               </div>
-            </Link>
+            </IntentLink>
             <button
               onClick={handleLogout}
               className="btn btn-danger sidebar-logout"
@@ -226,7 +242,7 @@ export default function AdminShell({
         )}
       </aside>
 
-      <div className="main">
+      <div className={`main${navigating ? " is-navigating" : ""}`} aria-busy={navigating}>
         <header className={`topbar${topbarCompact ? " is-compact" : ""}`}>
           <div className="topbar-copy">
             <span className="topbar-drop" aria-hidden>
@@ -238,15 +254,14 @@ export default function AdminShell({
             </div>
           </div>
           {user && (
-            <Link
+            <IntentLink
               href="/asistencia"
-              prefetch={false}
               target="_blank"
               rel="noreferrer"
               className="btn btn-primary topbar-action"
             >
               <Chart size={15} /> <span>Marcación pública</span>
-            </Link>
+            </IntentLink>
           )}
         </header>
         <main className="page page-enter">{children}</main>
@@ -262,19 +277,18 @@ function NavLink({
 }: {
   item: { href: string; label: string; icon: React.ComponentType<{ size?: number }> };
   active: boolean;
-  onNavigate: () => void;
+  onNavigate: (isCurrent: boolean) => void;
 }) {
   const Icon = item.icon;
   return (
-    <Link
+    <IntentLink
       href={item.href}
-      prefetch={false}
       className={`nav-link${active ? " active" : ""}`}
       aria-current={active ? "page" : undefined}
-      onClick={onNavigate}
+      onNavigate={() => onNavigate(active)}
     >
       <Icon size={17} />
       <span>{item.label}</span>
-    </Link>
+    </IntentLink>
   );
 }

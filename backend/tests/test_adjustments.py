@@ -246,6 +246,39 @@ def test_balance_no_duplica_overtime(client, db_session):
     assert balance["balance_minutes"] == 30
 
 
+def test_overtime_unico_por_empleado_y_jornada_hasta_rechazo(client, db_session):
+    """Una segunda pulsación no puede duplicar HE pendiente ni aprobada."""
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    payload = _adjustment_payload(
+        adjustment_type="OVERTIME", minutes=60, reason="Horas extra de la jornada"
+    )
+    first = client.post(f"/api/v1/employees/{emp}/adjustments", json=payload)
+    assert first.status_code == 201
+    duplicate_pending = client.post(f"/api/v1/employees/{emp}/adjustments", json=payload)
+    assert duplicate_pending.status_code == 409
+
+    assert client.patch(f"/api/v1/adjustments/{first.json()['id']}/approve").status_code == 200
+    duplicate_approved = client.post(f"/api/v1/employees/{emp}/adjustments", json=payload)
+    assert duplicate_approved.status_code == 409
+
+    # Un rechazo sí libera la jornada para un registro posterior corregido.
+    other_day = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={**payload, "adjustment_date": "2026-08-24"},
+    )
+    assert other_day.status_code == 201
+    assert client.patch(
+        f"/api/v1/adjustments/{other_day.json()['id']}/reject",
+        json={"reason": "El sobretiempo fue corregido"},
+    ).status_code == 200
+    replacement = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={**payload, "adjustment_date": "2026-08-24", "minutes": 90},
+    )
+    assert replacement.status_code == 201
+
+
 def test_balance_rango_invalido_422(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))

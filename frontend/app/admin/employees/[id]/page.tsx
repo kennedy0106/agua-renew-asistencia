@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
+import AppDialog from "@/components/AppDialog";
+import { useNotifications } from "@/components/Notifications";
 import { useAdminSession } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import {
@@ -160,8 +162,16 @@ export default function EmployeeDetailPage() {
   const [qrNonce, setQrNonce] = useState(0);
   const [downloadingQr, setDownloadingQr] = useState(false);
   const [rotatingQr, setRotatingQr] = useState(false);
+  const [confirmQrRotation, setConfirmQrRotation] = useState(false);
+  const [registeringOvertimeDay, setRegisteringOvertimeDay] = useState<string | null>(null);
+  const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const activeOvertimeByDate = new Map(
+    adjustments
+      .filter((adjustment) => adjustment.adjustment_type === "OVERTIME" && (adjustment.status === "PENDING" || adjustment.status === "APPROVED"))
+      .map((adjustment) => [adjustment.adjustment_date, adjustment]),
+  );
 
   function monthRange(): { from: string; to: string } {
     const now = new Date();
@@ -187,6 +197,8 @@ export default function EmployeeDetailPage() {
   }, [canManage, employeeId]);
 
   async function registerOvertime(day: OvertimeDetectItem) {
+    if (registeringOvertimeDay) return;
+    setRegisteringOvertimeDay(day.work_date);
     setError(null);
     try {
       await adjustmentsApi.create(employeeId, {
@@ -196,8 +208,11 @@ export default function EmployeeDetailPage() {
         reason: `Horas extra del ${day.work_date} (${Math.round(day.extra_minutes / 60)} h)`,
       });
       await Promise.all([loadOvertime(), loadAdjustmentsAndBalance()]);
+      success("Horas extra registradas como ajuste pendiente.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo registrar la hora extra");
+    } finally {
+      setRegisteringOvertimeDay(null);
     }
   }
 
@@ -288,23 +303,24 @@ export default function EmployeeDetailPage() {
         const blob = new Blob([svg], { type: "image/svg+xml" });
         const url = URL.createObjectURL(blob);
         if (!cancelled) setQrUrl(url);
+        else URL.revokeObjectURL(url);
       } catch {
         // silencioso: el QR es un extra, no debe romper la página
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [employee, qrNonce]);
 
-  async function handleDownloadQr() {
+  useEffect(() => () => { if (qrUrl) URL.revokeObjectURL(qrUrl); }, [qrUrl]);
+
+  async function handleDownloadQr(format: "svg" | "png" | "jpg") {
     if (!employee) return;
     setDownloadingQr(true);
     try {
       // Descargar el archivo real (SVG), no un link. El atributo `download`
       // de un <a> cross-origin es ignorado por el navegador; por eso se baja
       // vía fetch + blob + <a> local.
-      const res = await fetch(employeesApi.qrUrl(employee.id), {
+      const res = await fetch(`${employeesApi.qrUrl(employee.id)}?format=${format}`, {
         credentials: "include",
       });
       if (!res.ok) {
@@ -312,16 +328,16 @@ export default function EmployeeDetailPage() {
         setError(body.includes("No autenticado") ? "Sesión expirada: vuelve a iniciar sesión" : "No se pudo descargar el QR");
         return;
       }
-      const svg = await res.text();
-      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `qr-${employee.employee_code}.svg`;
+      a.download = `qr-${employee.employee_code}-5x5cm.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      success(`QR ${format.toUpperCase()} descargado a 5 × 5 cm.`);
     } catch {
       setError("No se pudo descargar el QR");
     } finally {
@@ -331,12 +347,12 @@ export default function EmployeeDetailPage() {
 
   async function handleRotateQr() {
     if (!employee) return;
-    if (!window.confirm("Esto invalida el QR actual. ¿Rotar el código?")) return;
     setRotatingQr(true);
     setError(null);
     try {
       await employeesApi.rotateQr(employee.id);
       setQrNonce((n) => n + 1);
+      success("QR rotado. El código anterior ya no identifica al empleado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rotar el QR");
     } finally {
@@ -353,6 +369,7 @@ export default function EmployeeDetailPage() {
       setShowForm(false);
       setForm(defaultForm());
       await load();
+      success("Jornada laboral guardada.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo guardar la jornada");
     } finally {
@@ -376,6 +393,7 @@ export default function EmployeeDetailPage() {
         custom_additional_hours_rate: null,
       });
       await load();
+      success("Sueldo guardado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo guardar el sueldo");
     } finally {
@@ -405,6 +423,7 @@ export default function EmployeeDetailPage() {
         reason: "",
       });
       await loadAdjustmentsAndBalance();
+      success("Ajuste registrado correctamente.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el ajuste");
     } finally {
@@ -417,6 +436,7 @@ export default function EmployeeDetailPage() {
     try {
       await adjustmentsApi.approve(id);
       await loadAdjustmentsAndBalance();
+      success("Ajuste aprobado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo aprobar el ajuste");
     }
@@ -430,6 +450,7 @@ export default function EmployeeDetailPage() {
       setRejectingId(null);
       setRejectReason("");
       await loadAdjustmentsAndBalance();
+      success("Ajuste rechazado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rechazar el ajuste");
     }
@@ -527,19 +548,23 @@ export default function EmployeeDetailPage() {
             <p className="muted" style={{ fontSize: "0.78rem", maxWidth: 260 }}>
               Código QR único para este empleado. Úsalo para marcar asistencia o imprimirlo en su credencial.
             </p>
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleDownloadQr}
-              disabled={downloadingQr}
-              style={{ width: "fit-content" }}
-            >
-              <Download size={14} />
-              {downloadingQr ? "Descargando…" : "Descargar QR"}
-            </button>
+            <div className="button-row" aria-label="Descargar código QR">
+              <button
+                className="btn btn-outline btn-sm"
+                type="button"
+                onClick={() => void handleDownloadQr("png")}
+                disabled={downloadingQr}
+              >
+                <Download size={14} />
+                {downloadingQr ? "Descargando…" : "PNG 5 × 5 cm"}
+              </button>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("svg")} disabled={downloadingQr}>SVG</button>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("jpg")} disabled={downloadingQr}>JPG</button>
+            </div>
             {canManage && (
               <button
                 className="btn btn-outline btn-sm"
-                onClick={() => void handleRotateQr()}
+                onClick={() => setConfirmQrRotation(true)}
                 disabled={rotatingQr}
                 style={{ width: "fit-content" }}
               >
@@ -969,16 +994,33 @@ export default function EmployeeDetailPage() {
                       </span>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
                         <strong style={{ color: "var(--primary-blue)" }}>+{signedMinutes(day.extra_minutes)}</strong>
-                        <button className="btn btn-primary btn-sm" onClick={() => registerOvertime(day)}>
-                          Registrar como HE
-                        </button>
+                        {activeOvertimeByDate.get(day.work_date) ? (
+                          <span className={`badge ${activeOvertimeByDate.get(day.work_date)?.status === "APPROVED" ? "badge-green" : "badge-amber"}`}>
+                            {activeOvertimeByDate.get(day.work_date)?.status === "APPROVED" ? "Aprobada" : "Pendiente"}
+                          </span>
+                        ) : (
+                          <button className="btn btn-primary btn-sm" onClick={() => void registerOvertime(day)} disabled={registeringOvertimeDay === day.work_date}>
+                            {registeringOvertimeDay === day.work_date ? "Registrando…" : "Registrar como HE"}
+                          </button>
+                        )}
                       </span>
                     </li>
                   ))}
                 </ul>
               ))}
           </div>
-        )}
+      )}
+
+      {confirmQrRotation && (
+        <AppDialog labelledBy="rotate-qr-title" onClose={() => !rotatingQr && setConfirmQrRotation(false)}>
+          <h2 id="rotate-qr-title" className="card-title">¿Rotar el código QR?</h2>
+          <p className="card-sub">El QR actual dejará de identificar a este empleado. Usa esta acción solo si se perdió o comprometió la credencial.</p>
+          <div className="app-dialog-actions">
+            <button className="btn btn-outline" type="button" onClick={() => setConfirmQrRotation(false)} disabled={rotatingQr}>Cancelar</button>
+            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr}>{rotatingQr ? "Rotando…" : "Rotar QR"}</button>
+          </div>
+        </AppDialog>
+      )}
 
         {canManage && showAdjForm && (
           <form onSubmit={handleCreateAdjustment} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>

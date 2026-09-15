@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import AppDialog from "@/components/AppDialog";
+import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
@@ -70,6 +72,15 @@ function fromLocalInput(local: string): string | null {
   return new Date(local).toISOString();
 }
 
+function EvidenceImage({ label, src, loading }: { label: string; src: string | null; loading: boolean }) {
+  return <figure className="evidence-image">
+    <figcaption className="label">{label}</figcaption>
+    {loading ? <div className="skeleton evidence-skeleton" aria-label={`Cargando ${label.toLowerCase()}`} /> : src ?
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={src} alt={label} /> : <p className="muted">Sin {label.toLowerCase()}.</p>}
+  </figure>;
+}
+
 export default function AdminAttendancePage() {
   const user = useAdminUser();
   const [records, setRecords] = useState<AttendanceListItem[]>([]);
@@ -106,8 +117,8 @@ export default function AdminAttendancePage() {
   const [savingBreak, setSavingBreak] = useState(false);
   const [breakError, setBreakError] = useState<string | null>(null);
   const breakInputRef = useRef<HTMLInputElement>(null);
-  const breakDialogRef = useRef<HTMLFormElement>(null);
   const breakTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
   const dailyPagination = useTablePagination(daily, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${daily.length}`);
@@ -162,20 +173,29 @@ export default function AdminAttendancePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [adjustingBreak, savingBreak]);
 
+  useEffect(() => () => {
+    if (photoUrls.check_in) URL.revokeObjectURL(photoUrls.check_in);
+    if (photoUrls.check_out) URL.revokeObjectURL(photoUrls.check_out);
+  }, [photoUrls]);
+
   async function loadPhotos(recordId: string) {
     setPhotosFor(recordId);
     setPhotoUrls({ check_in: null, check_out: null, missing: null });
     try {
       const meta = await attendanceAdminApi.evidenceMeta(recordId);
-      const checkInUrl = meta.check_in?.id ? await attendanceAdminApi.evidenceImage(meta.check_in.id) : null;
-      const checkOutUrl = meta.check_out?.id ? await attendanceAdminApi.evidenceImage(meta.check_out.id) : null;
+      const [checkInUrl, checkOutUrl] = await Promise.all([
+        meta.check_in?.id ? attendanceAdminApi.evidenceImage(meta.check_in.id) : null,
+        meta.check_out?.id ? attendanceAdminApi.evidenceImage(meta.check_out.id) : null,
+      ]);
       const missing =
         !meta.check_in?.available && !meta.check_out?.available
           ? "Este registro es anterior a la evidencia fotográfica o nunca tuvo foto."
           : null;
       setPhotoUrls({ check_in: checkInUrl, check_out: checkOutUrl, missing });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudieron cargar las fotos");
+      const message = err instanceof ApiError ? err.message : "No se pudieron cargar las fotos";
+      setPhotoUrls({ check_in: null, check_out: null, missing: message });
+      setError(message);
     }
   }
 
@@ -186,7 +206,7 @@ export default function AdminAttendancePage() {
     setCorrNotes(record.notes ?? "");
     setCorrReason("");
     setError(null);
-    void loadPhotos(record.id);
+    setPhotosFor(null);
   }
 
   async function handleSaveCorrection(event: React.FormEvent) {
@@ -203,6 +223,7 @@ export default function AdminAttendancePage() {
       });
       setCorrecting(null);
       await load();
+      success("Corrección guardada. El registro fue recalculado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo corregir el registro");
     } finally {
@@ -240,6 +261,7 @@ export default function AdminAttendancePage() {
       await attendanceAdminApi.setBreakOverride(adjustingBreak.employee_id, adjustingBreak.work_date, minutes, breakReason.trim());
       setAdjustingBreak(null);
       await load();
+      success("Refrigerio actualizado para esta jornada.");
       window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
     } catch (err) {
       setBreakError(err instanceof ApiError ? err.message : "No se pudo actualizar el refrigerio");
@@ -256,6 +278,7 @@ export default function AdminAttendancePage() {
       await attendanceAdminApi.clearBreakOverride(adjustingBreak.employee_id, adjustingBreak.work_date, breakReason.trim());
       setAdjustingBreak(null);
       await load();
+      success("Se restauró el cálculo automático del refrigerio.");
       window.requestAnimationFrame(() => breakTriggerRef.current?.focus());
     } catch (err) {
       setBreakError(err instanceof ApiError ? err.message : "No se pudo volver al cálculo automático");
@@ -426,31 +449,15 @@ export default function AdminAttendancePage() {
         </details>
       )}
 
-      {photosFor && !correcting && (
-        <div className="card card-pad" style={{ marginBottom: "1rem" }}>
-          <h2 className="card-title">Evidencia fotográfica</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem", marginTop: "0.6rem" }}>
-            <figure>
-              <figcaption className="label">Foto de entrada</figcaption>
-              {photoUrls.check_in ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={photoUrls.check_in} alt="Entrada" style={{ width: "100%", borderRadius: 8 }} />
-              ) : (
-                <p className="muted">Sin foto de entrada.</p>
-              )}
-            </figure>
-            <figure>
-              <figcaption className="label">Foto de salida</figcaption>
-              {photoUrls.check_out ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={photoUrls.check_out} alt="Salida" style={{ width: "100%", borderRadius: 8 }} />
-              ) : (
-                <p className="muted">Sin foto de salida.</p>
-              )}
-            </figure>
+      {photosFor && (
+        <AppDialog labelledBy="evidence-dialog-title" onClose={() => setPhotosFor(null)} className="evidence-dialog">
+          <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><button type="button" className="btn btn-ghost btn-sm" onClick={() => setPhotosFor(null)} aria-label="Cerrar evidencia"><X size={15} /></button></div>
+          <div className="evidence-grid">
+            <EvidenceImage label="Foto de entrada" src={photoUrls.check_in} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
+            <EvidenceImage label="Foto de salida" src={photoUrls.check_out} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
           </div>
-          {photoUrls.missing && <p className="muted" style={{ marginTop: "0.6rem" }}>{photoUrls.missing}</p>}
-        </div>
+          {photoUrls.missing && <p className="muted">{photoUrls.missing}</p>}
+        </AppDialog>
       )}
 
       {correcting && canManage && (
@@ -490,29 +497,6 @@ export default function AdminAttendancePage() {
           <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.6rem" }}>
             El backend recalcula automáticamente minutos y estado; la corrección queda en auditoría.
           </p>
-          {photosFor === correcting.id && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.8rem", marginTop: "0.8rem" }}>
-              <figure>
-                <figcaption className="label">Foto de entrada</figcaption>
-                {photoUrls.check_in ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={photoUrls.check_in} alt="Entrada" style={{ width: "100%", borderRadius: 8 }} />
-                ) : (
-                  <p className="muted">Sin foto de entrada.</p>
-                )}
-              </figure>
-              <figure>
-                <figcaption className="label">Foto de salida</figcaption>
-                {photoUrls.check_out ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={photoUrls.check_out} alt="Salida" style={{ width: "100%", borderRadius: 8 }} />
-                ) : (
-                  <p className="muted">Sin foto de salida.</p>
-                )}
-              </figure>
-              {photoUrls.missing && <p className="muted" style={{ gridColumn: "1 / -1" }}>{photoUrls.missing}</p>}
-            </div>
-          )}
           <button
             type="submit"
             className="btn btn-amber"
@@ -557,19 +541,13 @@ export default function AdminAttendancePage() {
       <TablePagination {...dailyPagination} />
 
       {adjustingBreak && (
-        <div className="dialog-backdrop" role="presentation" onMouseDown={closeBreakDialog}>
-          <form ref={breakDialogRef} className="app-dialog" role="dialog" aria-modal="true" aria-labelledby="break-dialog-title" aria-describedby="break-dialog-description" onMouseDown={(event) => event.stopPropagation()} onSubmit={saveBreak} onKeyDown={(event) => {
-            if (event.key !== "Tab") return;
-            const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
-            const first = focusable[0]; const last = focusable.at(-1);
-            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-          }}>
+        <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog}>
+          <form onSubmit={saveBreak}>
           <h2 id="break-dialog-title">Ajustar refrigerio</h2>
           <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {adjustingBreak.work_date}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
           {breakError && <p className="alert alert-error" role="alert" aria-live="assertive">{breakError}</p>}
           <label className="label" htmlFor="daily-break-minutes">Refrigerio real (minutos)</label>
-          <input ref={breakInputRef} id="daily-break-minutes" className="input" inputMode="numeric" type="number" min="0" max={adjustingBreak.gross_minutes} value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required />
+          <input ref={breakInputRef} data-autofocus id="daily-break-minutes" className="input" inputMode="numeric" type="number" min="0" max={adjustingBreak.gross_minutes} value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required />
           <p className="muted" role="status">Neto previsto: {formatMinutes(Math.max(0, adjustingBreak.gross_minutes - (Number(breakMinutes) || 0)))}</p>
           <label className="label" htmlFor="daily-break-reason">Motivo</label>
           <input id="daily-break-reason" className="input" minLength={3} maxLength={500} value={breakReason} onChange={(event) => setBreakReason(event.target.value)} placeholder="Ej.: mayor demanda" required />
@@ -579,7 +557,7 @@ export default function AdminAttendancePage() {
             <button type="submit" className="btn btn-primary" disabled={savingBreak || breakReason.trim().length < 3}>{savingBreak ? "Guardando…" : "Guardar refrigerio"}</button>
           </div>
           </form>
-        </div>
+        </AppDialog>
       )}
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>

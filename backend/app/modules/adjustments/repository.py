@@ -50,6 +50,17 @@ class AdjustmentRepository:
         self.db.refresh(adjustment)
         return adjustment
 
+    def active_overtime_for_day(self, employee_id: uuid.UUID, adjustment_date: date) -> HourAdjustment | None:
+        """Devuelve el único HE que aún cuenta para la jornada (pendiente/aprobado)."""
+        return self.db.scalar(
+            select(HourAdjustment).where(
+                HourAdjustment.employee_id == employee_id,
+                HourAdjustment.adjustment_date == adjustment_date,
+                HourAdjustment.adjustment_type == "OVERTIME",
+                HourAdjustment.status.in_(("PENDING", "APPROVED")),
+            )
+        )
+
     def set_status(self, adjustment: HourAdjustment, *, status: str, approved_by: uuid.UUID) -> HourAdjustment:
         adjustment.status = status
         adjustment.approved_by = approved_by

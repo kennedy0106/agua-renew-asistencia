@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import AppDialog from "@/components/AppDialog";
+import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
@@ -48,6 +50,7 @@ export default function AdminPayrollPage() {
   const [rectificationError, setRectificationError] = useState<string | null>(null);
   const rectificationInputRef = useRef<HTMLTextAreaElement>(null);
   const rectificationTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
   const recordsPagination = useTablePagination(records, `${selectedId ?? ""}:${records.length}`);
@@ -99,6 +102,7 @@ export default function AdminPayrollPage() {
       setShowForm(false);
       setForm({ name: "", start_date: "", end_date: "" });
       setPeriods(await payrollApi.periods());
+      success("Periodo de pago creado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el periodo");
     } finally {
@@ -114,6 +118,7 @@ export default function AdminPayrollPage() {
     try {
       await payrollApi.calculate(periodId);
       await loadRecords(periodId);
+      success("Cálculo de pago actualizado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo calcular");
     } finally {
@@ -137,6 +142,7 @@ export default function AdminPayrollPage() {
       setAdjustAmount("");
       setAdjustNotes("");
       if (selectedId) await loadRecords(selectedId);
+      success("Ajuste manual guardado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo ajustar");
     } finally {
@@ -158,6 +164,7 @@ export default function AdminPayrollPage() {
       }
       await payrollApi.confirm(periodId);
       setPeriods(await payrollApi.periods());
+      success("Periodo confirmado y cerrado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo confirmar");
     } finally {
@@ -203,6 +210,7 @@ export default function AdminPayrollPage() {
       setRectificationReason("");
       setRectificationError(null);
       window.requestAnimationFrame(() => rectificationTriggerRef.current?.focus());
+      success("Rectificación creada como nueva versión.");
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "No se pudo crear la rectificación";
       setRectificationError(message);
@@ -314,7 +322,7 @@ export default function AdminPayrollPage() {
             <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.2rem" }}>
               {period.start_date} → {period.end_date} · versión {period.version}
             </p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", marginTop: "0.7rem" }}>
+            <div className="period-actions">
               <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
                 Registros
               </button>
@@ -348,27 +356,19 @@ export default function AdminPayrollPage() {
       </div>
 
       {rectifyingId && (
-        <div className="dialog-backdrop" role="presentation" onMouseDown={closeRectification}>
-          <form className="app-dialog" role="dialog" aria-modal="true" aria-labelledby="rectification-title" onSubmit={(event) => { event.preventDefault(); void handleRectification(rectifyingId); }} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
-            if (event.key === "Escape") { event.preventDefault(); closeRectification(); }
-            if (event.key === "Tab") {
-              const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), textarea:not([disabled])'));
-              const first = focusable[0]; const last = focusable[focusable.length - 1];
-              if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-              else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-            }
-          }}>
+        <AppDialog labelledBy="rectification-title" onClose={closeRectification}>
+          <form onSubmit={(event) => { event.preventDefault(); void handleRectification(rectifyingId); }}>
             <h2 id="rectification-title" className="card-title">Rectificar periodo cerrado</h2>
             <p className="card-sub">Indica el motivo. Se conservará el historial y se abrirá una nueva versión.</p>
             <label className="label" htmlFor="rectification-reason">Motivo de la rectificación</label>
-            <textarea id="rectification-reason" ref={rectificationInputRef} className="input" value={rectificationReason} onChange={(event) => setRectificationReason(event.target.value)} minLength={3} required rows={3} />
+            <textarea id="rectification-reason" data-autofocus ref={rectificationInputRef} className="input" value={rectificationReason} onChange={(event) => setRectificationReason(event.target.value)} minLength={3} required rows={3} />
             {rectificationError && <p className="alert alert-error" role="alert">{rectificationError}</p>}
             <div className="app-dialog-actions">
               <button className="btn btn-outline" type="button" onClick={closeRectification} disabled={busy}>Cancelar</button>
               <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3}>{busy ? "Creando…" : "Crear rectificación"}</button>
             </div>
           </form>
-        </div>
+        </AppDialog>
       )}
 
       {selected && (

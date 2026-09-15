@@ -51,6 +51,16 @@ class AdjustmentService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Las horas extra deben registrarse con minutos positivos",
             )
+        if adjustment_type == "OVERTIME":
+            existing = self.repo.active_overtime_for_day(employee_id, adjustment_date)
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Ya existe un ajuste de horas extra "
+                        f"{existing.status.lower()} para esta jornada. Rechácelo antes de registrar otro."
+                    ),
+                )
         return self.repo.create(
             employee_id=employee_id,
             adjustment_date=adjustment_date,

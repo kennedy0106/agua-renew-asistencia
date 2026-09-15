@@ -1,6 +1,9 @@
 """Tests de empleados: permisos (ADMIN y BOSS crean), validaciones y desactivación."""
 
 import uuid
+from io import BytesIO
+
+from PIL import Image
 
 
 def _login(client, username: str, password: str) -> None:
@@ -239,6 +242,31 @@ def test_qr_endpoint_devuelve_svg(client, db_session):
     # Es un SVG válido (el token va codificado en los paths, no en texto plano).
     assert response.text.lstrip().startswith("<?xml") or "<svg" in response.text
     assert "<path" in response.text
+
+
+def test_qr_estable_etag_y_descargas_5cm(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create(client, _payload(db_session._test_job_roles["Operario"])).json()
+    svg = client.get(f"/api/v1/employees/{emp['id']}/qr")
+    assert svg.status_code == 200
+    assert svg.headers["cache-control"] == "private, no-cache"
+    etag = svg.headers["etag"]
+    assert client.get(f"/api/v1/employees/{emp['id']}/qr", headers={"If-None-Match": etag}).status_code == 304
+
+    png = client.get(f"/api/v1/employees/{emp['id']}/qr?format=png")
+    assert png.status_code == 200
+    assert png.headers["content-type"] == "image/png"
+    assert png.content.startswith(b"\x89PNG")
+    png_image = Image.open(BytesIO(png.content))
+    assert png_image.size == (591, 591)
+    assert all(abs(dpi - 300) < 1 for dpi in png_image.info["dpi"])
+    jpg = client.get(f"/api/v1/employees/{emp['id']}/qr?format=jpg")
+    assert jpg.status_code == 200
+    assert jpg.headers["content-type"] == "image/jpeg"
+    assert jpg.content.startswith(b"\xff\xd8")
+    jpg_image = Image.open(BytesIO(jpg.content))
+    assert jpg_image.size == (591, 591)
+    assert all(abs(dpi - 300) < 1 for dpi in jpg_image.info["dpi"])
 
 
 def test_qr_endpoint_requiere_auth(client):
