@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Alert, Check, Key, Shield } from "@/components/Icons";
-import { useAdminSession } from "@/components/AdminSession";
+import { useAdminSession, writeAdminSessionHint } from "@/components/AdminSession";
 import { Spinner } from "@/components/Loading";
 import { ApiError, authApi, usersApi } from "@/lib/api";
 
@@ -39,7 +39,8 @@ export default function ChangePasswordPage() {
       await usersApi.changeOwnPassword(current, next);
       // La sesión continúa válida, pero vuelve a leer el estado que ya no
       // exige cambio antes de permitir que el layout muestre el dashboard.
-      await authApi.me();
+      const refreshedUser = await authApi.me();
+      writeAdminSessionHint(refreshedUser);
       router.replace("/admin/dashboard");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No pudimos cambiar la contraseña. Inténtalo nuevamente.");

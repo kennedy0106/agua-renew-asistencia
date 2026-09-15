@@ -7,7 +7,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { useAdminSession } from "./AdminSession";
+import { clearAdminSessionHint, useAdminSession } from "./AdminSession";
 import {
   Briefcase,
   Chart,
@@ -123,6 +123,7 @@ export default function AdminShell({
     } catch {
       /* la cookie se limpia igualmente */
     }
+    clearAdminSessionHint();
     router.replace("/admin/login");
   }
 
@@ -173,7 +174,7 @@ export default function AdminShell({
         >
           <Menu size={19} />
         </button>
-        <Link href="/admin/dashboard" className="mobile-brand" aria-label="Ir al dashboard">
+        <Link href="/admin/dashboard" prefetch={false} className="mobile-brand" aria-label="Ir al dashboard">
           <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
         </Link>
         <span className="mobile-product">Asistencia</span>
@@ -189,7 +190,7 @@ export default function AdminShell({
 
       <aside ref={sidebarRef} id="admin-sidebar" className={`sidebar sidebar-material${menuOpen ? " is-open" : ""}`} aria-label="Navegación del sistema">
         <div className="sidebar-brand">
-          <Link href="/admin/dashboard" aria-label="Ir al dashboard">
+          <Link href="/admin/dashboard" prefetch={false} aria-label="Ir al dashboard">
             <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
             <span className="sidebar-product">OPERACIÓN · ASISTENCIA</span>
           </Link>
@@ -206,7 +207,7 @@ export default function AdminShell({
         </nav>
         {user && (
           <div className="sidebar-user">
-            <Link href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta" onClick={() => closeMenu()}>
+            <Link href="/admin/account" prefetch={false} className="sidebar-account" aria-label="Abrir mi cuenta" onClick={() => closeMenu()}>
               <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
               <div className="meta">
                 <div className="name">{user.username}</div>
@@ -239,6 +240,7 @@ export default function AdminShell({
           {user && (
             <Link
               href="/asistencia"
+              prefetch={false}
               target="_blank"
               rel="noreferrer"
               className="btn btn-primary topbar-action"
@@ -266,6 +268,7 @@ function NavLink({
   return (
     <Link
       href={item.href}
+      prefetch={false}
       className={`nav-link${active ? " active" : ""}`}
       aria-current={active ? "page" : undefined}
       onClick={onNavigate}

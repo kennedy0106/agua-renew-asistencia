@@ -1324,7 +1324,53 @@ textarea {
 .credential-dialog-value code { overflow-wrap: anywhere; color: var(--brand-ink); font-size: 0.95rem; }
 .credential-dialog-value code { margin-bottom: 0.35rem; padding: 0.45rem 0.55rem; border-radius: 0.3rem; background: #e7f1ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .credential-dialog-notice { min-height: 1.25rem; color: var(--brand-ink); font-size: 0.78rem; line-height: 1.4; }
-.admin-route-guard { display: grid; min-height: 100dvh; place-items: center; padding: 1rem; color: var(--brand-ink); background: var(--page-bg); }
+.admin-route-guard {
+  display: grid;
+  grid-template-columns: clamp(13.5rem, 18vw, 16rem) minmax(0, 1fr);
+  min-height: 100dvh;
+  overflow: hidden;
+  color: var(--brand-ink);
+  background: var(--page-bg);
+}
+.admin-route-guard-shell,
+.admin-route-guard-content { padding: clamp(1rem, 2.5vw, 2rem); }
+.admin-route-guard-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  border-right: 1px solid rgba(21, 67, 153, 0.1);
+  background: rgba(239, 249, 255, 0.88);
+}
+.admin-route-guard-logo,
+.admin-route-guard-line,
+.admin-route-guard-title,
+.admin-route-guard-cards i {
+  display: block;
+  border-radius: 999px;
+  background: linear-gradient(100deg, rgba(215, 235, 248, 0.58), rgba(255,255,255,0.88), rgba(215, 235, 248, 0.58));
+  background-size: 220% 100%;
+  animation: session-skeleton 1.2s ease-in-out infinite;
+}
+.admin-route-guard-logo { width: 7.5rem; height: 2rem; margin-bottom: 1.75rem; }
+.admin-route-guard-line { width: 100%; height: 2.7rem; }
+.admin-route-guard-line--short { width: 45%; height: 0.7rem; margin-bottom: -0.4rem; }
+.admin-route-guard-content { padding-top: clamp(1.5rem, 4vw, 3rem); }
+.admin-route-guard-title { width: min(18rem, 62%); height: 2.3rem; margin-bottom: 1.4rem; }
+.admin-route-guard-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; max-width: 62rem; }
+.admin-route-guard-cards i { min-height: 8rem; border-radius: 1rem; }
+@keyframes session-skeleton { to { background-position: -220% 0; } }
+@media (max-width: 700px) {
+  .admin-route-guard { grid-template-columns: 1fr; }
+  .admin-route-guard-shell { display: none; }
+  .admin-route-guard-content { padding: 5rem 1rem 1rem; }
+  .admin-route-guard-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-route-guard-logo,
+  .admin-route-guard-line,
+  .admin-route-guard-title,
+  .admin-route-guard-cards i { animation: none; }
+}
 .password-change-wrap { display: grid; min-height: 100dvh; place-items: center; padding: 1rem; background: radial-gradient(circle at 20% 90%, color-mix(in srgb, var(--brand-green) 18%, transparent), transparent 35%), var(--page-bg); }
 .password-change-card { width: min(100%, 31rem); display: grid; gap: 0.9rem; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: rgba(255, 255, 255, 0.94); box-shadow: var(--shadow-panel); }
 .password-change-brand { width: min(14rem, 76%); height: auto; }
@@ -1616,7 +1662,7 @@ textarea {
 }
 
 .page-enter {
-  animation: page-enter 520ms var(--ease-water) both;
+  animation: page-enter 180ms var(--ease-water) both;
 }
 
 .dashboard-section-head {
@@ -1726,7 +1772,7 @@ textarea {
   background:
     radial-gradient(circle at 12% 12%, rgba(255, 255, 255, 0.72), transparent 30%),
     linear-gradient(160deg, rgba(237, 247, 255, 0.42), rgba(209, 233, 251, 0.08));
-  animation: login-rise 560ms var(--ease-water) both;
+  animation: login-rise 180ms var(--ease-water) both;
 }
 
 .login-wrap::before,
@@ -1977,8 +2023,8 @@ textarea {
 }
 
 @keyframes login-rise {
-  from { opacity: 0; transform: translateY(10px); filter: blur(4px); }
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes login-drop-in {

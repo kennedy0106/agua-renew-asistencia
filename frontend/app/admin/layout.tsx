@@ -6,7 +6,12 @@
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ApiError, authApi, UserOut } from "@/lib/api";
-import { AdminSessionContext } from "@/components/AdminSession";
+import {
+  AdminSessionContext,
+  clearAdminSessionHint,
+  readAdminSessionHint,
+  writeAdminSessionHint,
+} from "@/components/AdminSession";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -18,14 +23,25 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     // Login no consulta una sesión previa. La pantalla de cambio sí puede
     // resolver /me porque es el único destino permitido con clave temporal.
     if (pathname === "/admin/login") {
+      clearAdminSessionHint();
       setUser(null);
       setReady(true);
       return;
+    }
+    // El hint permite pintar el shell conocido mientras /me valida la cookie.
+    // No autoriza nada por sí mismo: un 401 borra el hint y vuelve al login.
+    const hint = readAdminSessionHint();
+    if (hint) {
+      setUser(hint);
+      setReady(true);
+    } else {
+      setReady(false);
     }
     authApi
       .me()
       .then((u) => {
         setUser(u);
+        writeAdminSessionHint(u);
         if (u.must_change_password && pathname !== "/admin/change-password") {
           router.replace("/admin/change-password");
         } else if (!u.must_change_password && pathname === "/admin/change-password") {
@@ -34,6 +50,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
+          clearAdminSessionHint();
           router.replace("/admin/login");
         }
         setUser(null);
@@ -48,7 +65,26 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <AdminSessionContext.Provider value={{ user, ready }}>
-      {blockPrivateContent ? <div className="admin-route-guard" role="status">{passwordChangeNoLongerRequired ? "Redirigiendo al panel…" : passwordChangeRequired ? "Redirigiendo al cambio de contraseña…" : "Comprobando sesión…"}</div> : children}
+      {blockPrivateContent ? <SessionGuard status={passwordChangeNoLongerRequired ? "Redirigiendo al panel…" : passwordChangeRequired ? "Redirigiendo al cambio de contraseña…" : "Comprobando sesión…"} /> : children}
     </AdminSessionContext.Provider>
+  );
+}
+
+function SessionGuard({ status }: { status: string }) {
+  return (
+    <div className="admin-route-guard" role="status" aria-live="polite">
+      <div className="admin-route-guard-shell" aria-hidden>
+        <span className="admin-route-guard-logo" />
+        <span className="admin-route-guard-line admin-route-guard-line--short" />
+        <span className="admin-route-guard-line" />
+        <span className="admin-route-guard-line" />
+        <span className="admin-route-guard-line" />
+      </div>
+      <main className="admin-route-guard-content">
+        <span className="admin-route-guard-title" />
+        <div className="admin-route-guard-cards"><i /><i /><i /></div>
+      </main>
+      <span className="sr-only">{status}</span>
+    </div>
   );
 }

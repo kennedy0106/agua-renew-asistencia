@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { ApiError, authApi } from "@/lib/api";
+import { writeAdminSessionHint } from "@/components/AdminSession";
 import { Check, ChevronRight, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
@@ -21,6 +22,7 @@ export default function AdminLoginPage() {
     setError(null);
     try {
       const loggedIn = await authApi.login(username, password);
+      writeAdminSessionHint(loggedIn);
       router.replace(loggedIn.must_change_password ? "/admin/change-password" : "/admin/dashboard");
     } catch (err) {
       setError(

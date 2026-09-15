@@ -93,13 +93,13 @@ export default function AdminDashboardPage() {
               </div>
               <div className="dashboard-progress">
                 <div className="dashboard-progress-track" aria-hidden><span style={{ width: `${data.summary.employees_active ? Math.min(100, (data.summary.present_today / data.summary.employees_active) * 100) : 0}%` }} /></div>
-                <Link href="/admin/attendance" className="dashboard-command-link">Ver marcaciones <ChevronRight size={16} /></Link>
+                <Link href="/admin/attendance" prefetch={false} className="dashboard-command-link">Ver marcaciones <ChevronRight size={16} /></Link>
               </div>
             </div>
             <aside className="dashboard-attention" aria-label="Resumen de atención">
               <div className="dashboard-attention-icon"><Alert size={19} /></div>
               <div><span>Requiere atención</span><strong>{data.summary.no_entry_today + data.summary.open_entries}</strong><p>{data.summary.no_entry_today} sin entrada · {data.summary.open_entries} jornadas abiertas</p></div>
-              <Link href="#incidencias" className="dashboard-attention-link" aria-label="Ver incidencias"><ChevronRight size={18} /></Link>
+              <Link href="#incidencias" prefetch={false} className="dashboard-attention-link" aria-label="Ver incidencias"><ChevronRight size={18} /></Link>
             </aside>
           </section>
 
@@ -116,11 +116,11 @@ export default function AdminDashboardPage() {
               {incidents.length > 0 ? (
                 <div className="operations-list">
                   {incidents.slice(0, 6).map((incident) => (
-                    <Link key={incident.id} href="/admin/attendance" className="operation-row">
+                    <Link key={incident.id} href="/admin/attendance" prefetch={false} className="operation-row">
                       <span className="operation-alert"><Alert size={16} /></span><span className="operation-copy"><strong>{incident.title}</strong><small>{incident.detail}</small></span><span className="operation-status">{incident.status}</span><ChevronRight size={16} />
                     </Link>
                   ))}
-                  {incidents.length > 6 && <Link href="/admin/attendance" className="panel-link">Ver {incidents.length - 6} incidencias más <ChevronRight size={15} /></Link>}
+                  {incidents.length > 6 && <Link href="/admin/attendance" prefetch={false} className="panel-link">Ver {incidents.length - 6} incidencias más <ChevronRight size={15} /></Link>}
                 </div>
               ) : (
                 <div className="operational-empty"><span><Check size={20} /></span><div><strong>Todo está al día</strong><p>No hay incidencias pendientes en la jornada.</p></div></div>
@@ -132,11 +132,11 @@ export default function AdminDashboardPage() {
               {data.records.length > 0 ? (
                 <div className="operations-list">
                   {data.records.slice(0, 5).map((record) => (
-                    <Link key={record.id} href="/admin/attendance" className="activity-row">
+                    <Link key={record.id} href="/admin/attendance" prefetch={false} className="activity-row">
                       <span className="activity-mark" aria-hidden /><span className="operation-copy"><strong>{record.employee_name ?? "Empleado sin nombre"}</strong><small>{record.job_role_name ?? "Sin cargo asignado"}</small></span><span className="activity-time"><strong>{formatClock(record.check_in_at)}</strong><small>{record.check_out_at ? `Salida ${formatClock(record.check_out_at)}` : "En jornada"}</small></span>
                     </Link>
                   ))}
-                  <Link href="/admin/attendance" className="panel-link">Revisar asistencia <ChevronRight size={15} /></Link>
+                  <Link href="/admin/attendance" prefetch={false} className="panel-link">Revisar asistencia <ChevronRight size={15} /></Link>
                 </div>
               ) : (
                 <div className="operational-empty operational-empty--neutral"><span><Clock size={20} /></span><div><strong>Aún no hay marcaciones</strong><p>La actividad aparecerá cuando se registre la primera entrada.</p></div></div>
@@ -150,5 +150,5 @@ export default function AdminDashboardPage() {
 }
 
 function StatCard({ href, label, value, icon, tone, featured = false }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red"; featured?: boolean }) {
-  return <Link href={href} className={`stat-card surface-material stat-card--${tone}${featured ? " stat-card--featured" : ""}`} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
+  return <Link href={href} prefetch={false} className={`stat-card surface-material stat-card--${tone}${featured ? " stat-card--featured" : ""}`} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
 }
