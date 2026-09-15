@@ -110,12 +110,17 @@ class PayrollDailyReportItemOut(BaseModel):
     work_date: date
     worked_minutes: int
     expected_minutes: int
+    recognized_minutes: int
+    status: str
     base_amount: Decimal
+    recognized_base_amount: Decimal
     overtime_minutes: int
     overtime_amount: Decimal
+    recognized_overtime_amount: Decimal
     approved_adjustment_minutes: int
     approved_adjustment_amount: Decimal
-    total: Decimal
+    recognized_total_amount: Decimal
+    review_difference_amount: Decimal
 
 
 class PayrollEmployeeDailySummaryOut(BaseModel):
@@ -123,14 +128,17 @@ class PayrollEmployeeDailySummaryOut(BaseModel):
     employee_name: str | None = None
     worked_minutes: int
     expected_minutes: int
-    base_amount: Decimal
+    programmed_base_amount: Decimal
+    recognized_base_amount: Decimal
     overtime_minutes: int
-    overtime_amount: Decimal
+    recognized_overtime_amount: Decimal
     approved_adjustment_minutes: int
     approved_adjustment_amount: Decimal
-    daily_total: Decimal
+    recognized_total_amount: Decimal
+    future_pending_base_amount: Decimal
+    review_difference_amount: Decimal
     manual_adjustment: Decimal
-    total: Decimal
+    official_total_snapshot: Decimal
 
 
 class PayrollDailyReportOut(BaseModel):

@@ -15,7 +15,7 @@ import hashlib
 import json
 import uuid
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.service import AttendanceService
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
 from app.modules.overtime.service import OvertimeService
@@ -40,8 +41,14 @@ from app.modules.payroll.models import (
 from app.modules.payroll.repository import PayrollRepository
 from app.modules.salary.service import SalaryService
 from app.modules.schedules.service import ScheduleService
+from app.core.timezone import lima_tz
 
 _CENTS = Decimal("0.01")
+
+
+def _report_today() -> date:
+    """Fecha operacional para la vista informativa, siempre en Lima."""
+    return datetime.now(lima_tz()).date()
 
 
 class PayrollService:
@@ -391,6 +398,7 @@ class PayrollService:
         records = self.repo.list_records(period_id, payable_only=True)
         schedules = ScheduleService(self.db)
         overtime = OvertimeService(self.db)
+        today = _report_today()
         daily: list[dict] = []
         employee_summaries: list[dict] = []
 
@@ -436,9 +444,7 @@ class PayrollService:
             self._allocate_overtime_amount(days, record.overtime_amount)
             for item in days:
                 item["approved_adjustment_amount"] = Decimal("0.00")
-                item["total"] = (
-                    item["base_amount"] + item["overtime_amount"] + item["approved_adjustment_amount"]
-                ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+                self._set_recognized_amounts(item, today)
                 daily.append(
                     {
                         "employee_id": employee.id,
@@ -447,21 +453,28 @@ class PayrollService:
                     }
                 )
 
-            daily_total = sum((item["total"] for item in days), Decimal("0.00"))
+            recognized_total = sum((item["recognized_total_amount"] for item in days), Decimal("0.00"))
             employee_summaries.append(
                 {
                     "employee_id": employee.id,
                     "employee_name": f"{employee.first_name} {employee.last_name}",
                     "worked_minutes": sum(item["worked_minutes"] for item in days),
                     "expected_minutes": sum(item["expected_minutes"] for item in days),
-                    "base_amount": sum((item["base_amount"] for item in days), Decimal("0.00")),
+                    "programmed_base_amount": sum((item["base_amount"] for item in days), Decimal("0.00")),
+                    "recognized_base_amount": sum((item["recognized_base_amount"] for item in days), Decimal("0.00")),
                     "overtime_minutes": sum(item["overtime_minutes"] for item in days),
-                    "overtime_amount": sum((item["overtime_amount"] for item in days), Decimal("0.00")),
+                    "recognized_overtime_amount": sum((item["recognized_overtime_amount"] for item in days), Decimal("0.00")),
                     "approved_adjustment_minutes": sum(item["approved_adjustment_minutes"] for item in days),
                     "approved_adjustment_amount": Decimal("0.00"),
-                    "daily_total": daily_total,
+                    "recognized_total_amount": recognized_total,
+                    "future_pending_base_amount": sum(
+                        (item["base_amount"] for item in days if item["work_date"] > today), Decimal("0.00")
+                    ),
+                    "review_difference_amount": sum(
+                        (item["review_difference_amount"] for item in days), Decimal("0.00")
+                    ),
                     "manual_adjustment": record.manual_adjustment,
-                    "total": (daily_total + record.manual_adjustment).quantize(_CENTS, rounding=ROUND_HALF_UP),
+                    "official_total_snapshot": record.total,
                 }
             )
 
@@ -475,18 +488,69 @@ class PayrollService:
             "employees": employee_summaries,
         }
 
-    def _worked_minutes_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
-        rows = self.db.execute(
-            select(AttendanceRecord.work_date, func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0))
-            .where(
-                AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.status == "COMPLETE",
-                AttendanceRecord.work_date >= date_from,
-                AttendanceRecord.work_date <= date_to,
+    @staticmethod
+    def _set_recognized_amounts(item: dict, today: date) -> None:
+        """Calcula el reconocimiento informativo sin cambiar el snapshot.
+
+        Hoy se mantiene PENDING para no adelantar importes durante una jornada
+        abierta. Solo los días anteriores pueden quedar sin asistencia,
+        parciales o reconocidos.
+        """
+        work_date = item["work_date"]
+        expected_minutes = item["expected_minutes"]
+        if work_date > today:
+            status = "FUTURE_PENDING"
+            recognized_minutes = 0
+        elif work_date == today:
+            status = "PENDING"
+            recognized_minutes = 0
+        else:
+            recognized_minutes = max(
+                0,
+                min(item["worked_minutes"] + item["approved_adjustment_minutes"], expected_minutes),
             )
-            .group_by(AttendanceRecord.work_date)
+            if expected_minutes <= 0:
+                status = "RECOGNIZED" if item["overtime_minutes"] > 0 else "NO_ATTENDANCE"
+            elif recognized_minutes == 0:
+                status = "NO_ATTENDANCE"
+            elif recognized_minutes < expected_minutes:
+                status = "PARTIAL"
+            else:
+                status = "RECOGNIZED"
+
+        if expected_minutes > 0:
+            recognized_base = (
+                item["base_amount"] * Decimal(recognized_minutes) / Decimal(expected_minutes)
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        else:
+            recognized_base = Decimal("0.00")
+        recognized_overtime = item["overtime_amount"] if work_date < today else Decimal("0.00")
+        recognized_total = (recognized_base + recognized_overtime).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        review_difference = (
+            item["base_amount"] + item["overtime_amount"] - recognized_total
+            if work_date < today
+            else Decimal("0.00")
+        ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        item.update(
+            recognized_minutes=recognized_minutes,
+            status=status,
+            recognized_base_amount=recognized_base,
+            recognized_overtime_amount=recognized_overtime,
+            recognized_total_amount=recognized_total,
+            review_difference_amount=review_difference,
         )
-        return {work_date: int(minutes or 0) for work_date, minutes in rows}
+
+    def _worked_minutes_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
+        """Neto por día según el consolidado oficial de asistencia.
+
+        ``AttendanceService.list_daily`` descuenta un único refrigerio (y su
+        override) y elimina sesiones solapadas. No se usa el valor persistido
+        por sesión porque puede ser anterior a una corrección diaria.
+        """
+        daily = AttendanceService(self.db).list_daily(
+            employee_id=employee_id, date_from=date_from, date_to=date_to
+        )
+        return {item["work_date"]: int(item["worked_minutes"]) for item in daily}
 
     def _approved_adjustments_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
         rows = self.db.execute(

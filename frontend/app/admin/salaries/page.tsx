@@ -218,6 +218,7 @@ export default function AdminSalariesPage() {
                 key={record.id}
                 record={record}
                 daily={dailyReport?.daily.filter((item) => item.employee_id === record.employee_id) ?? []}
+                employeeSummary={dailyReport?.employees.find((item) => item.employee_id === record.employee_id) ?? null}
                 dailyLoading={dailyReportLoading}
                 dailyError={dailyReportError}
                 expanded={expanded === record.id}
@@ -243,9 +244,30 @@ function Stat({ label, value, green }: { label: string; value: string; green?: b
   );
 }
 
+function recognitionStatusLabel(status: PayrollDailyReport["daily"][number]["status"]): string {
+  return {
+    FUTURE_PENDING: "Pendiente",
+    PENDING: "En curso",
+    NO_ATTENDANCE: "Sin asistencia",
+    PARTIAL: "Parcial",
+    RECOGNIZED: "Reconocido",
+  }[status];
+}
+
+function recognitionStatusClass(status: PayrollDailyReport["daily"][number]["status"]): string {
+  return {
+    FUTURE_PENDING: "badge-blue",
+    PENDING: "badge-amber",
+    NO_ATTENDANCE: "badge-red",
+    PARTIAL: "badge-amber",
+    RECOGNIZED: "badge-green",
+  }[status];
+}
+
 function FragmentRow({
   record,
   daily,
+  employeeSummary,
   dailyLoading,
   dailyError,
   expanded,
@@ -253,6 +275,7 @@ function FragmentRow({
 }: {
   record: PayrollRecord;
   daily: PayrollDailyReport["daily"];
+  employeeSummary: PayrollDailyReport["employees"][number] | null;
   dailyLoading: boolean;
   dailyError: string | null;
   expanded: boolean;
@@ -260,7 +283,7 @@ function FragmentRow({
 }) {
   const dailyPagination = useTablePagination(
     daily,
-    `${record.employee_id}:${daily.map((item) => `${item.work_date}:${item.total}:${item.approved_adjustment_minutes}`).join("|")}`,
+    `${record.employee_id}:${daily.map((item) => `${item.work_date}:${item.recognized_total_amount}:${item.status}`).join("|")}`,
   );
 
   return (
@@ -343,6 +366,19 @@ function FragmentRow({
                 </div>
               )}
             </div>
+            {employeeSummary && (
+              <div style={{ marginTop: "1rem" }}>
+                <p className="label" style={{ marginBottom: "0.55rem" }}>Resumen informativo a la fecha</p>
+                <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", fontSize: "0.84rem" }}>
+                  <div><p className="muted">Base programada</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.programmed_base_amount)}</p></div>
+                  <div><p className="muted">Base reconocida</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_base_amount)}</p></div>
+                  <div><p className="muted">HE reconocida</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_overtime_amount)}</p></div>
+                  <div><p className="muted">Total reconocido</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_total_amount)}</p></div>
+                  <div><p className="muted">Base futura pendiente</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.future_pending_base_amount)}</p></div>
+                  <div><p className="muted">Diferencia por revisar</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.review_difference_amount)}</p></div>
+                </div>
+              </div>
+            )}
             <div style={{ marginTop: "1rem" }}>
               <p className="label" style={{ marginBottom: "0.55rem" }}>Desglose diario del periodo</p>
               {dailyLoading ? (
@@ -357,28 +393,32 @@ function FragmentRow({
                 <p className="muted" style={{ fontSize: "0.84rem" }}>No hay jornadas programadas ni movimientos para este empleado.</p>
               ) : (
                 <div className="table-wrap" style={{ margin: 0 }}>
-                  <table className="table" style={{ minWidth: 760 }}>
+                  <table className="table" style={{ minWidth: 1020 }}>
                     <thead>
                       <tr>
                         <th>Fecha</th>
-                        <th style={{ textAlign: "right" }}>Neto</th>
+                        <th>Estado</th>
+                        <th style={{ textAlign: "right" }}>Reconocido</th>
                         <th style={{ textAlign: "right" }}>Esperado</th>
-                        <th style={{ textAlign: "right" }}>Base diaria</th>
-                        <th style={{ textAlign: "right" }}>HE aprobadas</th>
+                        <th style={{ textAlign: "right" }}>Base programada</th>
+                        <th style={{ textAlign: "right" }}>Base reconocida</th>
+                        <th style={{ textAlign: "right" }}>HE reconocida</th>
                         <th style={{ textAlign: "right" }}>Ajustes aprobados</th>
-                        <th style={{ textAlign: "right" }}>Total diario</th>
+                        <th style={{ textAlign: "right" }}>Total reconocido</th>
                       </tr>
                     </thead>
                     <tbody>
                       {dailyPagination.pageItems.map((item) => (
                         <tr key={item.work_date}>
                           <td>{new Date(`${item.work_date}T12:00:00`).toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</td>
-                          <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.worked_minutes)}</td>
+                          <td><span className={`badge ${recognitionStatusClass(item.status)}`}>{recognitionStatusLabel(item.status)}</span></td>
+                          <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.recognized_minutes)}</td>
                           <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.expected_minutes)}</td>
                           <td className="num" style={{ textAlign: "right" }}>{formatMoney(item.base_amount)}</td>
-                          <td className="num" style={{ textAlign: "right" }}>{item.overtime_minutes > 0 ? formatMoney(item.overtime_amount) : "—"}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{formatMoney(item.recognized_base_amount)}</td>
+                          <td className="num" style={{ textAlign: "right" }}>{item.overtime_minutes > 0 ? formatMoney(item.recognized_overtime_amount) : "—"}</td>
                           <td className="num" style={{ textAlign: "right" }}>{item.approved_adjustment_minutes !== 0 ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto` : "—"}</td>
-                          <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>{formatMoney(item.total)}</td>
+                          <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>{formatMoney(item.recognized_total_amount)}</td>
                         </tr>
                       ))}
                     </tbody>

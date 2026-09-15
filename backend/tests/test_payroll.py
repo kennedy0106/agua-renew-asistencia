@@ -3,10 +3,15 @@
 import csv as csv_module
 import io
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import select
+
 from app.core.timezone import lima_tz
+import app.modules.payroll.service as payroll_service
+from app.modules.attendance.models import AttendanceBreakOverride, AttendanceRecord
+from app.modules.users.models import User
 
 
 def _login(client, username: str, password: str) -> None:
@@ -420,18 +425,141 @@ def test_reporte_diario_distribuye_snapshot_y_resume_por_empleado(client, db_ses
     assert report["period_id"] == period["id"]
     assert len(report["employees"]) == 1
     summary = report["employees"][0]
-    assert summary["base_amount"] == "1500.00"
-    assert summary["overtime_amount"] == "7.81"
+    assert summary["programmed_base_amount"] == "1500.00"
+    assert summary["recognized_overtime_amount"] == "7.81"
     assert summary["approved_adjustment_minutes"] == 30  # HE se informa en su propia columna.
     assert summary["approved_adjustment_amount"] == "0.00"
     assert summary["manual_adjustment"] == "50.00"
-    assert summary["daily_total"] == "1507.81"
-    assert summary["total"] == "1557.81"
+    assert Decimal(summary["recognized_total_amount"]) == (
+        Decimal(summary["recognized_base_amount"]) + Decimal(summary["recognized_overtime_amount"])
+    )
+    assert summary["official_total_snapshot"] == "1557.81"
     assert sum(Decimal(row["base_amount"]) for row in report["daily"]) == Decimal("1500.00")
     assert sum(Decimal(row["overtime_amount"]) for row in report["daily"]) == Decimal("7.81")
-    assert sum(Decimal(row["total"]) for row in report["daily"]) == Decimal("1507.81")
+    assert sum(Decimal(row["recognized_total_amount"]) for row in report["daily"]) == Decimal(summary["recognized_total_amount"])
     overtime_day = next(row for row in report["daily"] if row["work_date"] == "2026-08-25")
     assert overtime_day["overtime_amount"] == "7.81"
+
+
+def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(emp),
+            work_date=date(2026, 8, 3),
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=datetime(2026, 8, 3, 17, tzinfo=timezone.utc),
+            worked_minutes=240,
+            status="COMPLETE",
+        )
+    )
+    db_session.commit()
+    adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-04",
+            "minutes": 480,
+            "adjustment_type": "OTRO",
+            "reason": "Jornada cubierta por ajuste aprobado",
+        },
+    ).json()
+    assert client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve").status_code == 200
+    overtime_adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-05",
+            "minutes": 60,
+            "adjustment_type": "OVERTIME",
+            "reason": "HE cerrada y aprobada",
+        },
+    ).json()
+    assert client.patch(f"/api/v1/adjustments/{overtime_adjustment['id']}/approve").status_code == 200
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 15))
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    days = {item["work_date"]: item for item in report["daily"]}
+    no_attendance = days["2026-08-06"]
+    partial = days["2026-08-03"]
+    adjusted = days["2026-08-04"]
+    overtime = days["2026-08-05"]
+    future = days["2026-08-17"]
+
+    assert no_attendance["status"] == "NO_ATTENDANCE"
+    assert no_attendance["recognized_minutes"] == 0
+    assert no_attendance["recognized_base_amount"] == "0.00"
+    assert Decimal(no_attendance["review_difference_amount"]) == Decimal(no_attendance["base_amount"])
+    assert partial["status"] == "PARTIAL"
+    assert partial["recognized_minutes"] == 240
+    assert Decimal("0.00") < Decimal(partial["recognized_base_amount"]) < Decimal(partial["base_amount"])
+    assert adjusted["status"] == "RECOGNIZED"
+    assert adjusted["recognized_minutes"] == 480
+    assert adjusted["recognized_base_amount"] == adjusted["base_amount"]
+    assert overtime["recognized_overtime_amount"] == "7.81"
+    assert future["status"] == "FUTURE_PENDING"
+    assert future["recognized_minutes"] == 0
+    assert future["recognized_total_amount"] == "0.00"
+
+    summary = report["employees"][0]
+    assert Decimal(summary["programmed_base_amount"]) == Decimal("1500.00")
+    assert Decimal(summary["recognized_base_amount"]) > Decimal("0.00")
+    assert summary["recognized_overtime_amount"] == "7.81"
+    assert Decimal(summary["future_pending_base_amount"]) > Decimal("0.00")
+    assert Decimal(summary["review_difference_amount"]) > Decimal("0.00")
+    after = client.get(f"/api/v1/payroll/periods/{period['id']}/records").json()[0]
+    assert after["id"] == record["id"]
+    assert after["total"] == record["total"]
+    assert after["base_salary"] == record["base_salary"]
+
+
+def test_reporte_diario_usa_neto_con_override_y_solapes(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    day = date(2026, 8, 3)
+    for check_in_hour, check_out_hour in ((13, 17), (16, 22)):
+        db_session.add(
+            AttendanceRecord(
+                employee_id=uuid.UUID(emp),
+                work_date=day,
+                check_in_at=datetime(2026, 8, 3, check_in_hour, tzinfo=timezone.utc),
+                check_out_at=datetime(2026, 8, 3, check_out_hour, tzinfo=timezone.utc),
+                worked_minutes=999,  # El reporte no debe confiar en este valor por sesión.
+                status="COMPLETE",
+            )
+        )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 15))
+
+    before = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    before_day = next(item for item in before["daily"] if item["work_date"] == "2026-08-03")
+    # Dos sesiones 08:00–17:00 con una hora de solape = 540 min brutos;
+    # refrigerio programado de 60 min = 480 min netos reconocidos.
+    assert before_day["recognized_minutes"] == 480
+    assert before_day["recognized_base_amount"] == before_day["base_amount"]
+
+    admin_id = db_session.scalar(select(User.id).where(User.username == "admin"))
+    assert admin_id is not None
+    db_session.add(
+        AttendanceBreakOverride(
+            employee_id=uuid.UUID(emp),
+            work_date=day,
+            requested_break_minutes=120,
+            reason="Refrigerio real de dos horas",
+            created_by_user_id=admin_id,
+        )
+    )
+    db_session.commit()
+    after = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    after_day = next(item for item in after["daily"] if item["work_date"] == "2026-08-03")
+    assert after_day["recognized_minutes"] == 420
+    assert after_day["status"] == "PARTIAL"
+    assert Decimal("0.00") < Decimal(after_day["recognized_base_amount"]) < Decimal(after_day["base_amount"])
 
 
 def test_reporte_diario_supervisor_forbidden(client, db_session):

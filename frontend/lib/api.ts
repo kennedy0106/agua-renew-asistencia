@@ -715,12 +715,17 @@ export type PayrollDailyReportItem = {
   work_date: string;
   worked_minutes: number;
   expected_minutes: number;
+  recognized_minutes: number;
+  status: "FUTURE_PENDING" | "PENDING" | "NO_ATTENDANCE" | "PARTIAL" | "RECOGNIZED";
   base_amount: string;
+  recognized_base_amount: string;
   overtime_minutes: number;
   overtime_amount: string;
+  recognized_overtime_amount: string;
   approved_adjustment_minutes: number;
   approved_adjustment_amount: string;
-  total: string;
+  recognized_total_amount: string;
+  review_difference_amount: string;
 };
 
 export type PayrollEmployeeDailySummary = {
@@ -728,14 +733,17 @@ export type PayrollEmployeeDailySummary = {
   employee_name: string | null;
   worked_minutes: number;
   expected_minutes: number;
-  base_amount: string;
+  programmed_base_amount: string;
+  recognized_base_amount: string;
   overtime_minutes: number;
-  overtime_amount: string;
+  recognized_overtime_amount: string;
   approved_adjustment_minutes: number;
   approved_adjustment_amount: string;
-  daily_total: string;
+  recognized_total_amount: string;
+  future_pending_base_amount: string;
+  review_difference_amount: string;
   manual_adjustment: string;
-  total: string;
+  official_total_snapshot: string;
 };
 
 export type PayrollDailyReport = {
