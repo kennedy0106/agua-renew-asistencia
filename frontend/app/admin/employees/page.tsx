@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import { useNotifications } from "@/components/Notifications";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
@@ -36,11 +37,15 @@ export default function AdminEmployeesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
+  const [lookingUpDni, setLookingUpDni] = useState(false);
+  const [dniLookupFeedback, setDniLookupFeedback] = useState<string | null>(null);
+  const currentCreateDni = useRef(EMPTY_FORM.dni);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edit, setEdit] = useState<Employee | null>(null);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const { success } = useNotifications();
   const pagination = useTablePagination(employees, `${debouncedSearch}:${statusFilter}:${employees.length}`);
 
   useEffect(() => {
@@ -92,6 +97,39 @@ export default function AdminEmployeesPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el empleado");
     } finally {
       setCreating(false);
+    }
+  }
+
+  function updateCreateDni(dni: string) {
+    currentCreateDni.current = dni;
+    setForm((current) => ({ ...current, dni }));
+    setDniLookupFeedback(null);
+  }
+
+  async function handleDniLookup() {
+    const dni = form.dni;
+    if (!/^\d{8}$/.test(dni) || lookingUpDni) return;
+    setLookingUpDni(true);
+    setDniLookupFeedback(null);
+    setError(null);
+    try {
+      const identity = await employeesApi.lookupDni(dni);
+      const stillCurrent = currentCreateDni.current === dni;
+      if (stillCurrent) setForm((current) => {
+        // Si el operador modificó el DNI mientras respondía la consulta, no
+        // vinculamos visualmente datos de otra persona al formulario actual.
+        if (current.dni !== dni) return current;
+        const lastName = [identity.first_last_name, identity.second_last_name].filter(Boolean).join(" ");
+        return { ...current, first_name: identity.first_name, last_name: lastName };
+      });
+      if (stillCurrent) {
+        setDniLookupFeedback("Nombres y apellidos completados. Puedes corregirlos antes de crear.");
+        success("Datos del DNI completados");
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo consultar el DNI");
+    } finally {
+      setLookingUpDni(false);
     }
   }
 
@@ -193,11 +231,36 @@ export default function AdminEmployeesPage() {
       )}
 
       {canManage && showCreate && (
-        <form onSubmit={handleCreate} className="card card-pad" style={{ marginBottom: "1.1rem" }}>
-          <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
-            <div>
+        <form onSubmit={handleCreate} className="card card-pad employee-create-form">
+          <div className="employee-create-identity-row">
+            <div className="employee-dni-field">
               <label className="label">DNI (8 dígitos)</label>
-              <input type="text" className="input" value={form.dni} onChange={(e) => setForm({ ...form, dni: e.target.value })} required pattern="\d{8}" title="8 dígitos" />
+              <div className="employee-dni-controls">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="input"
+                  value={form.dni}
+                  onChange={(event) => updateCreateDni(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleDniLookup();
+                    }
+                  }}
+                  required
+                  pattern="\d{8}"
+                  title="8 dígitos"
+                  aria-describedby="dni-lookup-feedback"
+                />
+                <button type="button" className="btn btn-outline employee-dni-lookup" onClick={handleDniLookup} disabled={!/^\d{8}$/.test(form.dni) || lookingUpDni}>
+                  {lookingUpDni ? <Spinner /> : <Search size={15} />}
+                  {lookingUpDni ? "Consultando…" : "Consultar DNI"}
+                </button>
+              </div>
+              <p id="dni-lookup-feedback" className="field-help" aria-live="polite">
+                {dniLookupFeedback ?? "Consulta solo este DNI para completar nombres y apellidos."}
+              </p>
             </div>
             <div>
               <label className="label">Código interno</label>
@@ -221,6 +284,12 @@ export default function AdminEmployeesPage() {
               </Select>
             </div>
             <div>
+              <label className="label">Fecha de ingreso</label>
+              <DateField value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
+            </div>
+          </div>
+          <div className="employee-create-names-row">
+            <div>
               <label className="label">Nombres</label>
               <input type="text" className="input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
             </div>
@@ -228,15 +297,13 @@ export default function AdminEmployeesPage() {
               <label className="label">Apellidos</label>
               <input type="text" className="input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
             </div>
-            <div>
-              <label className="label">Fecha de ingreso</label>
-              <DateField value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
-            </div>
           </div>
-          <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={creating}>
-            <Plus size={15} />
-            {creating ? "Creando…" : "Crear empleado"}
-          </button>
+          <div className="employee-create-actions">
+            <button type="submit" className="btn btn-primary" disabled={creating}>
+              <Plus size={15} />
+              {creating ? "Creando…" : "Crear empleado"}
+            </button>
+          </div>
         </form>
       )}
 

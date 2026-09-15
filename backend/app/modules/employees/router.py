@@ -11,12 +11,14 @@ import io
 import uuid
 from hashlib import sha256
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
-from app.modules.employees.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from app.modules.employees.decolecta import DeColectaError, lookup_dni
+from app.modules.employees.schemas import DniLookupOut, DniLookupRequest, EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.modules.employees.service import EmployeeService
 
 router = APIRouter(prefix="/api/v1/employees", tags=["employees"])
@@ -64,6 +66,41 @@ def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db), _: o
         hire_date=payload.hire_date,
     )
     return _to_out(employee)
+
+
+@router.post("/dni-lookup", response_model=DniLookupOut)
+def lookup_employee_dni(payload: DniLookupRequest, _: object = Depends(can_manage_employees)) -> DniLookupOut:
+    """Consulta manualmente el DNI al crear un empleado; no escribe datos."""
+    settings = get_settings()
+    if not settings.decolecta_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La consulta de DNI no está configurada. Configura DECOLECTA_API_KEY en el servidor.",
+        )
+    try:
+        identity = lookup_dni(
+            dni=payload.dni,
+            api_key=settings.decolecta_api_key,
+            timeout_seconds=settings.decolecta_timeout_seconds,
+        )
+    except DeColectaError as exc:
+        errors = {
+            "not_found": (status.HTTP_404_NOT_FOUND, "No se encontró información para este DNI."),
+            "authentication": (status.HTTP_503_SERVICE_UNAVAILABLE, "La consulta de DNI no está disponible. Revisa su configuración en el servidor."),
+            "rate_limited": (status.HTTP_429_TOO_MANY_REQUESTS, "Se alcanzó el límite de consultas de DNI. Intenta nuevamente en unos minutos."),
+            "timeout": (status.HTTP_504_GATEWAY_TIMEOUT, "La consulta de DNI tardó demasiado. Intenta nuevamente."),
+            "invalid_payload": (status.HTTP_502_BAD_GATEWAY, "La consulta de DNI devolvió datos no válidos. Intenta nuevamente."),
+            "upstream": (status.HTTP_502_BAD_GATEWAY, "No se pudo consultar el DNI en este momento. Intenta nuevamente."),
+        }
+        status_code, detail = errors.get(exc.kind, errors["upstream"])
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return DniLookupOut(
+        dni=identity.dni,
+        first_name=identity.first_name,
+        first_last_name=identity.first_last_name,
+        second_last_name=identity.second_last_name,
+        full_name=identity.full_name,
+    )
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)

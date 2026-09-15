@@ -6,6 +6,20 @@ from datetime import date, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class DniLookupRequest(BaseModel):
+    """Solicitud explícita de consulta RENIEC durante el alta de personal."""
+
+    dni: str = Field(pattern=r"^\d{8}$", description="DNI peruano de 8 dígitos")
+
+
+class DniLookupOut(BaseModel):
+    dni: str
+    first_name: str
+    first_last_name: str
+    second_last_name: str | None = None
+    full_name: str
+
+
 class EmployeeCreate(BaseModel):
     # Extras se ignoran por compatibilidad de clientes anteriores; el servidor
     # siempre asigna employee_code y nunca acepta controlarlo desde el payload.

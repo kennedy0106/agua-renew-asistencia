@@ -92,6 +92,14 @@ export type Employee = {
   updated_at: string;
 };
 
+export type DniLookup = {
+  dni: string;
+  first_name: string;
+  first_last_name: string;
+  second_last_name: string | null;
+  full_name: string;
+};
+
 function toQueryString(params: Record<string, string | boolean | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -114,6 +122,11 @@ export const employeesApi = {
     apiFetch<Employee>("/api/v1/employees", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  lookupDni: (dni: string) =>
+    apiFetch<DniLookup>("/api/v1/employees/dni-lookup", {
+      method: "POST",
+      body: JSON.stringify({ dni }),
     }),
   update: (
     id: string,

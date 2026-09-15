@@ -1326,6 +1326,63 @@ textarea {
 .app-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.65rem; }
 .app-dialog-actions .btn { min-height: 2.75rem; }
 .button-row, .period-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
+
+.employee-create-form {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.1rem;
+}
+
+.employee-create-identity-row,
+.employee-create-names-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .8rem;
+}
+
+.employee-create-names-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.employee-dni-field,
+.employee-dni-field .field-help {
+  min-width: 0;
+}
+
+.employee-dni-controls {
+  display: flex;
+  gap: .5rem;
+  align-items: stretch;
+}
+
+.employee-dni-controls .input {
+  min-width: 0;
+}
+
+.employee-dni-lookup {
+  flex: 0 0 auto;
+  min-height: 2.75rem;
+  white-space: nowrap;
+}
+
+.employee-create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  align-items: center;
+}
+
+@media (max-width: 1180px) {
+  .employee-create-identity-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .employee-create-identity-row,
+  .employee-create-names-row { grid-template-columns: 1fr; }
+  .employee-dni-controls { flex-direction: column; }
+  .employee-dni-lookup,
+  .employee-create-actions .btn { width: 100%; }
+}
 .period-actions { margin-top: .7rem; }
 .dialog-portal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 1rem; overflow-y: auto; background: rgba(12, 42, 88, 0.34); }
 .dialog-portal .app-dialog { width: min(100%, 42rem); max-height: min(44rem, calc(100dvh - 2rem)); overflow: auto; box-shadow: 0 24px 56px -28px rgba(0, 62, 136, 0.58), inset 0 1px 0 rgba(255,255,255,.9); }

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     object_store_bucket: str = "asistencia-evidence"
     object_store_region: str = "us-east-1"
     object_store_create_bucket: bool = False
+    # Consulta manual de identidad al dar de alta a un empleado. La clave nunca
+    # se expone al navegador ni se usa en el flujo público de asistencia.
+    decolecta_api_key: str = ""
+    decolecta_timeout_seconds: float = 5.0
 
     @field_validator("secret_key")
     @classmethod
