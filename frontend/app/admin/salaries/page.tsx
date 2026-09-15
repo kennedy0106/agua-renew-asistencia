@@ -258,6 +258,11 @@ function FragmentRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const dailyPagination = useTablePagination(
+    daily,
+    `${record.employee_id}:${daily.map((item) => `${item.work_date}:${item.total}:${item.approved_adjustment_minutes}`).join("|")}`,
+  );
+
   return (
     <>
       <tr style={expanded ? { background: "var(--blue-soft)" } : undefined}>
@@ -365,7 +370,7 @@ function FragmentRow({
                       </tr>
                     </thead>
                     <tbody>
-                      {daily.map((item) => (
+                      {dailyPagination.pageItems.map((item) => (
                         <tr key={item.work_date}>
                           <td>{new Date(`${item.work_date}T12:00:00`).toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</td>
                           <td className="num" style={{ textAlign: "right" }}>{formatMinutes(item.worked_minutes)}</td>
@@ -378,6 +383,7 @@ function FragmentRow({
                       ))}
                     </tbody>
                   </table>
+                  <TablePagination {...dailyPagination} />
                 </div>
               )}
               {Number(record.manual_adjustment) !== 0 && (
