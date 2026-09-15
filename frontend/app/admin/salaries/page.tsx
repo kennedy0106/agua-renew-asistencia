@@ -6,6 +6,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Coins, Download, Receipt, Refresh } from "@/components/Icons";
 import { StatSkeleton, TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
@@ -44,6 +45,8 @@ export default function AdminSalariesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const canView = user ? MANAGE_ROLES.includes(user.role) : false;
+  const orderedRecords = [...records.filter((record) => record.payable !== false), ...records.filter((record) => record.payable === false)];
+  const pagination = useTablePagination(orderedRecords, `${selectedId}:${orderedRecords.length}`);
 
   const load = useCallback(async () => {
     try {
@@ -137,7 +140,7 @@ export default function AdminSalariesPage() {
         <StatSkeleton count={5} />
       ) : (
         summary && (
-          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+          <div className="stat-grid salaries-summary" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))" }}>
             <Stat label="Monto estimado a pagar" value={formatMoney(summary.total)} />
             <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
             <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
@@ -180,32 +183,16 @@ export default function AdminSalariesPage() {
                 </td>
               </tr>
             )}
-            {records.filter((record) => record.payable !== false).map((record) => (
-              <FragmentRow
-                key={record.id}
-                record={record}
-                expanded={expanded === record.id}
-                onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
-              />
-            ))}
-            {records.some((record) => record.payable === false) && (
-              <tr>
-                <td colSpan={6} style={{ background: "var(--gray-100)", fontWeight: 600 }}>
-                  Historial excluido (no suma al pago)
-                </td>
-              </tr>
-            )}
-            {records.filter((record) => record.payable === false).map((record) => (
-              <FragmentRow
-                key={record.id}
-                record={record}
-                expanded={expanded === record.id}
-                onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
-              />
-            ))}
+            {pagination.pageItems.flatMap((record, index) => [
+              ...(record.payable === false && (index === 0 || pagination.pageItems[index - 1]?.payable !== false)
+                ? [<tr key={`separator-${record.id}`}><td colSpan={6} style={{ background: "var(--gray-100)", fontWeight: 600 }}>Historial excluido (no suma al pago)</td></tr>]
+                : []),
+              <FragmentRow key={record.id} record={record} expanded={expanded === record.id} onToggle={() => setExpanded(expanded === record.id ? null : record.id)} />,
+            ])}
           </tbody>
         </table>
       </div>}
+      {!loading && !detailsLoading && <TablePagination {...pagination} />}
     </AdminShell>
   );
 }

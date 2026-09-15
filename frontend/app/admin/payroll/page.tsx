@@ -6,6 +6,7 @@ import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, PayrollPeriod, PayrollReadiness, PayrollRecord, payrollApi } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
@@ -44,6 +45,7 @@ export default function AdminPayrollPage() {
   const [adjustNotes, setAdjustNotes] = useState("");
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const recordsPagination = useTablePagination(records, `${selectedId ?? ""}:${records.length}`);
 
   const load = useCallback(async () => {
     try {
@@ -357,7 +359,7 @@ export default function AdminPayrollPage() {
                   </tr>
                 )}
                 {recordsLoading && <TableSkeleton rows={4} cols={7} />}
-                {records.map((record) => (
+                {recordsPagination.pageItems.map((record) => (
                   <tr key={record.id} style={record.payable === false ? { opacity: 0.65 } : undefined}>
                     <td style={{ fontWeight: 600 }}>
                       {record.employee_name ?? "—"}
@@ -434,6 +436,7 @@ export default function AdminPayrollPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination {...recordsPagination} />
         </div>
       )}
     </AdminShell>

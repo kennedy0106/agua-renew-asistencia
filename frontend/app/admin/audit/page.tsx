@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { Alert, Shield } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, auditApi, AuditLog } from "@/lib/api";
 
 function formatDateTime(iso: string): string {
@@ -59,6 +60,7 @@ export default function AdminAuditPage() {
   useEffect(() => {
     load();
   }, [load]);
+  const pagination = useTablePagination(logs, logs.length);
 
   return (
     <AdminShell
@@ -93,7 +95,7 @@ export default function AdminAuditPage() {
                 </td>
               </tr>
             )}
-            {logs.map((log) => (
+            {pagination.pageItems.map((log) => (
               <tr key={log.id}>
                 <td className="num" style={{ whiteSpace: "nowrap", color: "var(--muted)" }}>
                   {formatDateTime(log.created_at)}
@@ -119,6 +121,7 @@ export default function AdminAuditPage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...pagination} />
     </AdminShell>
   );
 }

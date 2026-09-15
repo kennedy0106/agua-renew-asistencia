@@ -7,6 +7,7 @@ import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Download, Pencil, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   API_URL,
@@ -101,6 +102,8 @@ export default function AdminAttendancePage() {
   const [reviewingAttempt, setReviewingAttempt] = useState(false);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const dailyPagination = useTablePagination(daily, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${daily.length}`);
+  const recordsPagination = useTablePagination(records, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${records.length}`);
 
   useEffect(() => {
     employeesApi.list().then(setEmployees).catch(() => undefined);
@@ -458,7 +461,7 @@ export default function AdminAttendancePage() {
           <tbody>
             {loading && <TableSkeleton rows={3} cols={9} />}
             {!loading && daily.length === 0 && <tr><td colSpan={9} className="empty">Sin jornadas en el rango.</td></tr>}
-            {daily.map((day) => (
+            {dailyPagination.pageItems.map((day) => (
               <tr key={`${day.employee_id}-${day.work_date}`}>
                 <td style={{ fontWeight: 600 }}>{day.employee_name ?? "—"}</td>
                 <td className="num">{day.work_date}</td>
@@ -474,6 +477,7 @@ export default function AdminAttendancePage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...dailyPagination} />
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>
       <div className="table-wrap">
@@ -500,7 +504,7 @@ export default function AdminAttendancePage() {
                 </td>
               </tr>
             )}
-            {records.map((record) => (
+            {recordsPagination.pageItems.map((record) => (
               <tr key={record.id}>
                 <td>
                   <Link href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
@@ -553,6 +557,7 @@ export default function AdminAttendancePage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...recordsPagination} />
     </AdminShell>
   );
 }

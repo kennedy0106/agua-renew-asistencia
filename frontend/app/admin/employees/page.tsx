@@ -7,6 +7,7 @@ import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Search, Users, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, employeesApi, Employee, jobRolesApi, JobRole } from "@/lib/api";
 
@@ -41,6 +42,7 @@ export default function AdminEmployeesPage() {
   const [edit, setEdit] = useState<Employee | null>(null);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const pagination = useTablePagination(employees, `${debouncedSearch}:${statusFilter}:${employees.length}`);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 280);
@@ -272,7 +274,7 @@ export default function AdminEmployeesPage() {
                 </td>
               </tr>
             )}
-            {employees.map((employee) => (
+            {pagination.pageItems.map((employee) => (
               <tr key={employee.id} style={employee.active ? undefined : { opacity: 0.62 }}>
                 {editingId === employee.id && edit ? (
                   <>
@@ -362,6 +364,7 @@ export default function AdminEmployeesPage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...pagination} />
     </AdminShell>
   );
 }

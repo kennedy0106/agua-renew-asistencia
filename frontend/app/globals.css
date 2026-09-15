@@ -2231,6 +2231,40 @@ body::after {
   flex: 0 0 auto;
 }
 
+/* Cuenta: el nombre completo importa más que compactar el cierre de sesión. */
+.sidebar-user { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
+.sidebar-account { width: 100%; }
+.sidebar-user .meta { min-width: 0; overflow: visible; }
+.sidebar-user .name { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.sidebar-logout { justify-self: start; }
+
+.glass-select-content {
+  transform-origin: var(--radix-select-content-transform-origin);
+  animation: select-content-in 200ms var(--ease-water);
+}
+.glass-select-content[data-state="closed"] { opacity: 0; pointer-events: none; animation: select-content-out 200ms var(--ease-water) both; }
+.select-trigger[data-state="open"] .select-chevron { transform: rotate(180deg); }
+.select-chevron { transition: transform 200ms var(--ease-water); }
+@keyframes select-content-in { from { opacity: 0; transform: scale(.98) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes select-content-out { from { opacity: 1; transform: scale(1) translateY(0); } to { opacity: 0; transform: scale(.98) translateY(-4px); } }
+
+.table-pagination { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .75rem 0 0; color: var(--muted); font-size: .85rem; }
+.table-pagination-actions { display: flex; gap: .5rem; }
+.table-pagination .btn { min-height: 2.75rem; }
+
+.admin-loading {
+  width: 100%;
+  max-width: 105rem;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 1.25rem 1.75rem 2.5rem;
+}
+
+/* Los resúmenes monetarios deben admitir S/ 10,000.00 sin fragmentarse. */
+.salaries-summary .stat-value { white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) { .salaries-summary .stat-value { font-size: clamp(1.65rem, 8vw, 2.35rem); letter-spacing: -.055em; } .table-pagination { align-items: flex-start; flex-direction: column; } .admin-loading { padding: 1rem; } }
+@media (prefers-reduced-motion: reduce) { .glass-select-content, .select-chevron { animation: none !important; transition: none !important; } }
+
 .topbar-action {
   min-height: 2.75rem;
 }

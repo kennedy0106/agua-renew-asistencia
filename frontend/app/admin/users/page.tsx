@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Key, Plus, Refresh, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AdminUser,
@@ -37,6 +38,7 @@ export default function AdminUsersPage() {
   const [resetPassword, setResetPassword] = useState("");
 
   const isAdmin = user?.role === "ADMIN";
+  const pagination = useTablePagination(users, users.length);
 
   const load = useCallback(async () => {
     try {
@@ -253,7 +255,7 @@ export default function AdminUsersPage() {
                 </td>
               </tr>
             )}
-            {users.map((item) => (
+            {pagination.pageItems.map((item) => (
               <tr key={item.id} style={item.active ? undefined : { opacity: 0.62 }}>
                 <td style={{ fontWeight: 600 }}>
                   {item.username}
@@ -372,6 +374,7 @@ export default function AdminUsersPage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...pagination} />
     </AdminShell>
   );
 }

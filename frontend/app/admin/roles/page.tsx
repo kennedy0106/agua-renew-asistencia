@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Briefcase, Pencil, Plus } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 
 const ROLES_MANAGE = "ADMIN"; // crear/editar/desactivar cargos: solo ADMIN
@@ -39,6 +40,7 @@ export default function AdminRolesPage() {
   useEffect(() => {
     load();
   }, [load]);
+  const pagination = useTablePagination(roles, roles.length);
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -139,7 +141,7 @@ export default function AdminRolesPage() {
                 </td>
               </tr>
             )}
-            {roles.map((role) => (
+            {pagination.pageItems.map((role) => (
               <tr key={role.id} style={role.active ? undefined : { opacity: 0.62 }}>
                 <td style={{ fontWeight: 600 }}>
                   {editingId === role.id ? (
@@ -196,6 +198,7 @@ export default function AdminRolesPage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...pagination} />
     </AdminShell>
   );
 }

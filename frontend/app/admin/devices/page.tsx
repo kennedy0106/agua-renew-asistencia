@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert } from "@/components/Icons";
+import { TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, devicesApi, AttendanceDevice, AttendanceDeviceCreated } from "@/lib/api";
 
 export default function AdminDevicesPage() {
@@ -12,19 +14,22 @@ export default function AdminDevicesPage() {
   const [name, setName] = useState("Tablet planta");
   const [error, setError] = useState<string | null>(null);
   const [issued, setIssued] = useState<AttendanceDeviceCreated | null>(null);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
     try {
+      setLoading(true);
       setDevices(await devicesApi.list());
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudieron listar los terminales");
-    }
+    } finally { setLoading(false); }
   }
 
   useEffect(() => {
     if (user?.role === "ADMIN") void load();
   }, [user?.role]);
+  const pagination = useTablePagination(devices, devices.length);
 
   if (user && user.role !== "ADMIN") {
     return (
@@ -76,7 +81,9 @@ export default function AdminDevicesPage() {
             </tr>
           </thead>
           <tbody>
-            {devices.map((device) => (
+            {loading && <TableSkeleton rows={5} cols={4} />}
+            {!loading && devices.length === 0 && <tr><td colSpan={4} className="empty">No hay terminales registrados.</td></tr>}
+            {!loading && pagination.pageItems.map((device) => (
               <tr key={device.id}>
                 <td>{device.name}</td>
                 <td>{device.device_code}</td>
@@ -112,6 +119,7 @@ export default function AdminDevicesPage() {
           </tbody>
         </table>
       </div>
+      <TablePagination {...pagination} />
     </AdminShell>
   );
 }

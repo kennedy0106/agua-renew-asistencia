@@ -6,6 +6,7 @@ import DateField from "@/components/DateField";
 import { Alert, Check, Plus, X } from "@/components/Icons";
 import { ApiError, OvertimePolicy, overtimePolicyApi } from "@/lib/api";
 import { TableSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
 
 function dayAfter(isoDate: string): string {
   const d = new Date(`${isoDate}T00:00:00`);
@@ -45,6 +46,7 @@ export default function OvertimePolicyPage() {
   useEffect(() => {
     load();
   }, [load]);
+  const pagination = useTablePagination(history, history.length);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -212,7 +214,7 @@ export default function OvertimePolicyPage() {
                 </tr>
               </thead>
               <tbody>
-                {history.map((p) => (
+                {pagination.pageItems.map((p) => (
                   <tr key={p.id}>
                     <td>{p.effective_from}</td>
                     <td>{p.first_two_hours_rate}%</td>
@@ -224,6 +226,7 @@ export default function OvertimePolicyPage() {
               </tbody>
             </table>
           </div>
+          <TablePagination {...pagination} />
         </div>
       )}
     </AdminShell>
