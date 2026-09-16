@@ -2,10 +2,12 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -18,13 +20,18 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   if (!res.ok) {
     let detail = `Error ${res.status}`;
+    let code: string | undefined;
     try {
       const body = await res.json();
-      if (body?.detail) detail = body.detail;
+      if (typeof body?.detail === "string") detail = body.detail;
+      else if (body?.detail && typeof body.detail === "object") {
+        code = typeof body.detail.code === "string" ? body.detail.code : undefined;
+        detail = typeof body.detail.message === "string" ? body.detail.message : detail;
+      }
     } catch {
       // sin cuerpo JSON: mantener el mensaje genérico
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, code);
   }
   // 204 No Content (p. ej. change-password): no hay cuerpo que parsear.
   if (res.status === 204) {
@@ -432,11 +439,21 @@ export type ManualAttendanceRow = {
   day_context?: "ORDINARY" | "UNSCHEDULED" | "SPECIAL"; source_reference?: string | null; payment_method?: "OVERTIME" | "REVIEWED" | null; payment_concept?: string | null; reviewed_additional_amount?: string | null;
   recovery_allocations: { commitment_id: string; minutes: number }[];
 };
-export type ManualAttendanceDay = ManualAttendanceRow & { id: string; work_date: string; payment_status: string; payment_snapshot: Record<string, unknown> | null; version: number; created_at: string };
+export type ManualAttendanceDay = ManualAttendanceRow & {
+  id: string;
+  work_date: string;
+  payment_status: string;
+  payment_snapshot: Record<string, unknown> | null;
+  approved_additional_amount?: string | null;
+  version: number;
+  created_at: string;
+};
 export const historicalAttendanceApi = {
   list: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) => apiFetch<ManualAttendanceDay[]>(`/api/v1/attendance/manual-days${toQueryString(params)}`),
+  get: (id: string) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`),
   preview: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ work_date: string; rows: unknown[] }>("/api/v1/attendance/manual-days/preview", { method: "POST", body: JSON.stringify(payload) }),
   batch: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ created: string[] }>("/api/v1/attendance/manual-days/batch", { method: "POST", body: JSON.stringify(payload) }),
+  update: (id: string, payload: ManualAttendanceRow & { expected_version: number }) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   approve: (id: string, expected_version: number, expected_snapshot: Record<string, unknown>) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/payment/approve`, { method: "POST", body: JSON.stringify({ expected_version, expected_snapshot }) }),
   void: (id: string, expected_version: number, reason: string) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/void`, { method: "POST", body: JSON.stringify({ expected_version, reason }) }),
   commitments: (employeeId?: string) => apiFetch<{ id: string; employee_id: string; permission_date: string; agreed_minutes: number; pending_minutes: number; covered_before: boolean; reference: string }[]>(`/api/v1/attendance/recovery-commitments${toQueryString({ employee_id: employeeId })}`),

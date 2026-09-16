@@ -75,7 +75,7 @@ class ManualAttendanceService:
             .where(ManualRecoveryApplication.manual_day_id == manual_day_id)
         ))
 
-    def _validate_row(self, work_date: date, row: ManualDayIn) -> None:
+    def _validate_row(self, work_date: date, row: ManualDayIn, *, exclude_manual_day_id: uuid.UUID | None = None) -> None:
         employee = self._employee(row.employee_id)
         self._assert_date(employee, work_date); self._assert_not_closed(work_date)
         if self.db.scalar(select(AttendanceRecord.id).where(AttendanceRecord.employee_id == row.employee_id, AttendanceRecord.work_date == work_date)):
@@ -93,7 +93,10 @@ class ManualAttendanceService:
         for allocation in row.recovery_allocations:
             commitment = self.db.scalar(select(RecoveryCommitment).where(RecoveryCommitment.id == allocation.commitment_id).with_for_update())
             if not commitment or commitment.employee_id != row.employee_id or commitment.status != "ACTIVE": self._error("RECOVERY_COMMITMENT_INVALID", "El compromiso de recuperación no corresponde al empleado", status.HTTP_409_CONFLICT)
-            used = self.db.scalar(select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(ManualRecoveryApplication.commitment_id == commitment.id, ManualAttendanceDay.voided_at.is_(None))) or 0
+            used_query = select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(ManualRecoveryApplication.commitment_id == commitment.id, ManualAttendanceDay.voided_at.is_(None))
+            if exclude_manual_day_id is not None:
+                used_query = used_query.where(ManualAttendanceDay.id != exclude_manual_day_id)
+            used = self.db.scalar(used_query) or 0
             if int(used) + allocation.minutes > commitment.agreed_minutes: self._error("RECOVERY_EXCEEDS_PENDING", "La recuperación supera el pendiente del compromiso", status.HTTP_409_CONFLICT)
 
     def estimate_payment(self, employee_id: uuid.UUID, work_date: date, minutes: int, row: ManualDayIn | None = None) -> dict:
@@ -169,9 +172,9 @@ class ManualAttendanceService:
             self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
         return self.serialize(item)
 
-    @staticmethod
-    def serialize(item: ManualAttendanceDay) -> dict:
-        return {"id": str(item.id), "employee_id": str(item.employee_id), "work_date": item.work_date, "worked_minutes_net": item.worked_minutes_net, "normal_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "day_context": item.day_context, "source_reference": item.source_reference, "known_check_in_at": item.known_check_in_at, "known_check_out_at": item.known_check_out_at, "known_break_minutes": item.known_break_minutes, "reason": item.reason, "payment_status": item.payment_status, "payment_method": item.payment_method, "payment_concept": item.payment_concept, "approved_additional_amount": str(item.approved_additional_amount) if item.approved_additional_amount is not None else None, "payment_snapshot": item.payment_snapshot, "version": item.version, "created_at": item.created_at}
+    def serialize(self, item: ManualAttendanceDay) -> dict:
+        allocations = self.db.scalars(select(ManualRecoveryApplication).where(ManualRecoveryApplication.manual_day_id == item.id)).all()
+        return {"id": str(item.id), "employee_id": str(item.employee_id), "work_date": item.work_date, "worked_minutes_net": item.worked_minutes_net, "normal_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "day_context": item.day_context, "source_reference": item.source_reference, "known_check_in_at": item.known_check_in_at, "known_check_out_at": item.known_check_out_at, "known_break_minutes": item.known_break_minutes, "reason": item.reason, "payment_status": item.payment_status, "payment_method": item.payment_method, "payment_concept": item.payment_concept, "approved_additional_amount": str(item.approved_additional_amount) if item.approved_additional_amount is not None else None, "payment_snapshot": item.payment_snapshot, "recovery_allocations": [{"commitment_id": str(allocation.commitment_id), "minutes": allocation.minutes} for allocation in allocations], "version": item.version, "created_at": item.created_at}
 
     def approve(self, item_id: uuid.UUID, actor_id: uuid.UUID, expected_version: int, expected_snapshot: dict) -> dict:
         item = self.db.get(ManualAttendanceDay, item_id)
@@ -201,7 +204,7 @@ class ManualAttendanceService:
         self._assert_not_closed(current.work_date)
         if current.version != expected_version: self._error("STALE_VERSION", "La carga fue modificada por otra persona", status.HTTP_409_CONFLICT)
         if row.employee_id != current.employee_id: self._error("EMPLOYEE_IMMUTABLE", "No cambie el empleado en una corrección")
-        self._validate_row(current.work_date, row)
+        self._validate_row(current.work_date, row, exclude_manual_day_id=current.id)
         current.voided_at = datetime.now(lima_tz()); current.voided_by_user_id = actor_id; current.void_reason = row.reason.strip()
         # Libera el índice parcial activo antes de insertar la nueva versión.
         self.db.flush()

@@ -119,8 +119,9 @@ test("HST-01 previsualiza, guarda y consulta normal, adicional, recuperación y 
   ]);
   expect(savedPayloads.map(({ approve_additional }) => approve_additional)).toEqual([false, true, false, true]);
   await expect(page.getByRole("heading", { name: "Historial de cargas" })).toBeVisible();
-  await expect(page.getByText("2026-09-10: 480 min")).toHaveCount(2);
-  await expect(page.getByText("2026-09-10: 120 min")).toHaveCount(2);
+  const historyPanel = page.getByRole("heading", { name: "Historial de cargas" }).locator("..");
+  await expect(historyPanel.getByText("480 min", { exact: true })).toHaveCount(2);
+  await expect(historyPanel.getByText("120 min", { exact: true })).toHaveCount(2);
 });
 
 test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos incompletos", async ({ page }) => {
@@ -129,7 +130,7 @@ test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos inc
   await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request(); const path = new URL(request.url()).pathname;
-    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    const body = request.postDataJSON() as (Record<string, unknown> & { rows?: Array<Record<string, unknown>> }) | null;
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees")) return route.fulfill({ json: employees });
     if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
@@ -162,4 +163,60 @@ test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos inc
   await expect(page.getByText("Feriado trabajado · Acta RRHH 001")).toBeVisible();
   await expect(page.getByRole("button", { name: "Guardar y aprobar adicionales" })).toBeEnabled();
   expect(previewPayload).toMatchObject({ payment_method: "REVIEWED", payment_concept: "Feriado trabajado", source_reference: "Acta RRHH 001", reviewed_additional_amount: "125.50" });
+});
+
+test("HST-01 edita una carga normal como distribución y avisa si su versión queda obsoleta", async ({ page }) => {
+  let patchCalls = 0;
+  let latest: Record<string, unknown> = {
+    id: "history-1", employee_id: "employee-normal", work_date: "2026-09-10",
+    worked_minutes_net: 480, normal_minutes: 480, additional_minutes: 0, recovery_minutes: 0,
+    known_check_in_at: null, known_check_out_at: null, known_break_minutes: null,
+    reason: "Carga inicial", payment_status: "NOT_APPLICABLE", payment_method: null,
+    payment_concept: null, source_reference: null, reviewed_additional_amount: null,
+    payment_snapshot: null, recovery_allocations: [], version: 1, created_at: "2026-09-11T12:00:00Z",
+  };
+  let updatePayload: Record<string, unknown> | undefined;
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [latest] });
+    if (path.endsWith("/recovery-commitments")) return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { rows: [{ ...body?.rows?.[0], payment: { status: "PENDING", amount: "31.50", method: "OVERTIME" } }] } });
+    if (path.endsWith("/manual-days/history-1") && request.method() === "GET") return route.fulfill({ json: latest });
+    if (path.endsWith("/manual-days/history-1") && request.method() === "PATCH") {
+      patchCalls += 1; updatePayload = body ?? undefined;
+      if (patchCalls === 1) {
+        latest = { ...latest, id: "history-2", normal_minutes: 360, additional_minutes: 120, payment_status: "PENDING", payment_method: "OVERTIME", payment_snapshot: { status: "PENDING", amount: "31.50", method: "OVERTIME" }, version: 2 };
+        return route.fulfill({ json: latest });
+      }
+      return route.fulfill({ status: 409, json: { detail: { code: "STALE_VERSION", message: "La carga fue modificada por otra persona" } } });
+    }
+    if (path.endsWith("/manual-days/history-2") && request.method() === "GET") return route.fulfill({ json: latest });
+    if (path.endsWith("/manual-days/history-2") && request.method() === "PATCH") return route.fulfill({ status: 409, json: { detail: { code: "STALE_VERSION", message: "La carga fue modificada por otra persona" } } });
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/admin/attendance/history");
+  await expect(page.getByText("Carga histórica administrativa")).toBeVisible();
+  await expect(page.getByText("Entrada: Sin dato")).toBeVisible();
+  await expect(page.getByText("Salida: Sin dato")).toBeVisible();
+  await page.getByRole("button", { name: "Editar" }).click();
+  await expect(page.getByRole("heading", { name: "Editar carga histórica" })).toBeVisible();
+  await expect(page.getByLabel("Fecha inmutable")).toHaveValue("2026-09-10");
+  await page.getByLabel("Tratamiento de edición").selectOption("MIXED");
+  await page.getByLabel("Normal editado").fill("360");
+  await page.getByLabel("Adicional editado").fill("120");
+  await page.getByLabel("Método de pago adicional editado").selectOption("OVERTIME");
+  await page.getByRole("button", { name: "Previsualizar cambios" }).click();
+  await expect(page.getByText("Previsualización: W 480 min · N 360 min · P 120 min · R 0 min")).toBeVisible();
+  await page.getByRole("button", { name: "Guardar corrección" }).click();
+  await expect(page.getByText("Corrección versionada guardada. El historial y la previsualización se actualizaron.")).toBeVisible();
+  expect(updatePayload).toMatchObject({ employee_id: "employee-normal", worked_minutes_net: 480, normal_minutes: 360, additional_minutes: 120, recovery_minutes: 0, expected_version: 1 });
+  await expect(page.getByText("Versión 2")).toBeVisible();
+  await page.getByRole("button", { name: "Editar" }).click();
+  await page.getByRole("button", { name: "Guardar corrección" }).click();
+  await expect(page.getByText("Esta carga cambió en otra sesión. Recargue el historial y vuelva a editar la versión vigente.")).toBeVisible();
 });

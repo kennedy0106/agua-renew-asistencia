@@ -45,12 +45,17 @@ def test_manual_day_rejects_existing_session(client, db_session):
     assert response.json()["detail"]["code"] == "DAY_ALREADY_HAS_ATTENDANCE"
 
 def test_manual_day_versioned_update_and_void(client, db_session):
+    from app.modules.audit.models import AuditLog
     _login(client); employee = _employee(client, db_session)
     created = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee)).json()["created"][0]
     patch = {"employee_id": employee, "worked_minutes_net": 390, "normal_minutes": 390, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Corrección documentada", "recovery_allocations": [], "expected_version": 1}
     updated = client.patch(f"/api/v1/attendance/manual-days/{created}", json=patch)
     assert updated.status_code == 200, updated.text
     assert updated.json()["worked_minutes_net"] == 390 and updated.json()["version"] == 2
+    stale = client.patch(f"/api/v1/attendance/manual-days/{updated.json()['id']}", json={**patch, "expected_version": 1})
+    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "STALE_VERSION"
+    audit = db_session.query(AuditLog).filter(AuditLog.action == "versioned_update").one()
+    assert str(audit.entity_id) == updated.json()["id"] and audit.old_values["version"] == 1 and audit.new_values["version"] == 2
     assert client.post(f"/api/v1/attendance/manual-days/{updated.json()['id']}/void", json={"expected_version":2,"reason":"Anulación de prueba"}).status_code == 200
 
 def test_recovery_credit_is_once_at_permission_and_never_ordinary(client, db_session):
