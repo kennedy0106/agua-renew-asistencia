@@ -426,6 +426,23 @@ export const attendanceAdminApi = {
     }),
 };
 
+export type ManualAttendanceRow = {
+  employee_id: string; worked_minutes_net: number; normal_minutes: number; additional_minutes: number; recovery_minutes: number;
+  known_check_in_at?: string | null; known_check_out_at?: string | null; known_break_minutes?: number | null; reason: string;
+  day_context?: "ORDINARY" | "UNSCHEDULED" | "SPECIAL"; source_reference?: string | null; payment_method?: "OVERTIME" | "REVIEWED" | null; payment_concept?: string | null; reviewed_additional_amount?: string | null;
+  recovery_allocations: { commitment_id: string; minutes: number }[];
+};
+export type ManualAttendanceDay = ManualAttendanceRow & { id: string; work_date: string; payment_status: string; payment_snapshot: Record<string, unknown> | null; version: number; created_at: string };
+export const historicalAttendanceApi = {
+  list: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) => apiFetch<ManualAttendanceDay[]>(`/api/v1/attendance/manual-days${toQueryString(params)}`),
+  preview: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ work_date: string; rows: unknown[] }>("/api/v1/attendance/manual-days/preview", { method: "POST", body: JSON.stringify(payload) }),
+  batch: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ created: string[] }>("/api/v1/attendance/manual-days/batch", { method: "POST", body: JSON.stringify(payload) }),
+  approve: (id: string, expected_version: number, expected_snapshot: Record<string, unknown>) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/payment/approve`, { method: "POST", body: JSON.stringify({ expected_version, expected_snapshot }) }),
+  void: (id: string, expected_version: number, reason: string) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/void`, { method: "POST", body: JSON.stringify({ expected_version, reason }) }),
+  commitments: (employeeId?: string) => apiFetch<{ id: string; employee_id: string; permission_date: string; agreed_minutes: number; pending_minutes: number; covered_before: boolean; reference: string }[]>(`/api/v1/attendance/recovery-commitments${toQueryString({ employee_id: employeeId })}`),
+  createCommitment: (payload: { employee_id: string; permission_date: string; agreed_minutes: number; covered_before: boolean; reference: string }) => apiFetch<{ id: string }>("/api/v1/attendance/recovery-commitments", { method: "POST", body: JSON.stringify(payload) }),
+};
+
 export type AttendanceDevice = {
   id: string;
   name: string;
@@ -501,6 +518,7 @@ export type Balance = {
   expected_minutes: number;
   adjustment_minutes: number;
   overtime_minutes: number;
+  recovery_credit_minutes: number;
   balance_minutes: number;
 };
 

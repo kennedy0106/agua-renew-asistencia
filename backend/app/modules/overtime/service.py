@@ -19,11 +19,13 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.adjustments.models import ADJUSTMENT_APPROVED
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.repository import AttendanceRepository
+from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.overtime_policy.service import OvertimePolicyService
 from app.modules.salary.service import SalaryService
@@ -197,10 +199,26 @@ class OvertimeService:
                 }
             )
 
+        manual = list(
+            self.db.scalars(
+                select(ManualAttendanceDay).where(
+                    ManualAttendanceDay.employee_id == employee_id,
+                    ManualAttendanceDay.work_date >= date_from,
+                    ManualAttendanceDay.work_date <= date_to,
+                    ManualAttendanceDay.voided_at.is_(None),
+                    ManualAttendanceDay.payment_status == "APPROVED",
+                )
+            )
+        )
+        for item in manual:
+            snapshot = item.payment_snapshot or {}
+            amount = Decimal(str(snapshot.get("amount") or "0.00"))
+            total += amount
+            breakdown.append({"adjustment_date": item.work_date, "minutes": item.additional_minutes, "first_two_minutes": min(item.additional_minutes, _FIRST_TWO_MINUTES), "additional_minutes": max(0, item.additional_minutes - _FIRST_TWO_MINUTES), "first_two_hours_rate": Decimal(str(snapshot.get("first_two_hours_rate") or "0")), "additional_hours_rate": Decimal(str(snapshot.get("additional_hours_rate") or "0")), "source": "historical_manual", "hourly_rate": Decimal(str(snapshot.get("hourly_rate") or "0")), "value": amount, "skip_reason": None})
         return {
             "date_from": date_from,
             "date_to": date_to,
-            "overtime_minutes": sum(a.minutes for a in adjustments),
+            "overtime_minutes": sum(a.minutes for a in adjustments) + sum(item.additional_minutes for item in manual),
             "value": total.quantize(_CENTS, rounding=ROUND_HALF_UP),
             "breakdown": breakdown,
         }

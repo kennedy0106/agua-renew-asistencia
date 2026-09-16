@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.security import create_attendance_token, decode_attendance_token
@@ -21,6 +21,11 @@ from app.modules.employees.models import Employee
 from app.modules.job_roles.models import JobRole
 from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PayrollPeriod, PayrollRecord
 from app.modules.payroll.service import PayrollService
+from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication, RecoveryCommitment
+from app.modules.attendance.manual_schemas import ManualBatchIn, ManualDayIn, ManualUpdateIn, RecoveryAllocationIn
+from app.modules.attendance.manual_service import ManualAttendanceService
+from app.modules.system_roles.models import SystemRole
+from app.modules.users.models import User
 
 pytestmark = pytest.mark.integration
 
@@ -109,6 +114,33 @@ def _join_finished(threads: list[threading.Thread], timeout: float = 15) -> None
         assert not thread.is_alive(), f"el hilo {thread.name} no terminó"
 
 
+def _manual_actor(session) -> uuid.UUID:
+    role = SystemRole(name=f"ADMIN-HST-{uuid.uuid4().hex[:8]}", description="concurrencia")
+    session.add(role)
+    session.flush()
+    actor = User(username=f"hst-{uuid.uuid4().hex[:10]}", password_hash="test", system_role_id=role.id)
+    session.add(actor)
+    session.commit()
+    return actor.id
+
+
+def _manual_payload(employee_id: uuid.UUID, work_date: date, *, normal: int = 480, additional: int = 0, recovery: int = 0, commitment_id: uuid.UUID | None = None, key: str | None = None) -> ManualBatchIn:
+    allocations = [] if commitment_id is None else [RecoveryAllocationIn(commitment_id=commitment_id, minutes=recovery)]
+    return ManualBatchIn(
+        work_date=work_date,
+        idempotency_key=key or f"hst-{uuid.uuid4().hex}",
+        rows=[ManualDayIn(
+            employee_id=employee_id,
+            worked_minutes_net=normal + additional + recovery,
+            normal_minutes=normal,
+            additional_minutes=additional,
+            recovery_minutes=recovery,
+            recovery_allocations=allocations,
+            reason="Prueba concurrente HST-01",
+        )],
+    )
+
+
 def test_ajuste_manual_exitoso_en_postgres(pg_engine):
     """Ajuste de bono en PostgreSQL sin concurrencia (sin OUTER JOIN + FOR UPDATE)."""
     factory = _two_factory(pg_engine)
@@ -133,6 +165,175 @@ def test_ajuste_manual_exitoso_en_postgres(pg_engine):
         record_row = check.get(PayrollRecord, record_id)
         assert record_row is not None
         assert record_row.manual_adjustment == Decimal("50.00")
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_hst01_d03_two_concurrent_creations_leave_one_active_day(pg_engine):
+    """D03: dos conexiones crean la misma jornada; el índice parcial decide un ganador."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+    finally:
+        setup.close()
+
+    # Una fecha fuera del periodo de planilla de la fixture evita que el caso
+    # pruebe un cierre y concentra la carrera en la unicidad de la jornada.
+    work_date = date(2026, 9, 10)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def create_day(label: str):
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).batch(_manual_payload(employee_id, work_date, key=f"d03-{label}-{uuid.uuid4().hex}"), actor_id))
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create_day, args=("a",)), threading.Thread(target=create_day, args=("b",))]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert outcomes.count(409) == 1
+
+    check = factory()
+    try:
+        active = list(check.scalars(select(ManualAttendanceDay).where(ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.work_date == work_date, ManualAttendanceDay.voided_at.is_(None))))
+        assert len(active) == 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_hst01_r04_two_concurrent_recoveries_do_not_consume_more_than_pending(pg_engine):
+    """R04: el bloqueo del compromiso permite una sola aplicación de 120 min."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+        commitment = RecoveryCommitment(employee_id=employee_id, permission_date=date(2026, 8, 3), agreed_minutes=120, covered_before=False, reference="Permiso pendiente", created_by_user_id=actor_id)
+        setup.add(commitment)
+        setup.commit()
+        commitment_id = commitment.id
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def apply_recovery(work_date: date):
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).batch(_manual_payload(employee_id, work_date, normal=0, recovery=120, commitment_id=commitment_id), actor_id))
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=apply_recovery, args=(date(2026, 9, 10),)), threading.Thread(target=apply_recovery, args=(date(2026, 9, 11),))]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert outcomes.count(409) == 1
+
+    check = factory()
+    try:
+        consumed = check.scalar(select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).where(ManualRecoveryApplication.commitment_id == commitment_id))
+        assert consumed == 120
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_recovery_applications WHERE commitment_id = :id"), {"id": commitment_id})
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM recovery_commitments WHERE id = :id"), {"id": commitment_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_hst01_f04_close_blocks_concurrent_versioned_edit(pg_engine):
+    """F04: después de tomar el lock de cierre, una edición no se publica."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+        # El periodo de esta fixture cubre agosto, por eso la jornada editada
+        # debe estar dentro de él.
+        created = ManualAttendanceService(setup).batch(_manual_payload(employee_id, date(2026, 8, 10)), actor_id)
+        manual_day_id = uuid.UUID(created["created"][0])
+        period = setup.get(PayrollPeriod, period_id)
+        period.status = PERIOD_CALCULATED
+        setup.commit()
+    finally:
+        setup.close()
+
+    lock_held = threading.Event()
+    outcomes: dict[str, object] = {}
+
+    def closer():
+        db = factory()
+        try:
+            period = db.scalar(select(PayrollPeriod).where(PayrollPeriod.id == period_id).with_for_update())
+            assert period is not None
+            lock_held.set()
+            period.status = PERIOD_CLOSED
+            db.commit()
+            outcomes["close"] = "ok"
+        finally:
+            db.close()
+
+    def editor():
+        db = factory()
+        try:
+            assert lock_held.wait(timeout=5)
+            ManualAttendanceService(db).update(
+                manual_day_id,
+                ManualUpdateIn(
+                    employee_id=employee_id,
+                    worked_minutes_net=390,
+                    normal_minutes=390,
+                    additional_minutes=0,
+                    recovery_minutes=0,
+                    reason="Edición concurrente",
+                    expected_version=1,
+                ),
+                expected_version=1,
+                actor_id=actor_id,
+            )
+            outcomes["edit"] = "ok"
+        except HTTPException as exc:
+            db.rollback()
+            outcomes["edit"] = exc.status_code
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=closer), threading.Thread(target=editor)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert outcomes == {"close": "ok", "edit": 409}
+
+    check = factory()
+    try:
+        period = check.get(PayrollPeriod, period_id)
+        active = check.scalar(select(ManualAttendanceDay).where(ManualAttendanceDay.id == manual_day_id))
+        assert period is not None and period.status == PERIOD_CLOSED
+        assert active is not None and active.worked_minutes_net == 480 and active.version == 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
         _cleanup_payroll(check, period_id, record_id)
     finally:
         check.close()

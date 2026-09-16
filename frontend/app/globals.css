@@ -554,12 +554,12 @@ textarea {
 .attendance-daily-table .col-duration { width: 9%; }
 .attendance-daily-table .col-difference { width: 10%; }
 .attendance-daily-table .col-incidents { width: 16%; }
-.attendance-daily-table.has-actions .col-employee { width: 18%; }
-.attendance-daily-table.has-actions .col-sessions { width: 6%; }
+.attendance-daily-table.has-actions .col-employee { width: 16%; }
+.attendance-daily-table.has-actions .col-sessions { width: 5%; }
 .attendance-daily-table.has-actions .col-duration { width: 8.5%; }
 .attendance-daily-table.has-actions .col-difference { width: 9%; }
-.attendance-daily-table.has-actions .col-incidents { width: 14%; }
-.attendance-daily-table.has-actions .col-action { width: 10%; }
+.attendance-daily-table.has-actions .col-incidents { width: 13%; }
+.attendance-daily-table.has-actions .col-action { width: 14%; }
 .attendance-records-table .col-employee { width: 23%; }
 .attendance-records-table .col-date { width: 9%; }
 .attendance-records-table .col-time { width: 8%; }
@@ -582,7 +582,36 @@ textarea {
 .payroll-daily-responsive-wrap .table { table-layout: fixed; }
 .attendance-daily-table .badge,
 .attendance-records-table .badge { padding-inline: 0.55rem; letter-spacing: 0.02em; }
-.attendance-records-table .table-cell-action > div { flex-wrap: wrap; max-width: 100%; }
+.attendance-daily-table .table-cell-action,
+.attendance-records-table .table-cell-action { text-align: center; }
+.attendance-daily-table .table-cell-action .btn {
+  display: inline-flex;
+  justify-content: center;
+  width: 100%;
+  max-width: 9.5rem;
+  white-space: nowrap;
+}
+.attendance-records-table .attendance-record-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  gap: 0.3rem;
+  width: 100%;
+  max-width: 100%;
+}
+.attendance-record-action {
+  display: inline-grid;
+  flex: 0 0 2.75rem;
+  place-items: center;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border-radius: var(--radius-control);
+}
+.attendance-record-action:hover:not(:disabled) { color: var(--brand-blue); }
+.attendance-record-action:focus-visible { outline: 3px solid var(--brand-blue-bright); outline-offset: 3px; }
 
 @media (max-width: 1439px) {
   .attendance-responsive-wrap,
@@ -644,6 +673,7 @@ textarea {
   .responsive-table-card__item dd { margin: 0; min-width: 0; font-variant-numeric: tabular-nums; }
   .responsive-table-card__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; padding-top: 0.65rem; border-top: 1px solid var(--line-subtle); }
   .responsive-table-card__footer .btn { min-height: 2.75rem; }
+  .responsive-table-card__footer.attendance-record-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 0.3rem; }
 }
 
 @media (max-width: 480px) {
@@ -1392,6 +1422,7 @@ textarea {
    Calendario Renew (GUIA-DISENO.md §7) — reemplaza <input type=date>
    ============================================================ */
 .datefield {
+  position: relative;
   display: inline-block;
 }
 .datefield-trigger {
@@ -1410,9 +1441,15 @@ textarea {
   transition: border-color 160ms ease, background 160ms ease;
   white-space: nowrap;
 }
-.datefield-trigger:hover {
+.datefield-trigger:hover:not(:disabled) {
   border-color: color-mix(in srgb, #0066cc 28%, white);
   background: #fff;
+}
+.datefield-trigger:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+  background: var(--gray-100);
+  opacity: 0.72;
 }
 .datefield-trigger:focus-visible {
   outline: 2px solid var(--brand-blue-bright);
@@ -1443,6 +1480,17 @@ textarea {
 .app-dialog { width: min(100%, 31rem); display: grid; gap: 0.8rem; padding: 1.25rem; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: #fff; box-shadow: var(--shadow-panel); }
 .app-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.65rem; }
 .app-dialog-actions .btn { min-height: 2.75rem; }
+.correction-dialog { width: min(100%, 42rem); }
+.correction-form { display: grid; gap: 0.8rem; }
+.correction-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; }
+.correction-timestamp,
+.correction-field,
+.correction-datefield { min-width: 0; display: grid; gap: 0.45rem; }
+.correction-date-time { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7rem, 0.58fr); gap: 0.65rem; }
+.correction-date-time > div { min-width: 0; display: grid; gap: 0.45rem; }
+.correction-datefield .datefield,
+.correction-datefield .datefield-trigger { width: 100%; }
+.correction-field--full { grid-column: 1 / -1; }
 .button-row, .period-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
 
 .employee-create-form {
@@ -1516,7 +1564,7 @@ textarea {
 .notification { padding: .8rem 1rem; color: var(--text); background: rgba(255,255,255,.97); border: 1px solid var(--border); border-radius: var(--radius-panel); box-shadow: 0 16px 35px -22px rgba(0,66,138,.58); font-size: .875rem; font-weight: 650; }
 .notification--success { border-color: rgba(0,160,71,.4); }
 .notification--error { border-color: rgba(180,35,24,.42); color: var(--expense-red); }
-@media (max-width: 620px) { .dialog-portal { padding: .5rem; } .dialog-portal .app-dialog { max-height: calc(100dvh - 1rem); } .evidence-grid { grid-template-columns: 1fr; } .evidence-image img { max-height: 38vh; } .button-row .btn:first-child { flex: 1 1 10rem; } .period-actions .btn { flex: 1 1 auto; } }
+@media (max-width: 620px) { .dialog-portal { padding: .5rem; } .dialog-portal .app-dialog { max-height: calc(100dvh - 1rem); } .evidence-grid { grid-template-columns: 1fr; } .evidence-image img { max-height: 38vh; } .button-row .btn:first-child { flex: 1 1 10rem; } .period-actions .btn { flex: 1 1 auto; } .correction-fields { grid-template-columns: 1fr; } .correction-field--full { grid-column: auto; } }
 .credential-dialog { max-width: 34rem; }
 .credential-dialog h2 { color: var(--brand-ink); font-size: 1.2rem; }
 .credential-dialog > p { color: var(--muted); line-height: 1.5; }
@@ -2636,12 +2684,18 @@ body::after {
   flex: 0 0 auto;
 }
 
-/* Cuenta: el nombre completo importa más que compactar el cierre de sesión. */
-.sidebar-user { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.35rem; padding: 0.55rem 0.6rem; }
-.sidebar-user .sidebar-account { width: 100%; gap: 0.4rem; }
-.sidebar-user .meta { min-width: 0; overflow: visible; }
-.sidebar-user .name { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: break-word; }
-.sidebar-user .sidebar-logout { justify-self: end; min-width: auto; min-height: 2.75rem; padding: 0.5rem 0.5rem; gap: 0.3rem; }
+/* Cuenta: el nombre se trunca dentro de su columna, sin desplazar la acción. */
+.sidebar-user {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.55rem 0.6rem;
+}
+.sidebar-user .sidebar-account { width: 100%; min-width: 0; gap: 0.4rem; }
+.sidebar-user .meta { min-width: 0; overflow: hidden; }
+.sidebar-user .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.sidebar-user .sidebar-logout { justify-self: end; min-width: 4.2rem; min-height: 2.75rem; padding: 0.5rem; gap: 0.3rem; }
 
 .glass-select-content {
   transform-origin: var(--radix-select-content-transform-origin);

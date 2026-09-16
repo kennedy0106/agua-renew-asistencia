@@ -16,12 +16,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.permissions import get_current_operational_user, require_admin_or_boss
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.repository import AttendanceRepository
+from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.payroll.repository import PayrollRepository
 from app.modules.schedules.service import ScheduleService
 
@@ -31,7 +33,8 @@ router = APIRouter(prefix="/api/v1/exports", tags=["exports"])
 def _csv_response(rows: list[list], filename: str) -> Response:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerows(rows)
+    # Todo texto controlado por usuario se neutraliza ante fórmulas de Excel.
+    writer.writerows([[f"'{value}" if isinstance(value, str) and value[:1] in ("=", "+", "-", "@") else value for value in row] for row in rows])
     content = "\ufeff" + buffer.getvalue()
     return Response(
         content=content.encode("utf-8"),
@@ -78,6 +81,13 @@ def export_attendance(
             "Diferencia (min)",
             "Estado",
             "Notas",
+            "Origen",
+            "Normal (min)",
+            "Adicional (min)",
+            "Recuperación (min)",
+            "Referencia",
+            "Concepto adicional",
+            "Estado pago adicional",
         ]
     ]
     schedules = ScheduleService(db)
@@ -96,9 +106,20 @@ def export_attendance(
                 expected,
                 (record.worked_minutes - expected) if record.worked_minutes is not None else "",
                 record.status,
-                record.notes or "",
+                record.notes or "", "KIOSCO", "", "", "", "", "", "",
             ]
         )
+    manual_query = select(ManualAttendanceDay).where(ManualAttendanceDay.voided_at.is_(None))
+    if employee_id:
+        manual_query = manual_query.where(ManualAttendanceDay.employee_id == employee_id)
+    if date_from:
+        manual_query = manual_query.where(ManualAttendanceDay.work_date >= date_from)
+    if date_to:
+        manual_query = manual_query.where(ManualAttendanceDay.work_date <= date_to)
+    manual = list(db.scalars(manual_query))
+    for item in manual:
+        employee = item.employee
+        rows.append([_fmt_date(item.work_date), f"{employee.first_name} {employee.last_name}" if employee else "", employee.dni if employee else "", employee.job_role.name if employee and employee.job_role else "", _fmt_time(item.known_check_in_at), _fmt_time(item.known_check_out_at), item.worked_minutes_net, schedules.expected_minutes(item.employee_id, item.work_date), item.normal_minutes - schedules.expected_minutes(item.employee_id, item.work_date), "CARGA_HISTORICA", item.reason, "CARGA_HISTORICA", item.normal_minutes, item.additional_minutes, item.recovery_minutes, item.source_reference or "", item.payment_concept or "", item.payment_status])
     return _csv_response(rows, f"asistencia_{date_from or 'todo'}_{date_to or 'hoy'}.csv")
 
 

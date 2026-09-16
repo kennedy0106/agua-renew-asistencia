@@ -7,7 +7,7 @@ import AppDialog from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
-import { Alert, Download, Pencil, X } from "@/components/Icons";
+import { Alert, Camera, Download, Pencil, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -61,16 +61,25 @@ function formatIncidentCode(code: string): string {
   return fallback ? `${fallback.charAt(0).toLocaleUpperCase("es-PE")}${fallback.slice(1)}` : "Incidencia sin detalle";
 }
 
-function toLocalInput(iso: string | null): string {
-  if (!iso) return "";
+function toLocalDateAndTime(iso: string | null): { date: string; time: string } {
+  if (!iso) return { date: "", time: "" };
   const d = new Date(iso);
   const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  };
 }
 
 function fromLocalInput(local: string): string | null {
   if (!local) return null;
   return new Date(local).toISOString();
+}
+
+function timestampFromParts(date: string, time: string): { value: string | null; incomplete: boolean } {
+  if (!date && !time) return { value: null, incomplete: false };
+  if (!date || !time) return { value: null, incomplete: true };
+  return { value: fromLocalInput(`${date}T${time}`), incomplete: false };
 }
 
 function EvidenceImage({ label, src, loading }: { label: string; src: string | null; loading: boolean }) {
@@ -97,11 +106,14 @@ export default function AdminAttendancePage() {
   const [statusFilter, setStatusFilter] = useState("");
 
   const [correcting, setCorrecting] = useState<AttendanceListItem | null>(null);
-  const [corrCheckIn, setCorrCheckIn] = useState("");
-  const [corrCheckOut, setCorrCheckOut] = useState("");
+  const [corrCheckInDate, setCorrCheckInDate] = useState("");
+  const [corrCheckInTime, setCorrCheckInTime] = useState("");
+  const [corrCheckOutDate, setCorrCheckOutDate] = useState("");
+  const [corrCheckOutTime, setCorrCheckOutTime] = useState("");
   const [corrNotes, setCorrNotes] = useState("");
   const [corrReason, setCorrReason] = useState("");
   const [savingCorrection, setSavingCorrection] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [photosFor, setPhotosFor] = useState<string | null>(null);
   const [photoUrls, setPhotoUrls] = useState<{ check_in: string | null; check_out: string | null; missing: string | null }>({
     check_in: null,
@@ -201,32 +213,50 @@ export default function AdminAttendancePage() {
   }
 
   function startCorrection(record: AttendanceListItem) {
+    const checkIn = toLocalDateAndTime(record.check_in_at);
+    const checkOut = toLocalDateAndTime(record.check_out_at);
     setCorrecting(record);
-    setCorrCheckIn(toLocalInput(record.check_in_at));
-    setCorrCheckOut(toLocalInput(record.check_out_at));
+    setCorrCheckInDate(checkIn.date);
+    setCorrCheckInTime(checkIn.time);
+    setCorrCheckOutDate(checkOut.date);
+    setCorrCheckOutTime(checkOut.time);
     setCorrNotes(record.notes ?? "");
     setCorrReason("");
+    setCorrectionError(null);
     setError(null);
     setPhotosFor(null);
+  }
+
+  function closeCorrectionDialog() {
+    if (savingCorrection) return;
+    setCorrecting(null);
+    setCorrectionError(null);
   }
 
   async function handleSaveCorrection(event: React.FormEvent) {
     event.preventDefault();
     if (!correcting) return;
+    const checkIn = timestampFromParts(corrCheckInDate, corrCheckInTime);
+    const checkOut = timestampFromParts(corrCheckOutDate, corrCheckOutTime);
+    if (checkIn.incomplete || checkOut.incomplete) {
+      setCorrectionError("Complete la fecha y la hora de cada marcación que desea registrar.");
+      return;
+    }
     setSavingCorrection(true);
-    setError(null);
+    setCorrectionError(null);
     try {
       await attendanceAdminApi.correct(correcting.id, {
-        check_in_at: fromLocalInput(corrCheckIn),
-        check_out_at: fromLocalInput(corrCheckOut),
+        check_in_at: checkIn.value,
+        check_out_at: checkOut.value,
         notes: corrNotes.trim() || null,
         reason: corrReason.trim(),
       });
       setCorrecting(null);
+      setCorrectionError(null);
       await load();
       success("Corrección guardada. El registro fue recalculado.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo corregir el registro");
+      setCorrectionError(err instanceof ApiError ? err.message : "No se pudo corregir el registro");
     } finally {
       setSavingCorrection(false);
     }
@@ -348,6 +378,7 @@ export default function AdminAttendancePage() {
       )}
 
       <div className="toolbar">
+        {canManage && <Link className="btn btn-outline btn-sm" href="/admin/attendance/history">Cargar horas anteriores</Link>}
         <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
           <SelectTrigger aria-label="Empleado" style={{ maxWidth: 220 }}>
             <SelectValue placeholder="Todos los empleados" />
@@ -462,52 +493,77 @@ export default function AdminAttendancePage() {
       )}
 
       {correcting && canManage && (
-        <form onSubmit={handleSaveCorrection} className="card card-pad" style={{ marginBottom: "1rem", borderColor: "#f0d9a8", background: "#fffdf7" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.7rem" }}>
-            <h2 className="card-title">Corregir registro · {correcting.employee_name}</h2>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCorrecting(null)} aria-label="Cerrar">
-              <X size={14} />
-            </button>
-          </div>
-          <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))" }}>
-            <div>
-              <label className="label">Entrada</label>
-              <input type="datetime-local" className="input" value={corrCheckIn} onChange={(e) => setCorrCheckIn(e.target.value)} />
+        <AppDialog labelledBy="correction-dialog-title" describedBy="correction-dialog-description" onClose={closeCorrectionDialog} className="correction-dialog">
+          <form onSubmit={handleSaveCorrection} aria-busy={savingCorrection} className="correction-form">
+            <div className="app-dialog-heading">
+              <div>
+                <h2 id="correction-dialog-title">Corregir registro</h2>
+                <p id="correction-dialog-description" className="muted">
+                  {correcting.employee_name ?? "Registro seleccionado"} · {formatOperationalDate(correcting.work_date)}. Actualice las marcaciones y deje el motivo para el historial del equipo.
+                </p>
+              </div>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={closeCorrectionDialog} disabled={savingCorrection} aria-label="Cerrar corrección">
+                <X size={15} />
+              </button>
             </div>
-            <div>
-              <label className="label">Salida (vacío = quitar salida)</label>
-              <input type="datetime-local" className="input" value={corrCheckOut} onChange={(e) => setCorrCheckOut(e.target.value)} />
+            {correctionError && <p className="alert alert-error" role="alert" aria-live="assertive">{correctionError}</p>}
+            <div className="correction-fields">
+              <section className="correction-timestamp" aria-labelledby="correction-check-in-label">
+                <h3 id="correction-check-in-label" className="label">Entrada</h3>
+                <div className="correction-date-time">
+                  <div className="correction-datefield">
+                    <span className="label">Fecha</span>
+                    <DateField value={corrCheckInDate} onChange={setCorrCheckInDate} aria-label="Fecha de entrada" placeholder="Seleccionar fecha" disabled={savingCorrection} />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="correction-check-in-time">Hora</label>
+                    <input id="correction-check-in-time" type="time" className="input" value={corrCheckInTime} onChange={(e) => setCorrCheckInTime(e.target.value)} disabled={savingCorrection} />
+                  </div>
+                </div>
+              </section>
+              <section className="correction-timestamp" aria-labelledby="correction-check-out-label">
+                <h3 id="correction-check-out-label" className="label">Salida</h3>
+                <div className="correction-date-time">
+                  <div className="correction-datefield">
+                    <span className="label">Fecha</span>
+                    <DateField value={corrCheckOutDate} onChange={setCorrCheckOutDate} aria-label="Fecha de salida" placeholder="Seleccionar fecha" disabled={savingCorrection} />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="correction-check-out-time">Hora</label>
+                    <input id="correction-check-out-time" type="time" className="input" value={corrCheckOutTime} onChange={(e) => setCorrCheckOutTime(e.target.value)} disabled={savingCorrection} />
+                  </div>
+                </div>
+              </section>
+              <div className="correction-field correction-field--full">
+                <label className="label" htmlFor="correction-notes">Notas</label>
+                <input id="correction-notes" type="text" className="input" value={corrNotes} onChange={(e) => setCorrNotes(e.target.value)} disabled={savingCorrection} />
+              </div>
+              <div className="correction-field correction-field--full">
+                <label className="label" htmlFor="correction-reason">Motivo (obligatorio)</label>
+                <input
+                  data-autofocus
+                  id="correction-reason"
+                  type="text"
+                  className="input"
+                  value={corrReason}
+                  onChange={(e) => setCorrReason(e.target.value)}
+                  required
+                  minLength={3}
+                  maxLength={500}
+                  placeholder="Ej. olvidó marcar salida"
+                  disabled={savingCorrection}
+                />
+              </div>
             </div>
-            <div>
-              <label className="label">Notas</label>
-              <input type="text" className="input" value={corrNotes} onChange={(e) => setCorrNotes(e.target.value)} />
+            <div className="app-dialog-actions">
+              <button type="button" className="btn btn-ghost" onClick={closeCorrectionDialog} disabled={savingCorrection}>Cancelar</button>
+              <button type="submit" className="btn btn-amber" disabled={savingCorrection || corrReason.trim().length < 3}>
+                <Pencil size={15} />
+                {savingCorrection ? "Guardando…" : "Guardar corrección"}
+              </button>
             </div>
-            <div>
-              <label className="label">Motivo (obligatorio)</label>
-              <input
-                type="text"
-                className="input"
-                value={corrReason}
-                onChange={(e) => setCorrReason(e.target.value)}
-                required
-                minLength={3}
-                placeholder="Ej. olvidó marcar salida"
-              />
-            </div>
-          </div>
-          <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.6rem" }}>
-            El backend recalcula automáticamente minutos y estado; la corrección queda en auditoría.
-          </p>
-          <button
-            type="submit"
-            className="btn btn-amber"
-            style={{ marginTop: "0.7rem" }}
-            disabled={savingCorrection || corrReason.trim().length < 3}
-          >
-            <Pencil size={15} />
-            {savingCorrection ? "Guardando…" : "Guardar corrección"}
-          </button>
-        </form>
+          </form>
+        </AppDialog>
       )}
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Resumen diario consolidado</h2>
@@ -522,7 +578,7 @@ export default function AdminAttendancePage() {
           <thead>
             <tr>
               <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Presencia</th>
-              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>{canManage && <th>Acción</th>}
+              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
             </tr>
           </thead>
           <tbody>
@@ -604,7 +660,7 @@ export default function AdminAttendancePage() {
               <th>Esperado</th>
               <th>Diferencia</th>
               <th>Estado</th>
-              {canManage && <th style={{ textAlign: "right" }}>Acciones</th>}
+              {canManage && <th className="table-cell-action">Acciones</th>}
             </tr>
           </thead>
           <tbody>
@@ -654,14 +710,13 @@ export default function AdminAttendancePage() {
                   )}
                 </td>
                 {canManage && (
-                  <td className="table-cell-action" style={{ textAlign: "right" }}>
-                    <div style={{ display: "inline-flex", gap: "0.3rem", justifyContent: "flex-end" }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => void loadPhotos(record.id)}>
-                      Fotos
+                  <td className="table-cell-action">
+                    <div className="attendance-record-actions">
+                    <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos">
+                      <Camera size={18} />
                     </button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => startCorrection(record)}>
-                      <Pencil size={13} />
-                      Corregir
+                    <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro">
+                      <Pencil size={18} />
                     </button>
                     </div>
                   </td>
@@ -685,7 +740,7 @@ export default function AdminAttendancePage() {
               <div className="responsive-table-card__item"><dt>Diferencia</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
               <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Abierta</span> : <span className="badge badge-green">Completado</span>}</dd></div>
             </dl>
-            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" onClick={() => void loadPhotos(record.id)}>Fotos</button><button className="btn btn-ghost btn-sm" onClick={() => startCorrection(record)}><Pencil size={13} /> Corregir</button></div>}
+            {canManage && <div className="responsive-table-card__footer attendance-record-actions"><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos"><Camera size={18} /></button><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro"><Pencil size={18} /></button></div>}
           </article>
         ))}
       </div>

@@ -20,6 +20,7 @@ from app.modules.adjustments.models import (
 )
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.totals import ordinary_minutes, recovery_credit_minutes
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.service import ScheduleService
@@ -122,15 +123,8 @@ class AdjustmentService:
             )
         self._get_employee(employee_id)
 
-        worked = self.db.scalar(
-            select(func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0)).where(
-                AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.status == "COMPLETE",
-                AttendanceRecord.work_date >= date_from,
-                AttendanceRecord.work_date <= date_to,
-            )
-        )
-        worked = int(worked or 0)
+        worked = ordinary_minutes(self.db, employee_id, date_from, date_to)
+        recovery_credit = recovery_credit_minutes(self.db, employee_id, date_from, date_to)
 
         expected = 0
         schedules = ScheduleService(self.db)
@@ -154,7 +148,8 @@ class AdjustmentService:
             "expected_minutes": expected,
             "adjustment_minutes": hour_adjustments,
             "overtime_minutes": overtime_minutes,
-            "balance_minutes": worked - expected + hour_adjustments,
+            "recovery_credit_minutes": recovery_credit,
+            "balance_minutes": worked - expected + hour_adjustments + recovery_credit,
         }
 
     def _get_or_404(self, adjustment_id: uuid.UUID) -> HourAdjustment:

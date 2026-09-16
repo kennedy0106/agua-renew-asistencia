@@ -15,6 +15,7 @@ from app.modules.attendance.models import (  # noqa: F401
     AttendanceBreakOverride,
     AttendanceRecord,
 )
+from app.modules.attendance.manual_models import ManualAttendanceDay, ManualAttendanceIdempotency, ManualRecoveryApplication, RecoveryCommitment  # noqa: F401
 from app.modules.audit.models import AuditLog  # noqa: F401
 from app.modules.employees.models import Employee  # noqa: F401
 from app.modules.job_roles.models import JobRole  # noqa: F401

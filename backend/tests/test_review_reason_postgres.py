@@ -104,7 +104,7 @@ def test_postgres_review_motivos_80_81_120_500_y_rechazo_501(pg_http_client) -> 
             },
         )
         assert created.status_code == 201, created.text
-        token, marked = _mark(client, code)
+        token, marked = _mark(client, created.json()["employee_code"])
         nonce = _nonce_of(token)
         reviewed = client.post(f"/api/v1/attendance/attempts/{nonce}/review", json={"reason": reason})
         assert reviewed.status_code == 200, reviewed.text
@@ -134,7 +134,7 @@ def test_postgres_review_motivos_80_81_120_500_y_rechazo_501(pg_http_client) -> 
         },
     )
     assert created.status_code == 201, created.text
-    token, _marked = _mark(client, "EMP-P501")
+    token, _marked = _mark(client, created.json()["employee_code"])
     nonce = _nonce_of(token)
     before_resolutions = db_session.scalar(select(func.count()).select_from(AttendanceAttemptResolution))
     before_audits = db_session.scalar(

@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session
 from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.totals import worked_minutes as consolidated_worked_minutes
+from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication
 from app.modules.attendance.service import AttendanceService
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
@@ -159,10 +161,13 @@ class PayrollService:
             base, reference_salary, missing_salary_days = self._prorated_base(employee, period, salaries)
             if reference_salary is None:
                 continue
-            overtime_minutes = adjustments.approved_minutes_in_range(
-                employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
-            )
-            overtime_amount = overtime.value(employee.id, period.start_date, period.end_date)["value"]
+            valued_overtime = overtime.value(employee.id, period.start_date, period.end_date)
+            overtime_minutes = valued_overtime["overtime_minutes"]
+            overtime_amount = valued_overtime["value"]
+            manual_additional = self._approved_manual_additional(employee.id, period)
+            manual_distribution = self._manual_distribution(employee.id, period)
+            # OvertimeService ya incorpora el importe aprobado de P; aquí solo
+            # conservamos su identidad/distribución en el fingerprint.
             snapshots.append(
                 {
                     "employee_id": employee.id,
@@ -171,6 +176,8 @@ class PayrollService:
                     "expected_minutes": self._sum_expected_minutes(schedules, employee, period),
                     "overtime_minutes": overtime_minutes,
                     "overtime_amount": overtime_amount,
+                    "manual_additional": manual_additional["fingerprint"],
+                    "manual_distribution": manual_distribution,
                     "adjustment_minutes": adjustments.approved_minutes_in_range(
                         employee.id, period.start_date, period.end_date
                     )
@@ -182,6 +189,44 @@ class PayrollService:
         snapshots.sort(key=lambda item: str(item["employee_id"]))
         return snapshots
 
+    def _manual_distribution(self, employee_id: uuid.UUID, period: PayrollPeriod) -> list[dict]:
+        """Representación estable de N/P/R y aplicaciones para invalidar snapshots.
+
+        Dos cargas con el mismo W no son equivalentes si cambia su tratamiento,
+        su versión o el compromiso origen de R.
+        """
+        rows = self.db.scalars(select(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date >= period.start_date,
+            ManualAttendanceDay.work_date <= period.end_date,
+            ManualAttendanceDay.voided_at.is_(None),
+        ))
+        output = []
+        for row in sorted(rows, key=lambda item: str(item.id)):
+            allocations = self.db.execute(select(ManualRecoveryApplication.commitment_id, ManualRecoveryApplication.minutes).where(ManualRecoveryApplication.manual_day_id == row.id)).all()
+            output.append({"id": str(row.id), "version": row.version, "work_date": row.work_date.isoformat(), "W": row.worked_minutes_net, "N": row.normal_minutes, "P": row.additional_minutes, "R": row.recovery_minutes, "payment_status": row.payment_status, "allocations": sorted(({"commitment_id": str(commitment_id), "minutes": minutes} for commitment_id, minutes in allocations), key=lambda item: item["commitment_id"])})
+        return output
+
+    def _approved_manual_additional(self, employee_id: uuid.UUID, period: PayrollPeriod) -> dict:
+        rows = list(self.db.scalars(select(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date >= period.start_date,
+            ManualAttendanceDay.work_date <= period.end_date,
+            ManualAttendanceDay.voided_at.is_(None),
+            ManualAttendanceDay.payment_status == "APPROVED",
+            ManualAttendanceDay.additional_minutes > 0,
+        )))
+        return {
+            "minutes": sum(row.additional_minutes for row in rows),
+            "amount": sum((row.approved_additional_amount or Decimal("0.00") for row in rows), Decimal("0.00")),
+            "fingerprint": [
+                {"id": str(row.id), "version": row.version, "minutes": row.additional_minutes,
+                 "amount": str(row.approved_additional_amount), "snapshot": row.payment_snapshot,
+                 "concept": row.payment_concept, "reference": row.source_reference}
+                for row in sorted(rows, key=lambda item: str(item.id))
+            ],
+        }
+
     @staticmethod
     def _fingerprint(snapshots: list[dict]) -> str:
         payload = [
@@ -192,6 +237,8 @@ class PayrollService:
                 "expected_minutes": item["expected_minutes"],
                 "overtime_minutes": item["overtime_minutes"],
                 "overtime_amount": str(item["overtime_amount"]),
+                "manual_additional": item.get("manual_additional", []),
+                "manual_distribution": item.get("manual_distribution", []),
                 "adjustment_minutes": item["adjustment_minutes"],
                 "base_salary": str(item["base_salary"]),
                 "missing_salary_days": item["missing_salary_days"],
@@ -245,7 +292,7 @@ class PayrollService:
                 AttendanceRecord.work_date <= period.end_date,
             )
         )
-        return int(total or 0)
+        return consolidated_worked_minutes(self.db, employee_id, period.start_date, period.end_date)
 
     def _sum_expected_minutes(self, schedules: ScheduleService, employee: Employee, period: PayrollPeriod) -> int:
         active_from, active_to = self._employment_bounds(employee, period)
@@ -307,6 +354,9 @@ class PayrollService:
         )
         for adjustment in pending:
             blockers.append({"code": "PENDING_ADJUSTMENT", "message": "Ajuste pendiente de aprobación o rechazo", "employee_id": str(adjustment.employee_id)})
+        pending_manual = self.db.scalars(select(ManualAttendanceDay).where(ManualAttendanceDay.payment_status == "PENDING", ManualAttendanceDay.work_date >= period.start_date, ManualAttendanceDay.work_date <= period.end_date, ManualAttendanceDay.voided_at.is_(None)))
+        for item in pending_manual:
+            blockers.append({"code": "PENDING_HISTORICAL_ADDITIONAL", "message": "Hay adicional histórico pendiente de valoración o aprobación", "employee_id": str(item.employee_id)})
         overtime = OvertimeService(self.db)
         for employee in self._employees_for_period(period):
             valued = overtime.value(employee.id, period.start_date, period.end_date)

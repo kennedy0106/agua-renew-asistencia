@@ -38,6 +38,7 @@ from app.modules.attendance.models import (
     AttendanceEvidence,
     AttendanceRecord,
 )
+from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
@@ -1333,6 +1334,19 @@ class AttendanceService:
                     "incident_codes": sorted(incidents),
                 }
             )
+        # Las cargas históricas son presencia real declarada, pero nunca se
+        # someten por segunda vez al descuento de refrigerio de sesiones.
+        manual_query = select(ManualAttendanceDay).where(ManualAttendanceDay.voided_at.is_(None))
+        if employee_id is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.employee_id == employee_id)
+        if date_from is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date >= date_from)
+        if date_to is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date <= date_to)
+        for item in self.db.scalars(manual_query):
+            employee = item.employee
+            expected = schedules.expected_minutes(item.employee_id, item.work_date)
+            result.append({"employee_id": item.employee_id, "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None, "work_date": item.work_date, "session_count": 0, "gross_minutes": item.worked_minutes_net, "break_minutes": 0, "break_source": "NONE", "override_requested_minutes": None, "override_limited": False, "worked_minutes": item.worked_minutes_net, "expected_minutes": expected, "difference_minutes": item.normal_minutes - expected, "has_open_entry": False, "incident_codes": ["HISTORICAL_MANUAL"]})
         return sorted(result, key=lambda item: (item["work_date"], str(item["employee_id"])), reverse=True)
 
     # --- Correcciones y auditoría (Fase 8) ---
@@ -1410,6 +1424,16 @@ class AttendanceService:
         else:
             record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, 0)
             record.status = "COMPLETE"
+
+        manual_conflict = self.db.scalar(
+            select(ManualAttendanceDay.id).where(
+                ManualAttendanceDay.employee_id == record.employee_id,
+                ManualAttendanceDay.work_date == record.work_date,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+        )
+        if manual_conflict is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La fecha tiene carga histórica administrativa; no se pueden mezclar fuentes")
 
         if old_values == self._serialize(record) and old_date == record.work_date and old_status == record.status:
             raise HTTPException(

@@ -36,12 +36,14 @@ export default function DateField({
   value,
   onChange,
   required = false,
+  disabled = false,
   placeholder = "Seleccionar fecha",
   "aria-label": ariaLabel,
 }: {
   value: string;
   onChange: (iso: string) => void;
   required?: boolean;
+  disabled?: boolean;
   placeholder?: string;
   "aria-label"?: string;
 }) {
@@ -58,6 +60,10 @@ export default function DateField({
     setOpen(false);
     if (returnFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
   }
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   const label = useMemo(() => {
     if (!value) return placeholder;
@@ -160,13 +166,14 @@ export default function DateField({
   }
 
   return (
-    <div ref={rootRef} className="datefield" style={{ position: "relative" }}>
+    <div ref={rootRef} className="datefield">
       <button
         ref={triggerRef}
         type="button"
         data-required={required || undefined}
         className="datefield-trigger"
-        onClick={() => open ? closeCalendar({ returnFocus: false }) : setOpen(true)}
+        onClick={() => !disabled && (open ? closeCalendar({ returnFocus: false }) : setOpen(true))}
+        disabled={disabled}
         aria-label={ariaLabel ?? placeholder}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -176,7 +183,7 @@ export default function DateField({
         <span className={value ? "" : "datefield-placeholder"}>{label}</span>
       </button>
 
-      {open && (
+      {open && !disabled && (
         <div className={`datefield-panel${alignEnd ? " is-end-aligned" : ""}`} id={dialogId} role="dialog" aria-label={`Calendario: ${ariaLabel ?? placeholder}`} onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
