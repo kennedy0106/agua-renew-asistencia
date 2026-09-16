@@ -11,6 +11,7 @@ import { Alert, Download, Pencil, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatOperationalDate } from "@/lib/dates";
 import {
   API_URL,
   ApiError,
@@ -510,8 +511,14 @@ export default function AdminAttendancePage() {
       )}
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Resumen diario consolidado</h2>
-      <div className="table-wrap" style={{ marginBottom: "1rem" }}>
-        <table className="table">
+      <div className="table-wrap attendance-responsive-wrap" style={{ marginBottom: "1rem" }}>
+        <table className={`table attendance-daily-table${canManage ? " has-actions" : ""}`}>
+          <colgroup>
+            <col className="col-employee" /><col className="col-date" /><col className="col-sessions" />
+            <col className="col-duration" /><col className="col-duration" /><col className="col-duration" />
+            <col className="col-duration" /><col className="col-difference" /><col className="col-incidents" />
+            {canManage && <col className="col-action" />}
+          </colgroup>
           <thead>
             <tr>
               <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Presencia</th>
@@ -523,20 +530,39 @@ export default function AdminAttendancePage() {
             {!loading && daily.length === 0 && <tr><td colSpan={canManage ? 10 : 9} className="empty">Sin jornadas en el rango.</td></tr>}
             {dailyPagination.pageItems.map((day) => (
               <tr key={`${day.employee_id}-${day.work_date}`}>
-                <td style={{ fontWeight: 600 }}>{day.employee_name ?? "—"}</td>
-                <td className="num">{day.work_date}</td>
-                <td className="num">{day.session_count}</td>
-                <td className="num">{formatMinutes(day.gross_minutes)}</td>
-                <td className="num" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
-                <td className="num">{formatMinutes(day.worked_minutes)}</td>
-                <td className="num">{formatMinutes(day.expected_minutes)}</td>
-                <td className="num">{formatDifference(day.difference_minutes)}</td>
+                <td className="table-cell-name" style={{ fontWeight: 600 }} title={day.employee_name ?? "—"}>{day.employee_name ?? "—"}</td>
+                <td className="num table-cell-nowrap">{formatOperationalDate(day.work_date)}</td>
+                <td className="num table-cell-nowrap">{day.session_count}</td>
+                <td className="num table-cell-nowrap">{formatMinutes(day.gross_minutes)}</td>
+                <td className="num table-cell-nowrap" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
+                <td className="num table-cell-nowrap">{formatMinutes(day.worked_minutes)}</td>
+                <td className="num table-cell-nowrap">{formatMinutes(day.expected_minutes)}</td>
+                <td className="num table-cell-nowrap">{formatDifference(day.difference_minutes)}</td>
                 <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
-                {canManage && <td><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></td>}
+                {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></td>}
               </tr>
             ))}
           </tbody>
         </table>
+      </div>
+      <div className="responsive-table-cards" aria-label="Resumen diario consolidado">
+        {loading && <ResponsiveCardsSkeleton label="Cargando resumen diario" />}
+        {!loading && daily.length === 0 && <p className="empty">Sin jornadas en el rango.</p>}
+        {dailyPagination.pageItems.map((day) => (
+          <article className="responsive-table-card" key={`card-${day.employee_id}-${day.work_date}`}>
+            <div className="responsive-table-card__heading"><span className="responsive-table-card__name">{day.employee_name ?? "—"}</span><time className="responsive-table-card__date" dateTime={day.work_date}>{formatOperationalDate(day.work_date)}</time></div>
+            <dl className="responsive-table-card__grid">
+              <div className="responsive-table-card__item"><dt>Sesiones</dt><dd>{day.session_count}</dd></div>
+              <div className="responsive-table-card__item"><dt>Presencia</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Refrigerio</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
+              <div className="responsive-table-card__item"><dt>Neto</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Esperado</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Diferencia</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Incidencias</dt><dd>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</dd></div>
+            </dl>
+            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></div>}
+          </article>
+        ))}
       </div>
       <TablePagination {...dailyPagination} />
 
@@ -544,7 +570,7 @@ export default function AdminAttendancePage() {
         <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog}>
           <form onSubmit={saveBreak}>
           <h2 id="break-dialog-title">Ajustar refrigerio</h2>
-          <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {adjustingBreak.work_date}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
+          <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {formatOperationalDate(adjustingBreak.work_date)}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
           {breakError && <p className="alert alert-error" role="alert" aria-live="assertive">{breakError}</p>}
           <label className="label" htmlFor="daily-break-minutes">Refrigerio real (minutos)</label>
           <input ref={breakInputRef} data-autofocus id="daily-break-minutes" className="input" inputMode="numeric" type="number" min="0" max={adjustingBreak.gross_minutes} value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required />
@@ -561,8 +587,13 @@ export default function AdminAttendancePage() {
       )}
 
       <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>
-      <div className="table-wrap">
-        <table className="table">
+      <div className="table-wrap attendance-responsive-wrap">
+        <table className={`table attendance-records-table${canManage ? " has-actions" : ""}`}>
+          <colgroup>
+            <col className="col-employee" /><col className="col-date" /><col className="col-time" /><col className="col-time" />
+            <col className="col-duration" /><col className="col-duration" /><col className="col-duration" /><col className="col-status" />
+            {canManage && <col className="col-action" />}
+          </colgroup>
           <thead>
             <tr>
               <th>Empleado</th>
@@ -587,7 +618,7 @@ export default function AdminAttendancePage() {
             )}
             {recordsPagination.pageItems.map((record) => (
               <tr key={record.id}>
-                <td>
+                <td className="table-cell-name" title={`${record.employee_name ?? "—"}${record.job_role_name ? ` · ${record.job_role_name}` : ""}`}>
                   <Link href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
                     {record.employee_name ?? "—"}
                   </Link>
@@ -595,13 +626,13 @@ export default function AdminAttendancePage() {
                     {record.job_role_name ?? ""}
                   </span>
                 </td>
-                <td className="num">{record.work_date}</td>
-                <td className="num">{formatClock(record.check_in_at)}</td>
-                <td className="num">{formatClock(record.check_out_at)}</td>
-                <td className="num">{formatMinutes(record.worked_minutes)}</td>
-                <td className="num">{formatMinutes(record.expected_minutes)}</td>
+                <td className="num table-cell-nowrap">{formatOperationalDate(record.work_date)}</td>
+                <td className="num table-cell-nowrap">{formatClock(record.check_in_at)}</td>
+                <td className="num table-cell-nowrap">{formatClock(record.check_out_at)}</td>
+                <td className="num table-cell-nowrap">{formatMinutes(record.worked_minutes)}</td>
+                <td className="num table-cell-nowrap">{formatMinutes(record.expected_minutes)}</td>
                 <td
-                  className="num"
+                  className="num table-cell-nowrap"
                   style={{
                     color:
                       record.difference_minutes === null
@@ -623,7 +654,8 @@ export default function AdminAttendancePage() {
                   )}
                 </td>
                 {canManage && (
-                  <td style={{ textAlign: "right", display: "flex", gap: "0.3rem", justifyContent: "flex-end" }}>
+                  <td className="table-cell-action" style={{ textAlign: "right" }}>
+                    <div style={{ display: "inline-flex", gap: "0.3rem", justifyContent: "flex-end" }}>
                     <button className="btn btn-ghost btn-sm" onClick={() => void loadPhotos(record.id)}>
                       Fotos
                     </button>
@@ -631,6 +663,7 @@ export default function AdminAttendancePage() {
                       <Pencil size={13} />
                       Corregir
                     </button>
+                    </div>
                   </td>
                 )}
               </tr>
@@ -638,7 +671,39 @@ export default function AdminAttendancePage() {
           </tbody>
         </table>
       </div>
+      <div className="responsive-table-cards" aria-label="Detalle de marcaciones">
+        {loading && <ResponsiveCardsSkeleton label="Cargando detalle de marcaciones" />}
+        {!loading && records.length === 0 && <p className="empty">Sin registros con los filtros actuales.</p>}
+        {recordsPagination.pageItems.map((record) => (
+          <article className="responsive-table-card" key={`card-${record.id}`}>
+            <div className="responsive-table-card__heading"><span className="responsive-table-card__name"><Link href={`/admin/employees/${record.employee_id}`}>{record.employee_name ?? "—"}</Link>{record.job_role_name && <span className="muted" style={{ display: "block", fontSize: "0.78rem", fontWeight: 400 }}>{record.job_role_name}</span>}</span><time className="responsive-table-card__date" dateTime={record.work_date}>{formatOperationalDate(record.work_date)}</time></div>
+            <dl className="responsive-table-card__grid">
+              <div className="responsive-table-card__item"><dt>Entrada</dt><dd>{formatClock(record.check_in_at)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Salida</dt><dd>{formatClock(record.check_out_at)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Trabajado</dt><dd>{formatMinutes(record.worked_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Esperado</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Diferencia</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Abierta</span> : <span className="badge badge-green">Completado</span>}</dd></div>
+            </dl>
+            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" onClick={() => void loadPhotos(record.id)}>Fotos</button><button className="btn btn-ghost btn-sm" onClick={() => startCorrection(record)}><Pencil size={13} /> Corregir</button></div>}
+          </article>
+        ))}
+      </div>
       <TablePagination {...recordsPagination} />
     </AdminShell>
+  );
+}
+
+function ResponsiveCardsSkeleton({ label }: { label: string }) {
+  return (
+    <div className="responsive-table-card" aria-busy="true" aria-label={label}>
+      <div className="skeleton" style={{ width: "62%", height: 17 }} />
+      <div className="responsive-table-card__grid">
+        <div className="skeleton" style={{ height: 34 }} />
+        <div className="skeleton" style={{ height: 34 }} />
+        <div className="skeleton" style={{ height: 34 }} />
+        <div className="skeleton" style={{ height: 34 }} />
+      </div>
+    </div>
   );
 }

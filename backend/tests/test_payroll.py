@@ -515,6 +515,79 @@ def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monk
     assert after["base_salary"] == record["base_salary"]
 
 
+def test_reporte_diario_reconoce_hoy_cuando_todas_las_sesiones_terminaron(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(employee_id),
+            work_date=today,
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=datetime(2026, 8, 3, 22, tzinfo=timezone.utc),
+            worked_minutes=480,
+            status="COMPLETE",
+        )
+    )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "RECOGNIZED"
+    assert item["recognized_minutes"] == 480
+    assert item["recognized_base_amount"] == item["base_amount"]
+
+
+def test_reporte_diario_mantiene_hoy_pendiente_con_entrada_abierta(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(employee_id),
+            work_date=today,
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=None,
+            worked_minutes=0,
+            status="OPEN",
+        )
+    )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "PENDING"
+    assert item["recognized_minutes"] == 0
+    assert item["recognized_total_amount"] == "0.00"
+
+
+def test_reporte_diario_mantiene_hoy_pendiente_sin_asistencia(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "PENDING"
+    assert item["recognized_minutes"] == 0
+    assert item["recognized_total_amount"] == "0.00"
+
+
 def test_reporte_diario_usa_neto_con_override_y_solapes(client, db_session, monkeypatch):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))

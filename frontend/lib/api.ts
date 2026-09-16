@@ -673,7 +673,7 @@ export const payrollApi = {
   summary: (periodId: string) =>
     apiFetch<PayrollSummary>(`/api/v1/payroll/periods/${periodId}/summary`),
   dailyReport: (periodId: string) =>
-    apiFetch<PayrollDailyReport>(`/api/v1/payroll/periods/${periodId}/daily-report`),
+    apiFetch<PayrollDailyReport>(`/api/v1/payroll/periods/${periodId}/daily-report`, { cache: "no-store" }),
   readiness: (periodId: string) =>
     apiFetch<PayrollReadiness>(`/api/v1/payroll/periods/${periodId}/readiness`),
   rectify: (periodId: string, reason: string) =>

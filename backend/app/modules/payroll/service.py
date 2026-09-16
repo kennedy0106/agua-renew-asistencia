@@ -410,7 +410,7 @@ class PayrollService:
             if active_from > active_to:
                 continue
 
-            worked_by_day = self._worked_minutes_by_day(employee.id, active_from, active_to)
+            attendance_by_day = self._attendance_by_day(employee.id, active_from, active_to)
             approved_by_day = self._approved_adjustments_by_day(employee.id, active_from, active_to)
             overtime_by_day = {
                 item["adjustment_date"]: {
@@ -426,7 +426,8 @@ class PayrollService:
                 expected_minutes = schedules.expected_minutes(employee.id, day)
                 overtime_item = overtime_by_day.get(day, {"minutes": 0, "amount": Decimal("0.00")})
                 approved_minutes = approved_by_day.get(day, 0)
-                worked_minutes = worked_by_day.get(day, 0)
+                attendance = attendance_by_day.get(day)
+                worked_minutes = int(attendance["worked_minutes"]) if attendance else 0
                 if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0:
                     days.append(
                         {
@@ -436,6 +437,11 @@ class PayrollService:
                             "overtime_minutes": overtime_item["minutes"],
                             "overtime_amount": overtime_item["amount"],
                             "approved_adjustment_minutes": approved_minutes,
+                            # Estos datos no cambian el snapshot de planilla. Solo
+                            # permiten que la vista informativa sepa si la jornada
+                            # actual ya terminó o sigue recibiendo marcaciones.
+                            "has_attendance": attendance is not None,
+                            "has_open_entry": bool(attendance["has_open_entry"]) if attendance else False,
                         }
                     )
                 day += timedelta(days=1)
@@ -492,16 +498,19 @@ class PayrollService:
     def _set_recognized_amounts(item: dict, today: date) -> None:
         """Calcula el reconocimiento informativo sin cambiar el snapshot.
 
-        Hoy se mantiene PENDING para no adelantar importes durante una jornada
-        abierta. Solo los días anteriores pueden quedar sin asistencia,
-        parciales o reconocidos.
+        Hoy se mantiene PENDING mientras no exista asistencia o haya alguna
+        sesión abierta. Cuando todas las sesiones de hoy están cerradas, aplica
+        exactamente la misma clasificación informativa que un día pasado.
         """
         work_date = item["work_date"]
         expected_minutes = item["expected_minutes"]
+        can_recognize = work_date < today or (
+            work_date == today and item["has_attendance"] and not item["has_open_entry"]
+        )
         if work_date > today:
             status = "FUTURE_PENDING"
             recognized_minutes = 0
-        elif work_date == today:
+        elif not can_recognize:
             status = "PENDING"
             recognized_minutes = 0
         else:
@@ -524,11 +533,11 @@ class PayrollService:
             ).quantize(_CENTS, rounding=ROUND_HALF_UP)
         else:
             recognized_base = Decimal("0.00")
-        recognized_overtime = item["overtime_amount"] if work_date < today else Decimal("0.00")
+        recognized_overtime = item["overtime_amount"] if can_recognize else Decimal("0.00")
         recognized_total = (recognized_base + recognized_overtime).quantize(_CENTS, rounding=ROUND_HALF_UP)
         review_difference = (
             item["base_amount"] + item["overtime_amount"] - recognized_total
-            if work_date < today
+            if can_recognize
             else Decimal("0.00")
         ).quantize(_CENTS, rounding=ROUND_HALF_UP)
         item.update(
@@ -540,17 +549,25 @@ class PayrollService:
             review_difference_amount=review_difference,
         )
 
-    def _worked_minutes_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
-        """Neto por día según el consolidado oficial de asistencia.
+    def _attendance_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, dict]:
+        """Consolidado diario de asistencia para la vista informativa.
 
         ``AttendanceService.list_daily`` descuenta un único refrigerio (y su
         override) y elimina sesiones solapadas. No se usa el valor persistido
-        por sesión porque puede ser anterior a una corrección diaria.
+        por sesión porque puede ser anterior a una corrección diaria. La señal
+        de sesión abierta permite distinguir una salida recién registrada de
+        una jornada que todavía está en curso.
         """
         daily = AttendanceService(self.db).list_daily(
             employee_id=employee_id, date_from=date_from, date_to=date_to
         )
-        return {item["work_date"]: int(item["worked_minutes"]) for item in daily}
+        return {
+            item["work_date"]: {
+                "worked_minutes": int(item["worked_minutes"]),
+                "has_open_entry": bool(item["has_open_entry"]),
+            }
+            for item in daily
+        }
 
     def _approved_adjustments_by_day(self, employee_id: uuid.UUID, date_from: date, date_to: date) -> dict[date, int]:
         rows = self.db.execute(

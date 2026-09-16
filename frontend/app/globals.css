@@ -503,8 +503,6 @@ textarea {
 .table-wrap {
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(21, 103, 200, 0.42) transparent;
   border: 1px solid var(--ink-border);
   border-radius: var(--radius-panel);
   background: var(--glass-strong);
@@ -513,11 +511,8 @@ textarea {
   box-shadow: var(--shadow-panel);
 }
 .table {
-  /* Keep operational values whole. The wrapper becomes the responsive
-     affordance on constrained screens instead of compressing a date, hour,
-     amount, name or action into unreadable fragments. */
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  table-layout: auto;
   border-collapse: collapse;
   font-size: 0.9rem;
   text-align: left;
@@ -531,14 +526,13 @@ textarea {
   background: rgba(255, 255, 255, 0.5);
   padding: 0.7rem 1rem;
   border-bottom: 1px solid rgba(21, 67, 153, 0.14);
-  white-space: nowrap;
 }
 .table td {
   padding: 0.85rem 1rem;
   border-bottom: 1px solid rgba(21, 67, 153, 0.1);
   color: var(--text);
   vertical-align: middle;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .table td[colspan],
 .table .empty {
@@ -546,17 +540,115 @@ textarea {
      rather than inheriting the compact operational-data treatment. */
   white-space: normal;
 }
-.table-wrap::-webkit-scrollbar {
-  height: 0.52rem;
+.table-cell-nowrap { white-space: nowrap; overflow-wrap: normal; }
+.table-cell-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-cell-action { white-space: nowrap; overflow-wrap: normal; }
+.responsive-table-cards { display: none; }
+
+/* Operational tables stay dense on wide workspaces. At the point their
+   columns stop being independently legible, their page-specific card view
+   takes over instead of exposing a horizontal scrollbar. */
+.attendance-daily-table .col-employee { width: 22%; }
+.attendance-daily-table .col-date { width: 9%; }
+.attendance-daily-table .col-sessions { width: 7%; }
+.attendance-daily-table .col-duration { width: 9%; }
+.attendance-daily-table .col-difference { width: 10%; }
+.attendance-daily-table .col-incidents { width: 16%; }
+.attendance-daily-table.has-actions .col-employee { width: 18%; }
+.attendance-daily-table.has-actions .col-sessions { width: 6%; }
+.attendance-daily-table.has-actions .col-duration { width: 8.5%; }
+.attendance-daily-table.has-actions .col-difference { width: 9%; }
+.attendance-daily-table.has-actions .col-incidents { width: 14%; }
+.attendance-daily-table.has-actions .col-action { width: 10%; }
+.attendance-records-table .col-employee { width: 23%; }
+.attendance-records-table .col-date { width: 9%; }
+.attendance-records-table .col-time { width: 8%; }
+.attendance-records-table .col-duration { width: 11%; }
+.attendance-records-table .col-status { width: 11%; }
+.attendance-records-table.has-actions .col-employee { width: 21%; }
+.attendance-records-table.has-actions .col-duration { width: 10%; }
+.attendance-records-table.has-actions .col-status { width: 10%; }
+.attendance-records-table.has-actions .col-action { width: 11%; }
+.attendance-responsive-wrap,
+.payroll-daily-responsive-wrap { overflow: hidden; }
+.attendance-daily-table,
+.attendance-records-table { table-layout: fixed; }
+.attendance-daily-table th,
+.attendance-daily-table td,
+.attendance-records-table th,
+.attendance-records-table td,
+.payroll-daily-responsive-wrap .table th,
+.payroll-daily-responsive-wrap .table td { padding-inline: 0.6rem; overflow: hidden; }
+.payroll-daily-responsive-wrap .table { table-layout: fixed; }
+.attendance-daily-table .badge,
+.attendance-records-table .badge { padding-inline: 0.55rem; letter-spacing: 0.02em; }
+.attendance-records-table .table-cell-action > div { flex-wrap: wrap; max-width: 100%; }
+
+@media (max-width: 1439px) {
+  .attendance-responsive-wrap,
+  .payroll-daily-responsive-wrap { display: none; }
+  .salaries-responsive-wrap { overflow: visible; }
+  .salaries-responsive-table,
+  .salaries-responsive-table > tbody,
+  .salaries-responsive-table > tbody > tr,
+  .salaries-responsive-table > tbody > tr > td { display: block; width: 100%; }
+  .salaries-responsive-table > thead { display: none; }
+  .salaries-responsive-table > tbody { display: grid; gap: 0.7rem; }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) {
+    overflow: hidden;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--line-subtle);
+    border-radius: var(--radius-panel);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,0.92);
+  }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, 40%) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.45rem 0;
+    border: 0;
+    text-align: right !important;
+  }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: .055em;
+    line-height: 1.2;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Empleado"] { text-align: left !important; }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Detalle"] > div { justify-content: flex-end; flex-wrap: wrap; }
+  .salaries-responsive-table > tbody > .salary-history-separator > td { padding: 0.85rem 0.9rem; }
+  .salaries-responsive-table > tbody > .salary-detail-row > td { display: block; padding: 0.15rem 0 0.5rem; border: 0; }
+  .responsive-table-cards { display: grid; gap: 0.7rem; }
+  .responsive-table-card {
+    display: grid;
+    gap: 0.7rem;
+    padding: 0.95rem;
+    border: 1px solid var(--line-subtle);
+    border-radius: var(--radius-panel);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,0.92);
+  }
+  .responsive-table-card__heading { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+  .responsive-table-card__name { min-width: 0; font-weight: 700; color: var(--brand-ink); overflow-wrap: anywhere; }
+  .responsive-table-card__date { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .responsive-table-card__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem 0.85rem; }
+  .responsive-table-card__item { display: grid; gap: 0.13rem; min-width: 0; }
+  .responsive-table-card__item dt { color: var(--muted); font-size: 0.68rem; font-weight: 750; letter-spacing: .055em; line-height: 1.2; text-transform: uppercase; }
+  .responsive-table-card__item dd { margin: 0; min-width: 0; font-variant-numeric: tabular-nums; }
+  .responsive-table-card__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; padding-top: 0.65rem; border-top: 1px solid var(--line-subtle); }
+  .responsive-table-card__footer .btn { min-height: 2.75rem; }
 }
-.table-wrap::-webkit-scrollbar-thumb {
-  border: 0.14rem solid transparent;
-  border-radius: 999px;
-  background: rgba(21, 103, 200, 0.42);
-  background-clip: padding-box;
-}
-.table-wrap::-webkit-scrollbar-track {
-  background: transparent;
+
+@media (max-width: 480px) {
+  .responsive-table-card__grid { grid-template-columns: 1fr; }
+  .responsive-table-card__heading { align-items: flex-start; flex-direction: column; gap: 0.2rem; }
 }
 .table tbody tr:last-child td {
   border-bottom: none;
@@ -1436,6 +1528,123 @@ textarea {
 .credential-dialog-value code { overflow-wrap: anywhere; color: var(--brand-ink); font-size: 0.95rem; }
 .credential-dialog-value code { margin-bottom: 0.35rem; padding: 0.45rem 0.55rem; border-radius: 0.3rem; background: #e7f1ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .credential-dialog-notice { min-height: 1.25rem; color: var(--brand-ink); font-size: 0.78rem; line-height: 1.4; }
+
+/* Usuarios: una superficie de trabajo compacta; el resumen orienta y la tabla
+   concentra la edición sin convertir cada dato en una tarjeta decorativa. */
+.users-commandbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 4.75rem;
+  margin-bottom: 1rem;
+  padding: .8rem 1rem;
+  border: 1px solid rgba(255,255,255,.78);
+  border-radius: var(--radius-panel);
+  background: var(--chrome);
+  box-shadow: 0 16px 32px -30px rgba(0, 74, 150, .5), inset 0 1px 0 rgba(255,255,255,.72);
+}
+.users-commandbar-copy { display: grid; gap: .18rem; min-width: 0; }
+.users-commandbar-summary { margin: 0; color: var(--brand-ink); font-size: .9rem; font-weight: 720; font-variant-numeric: tabular-nums; }
+.users-commandbar-note { margin: 0; color: var(--muted); font-size: .76rem; }
+.users-commandbar .btn { flex: 0 0 auto; min-height: 2.75rem; }
+
+.users-create-form {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1.1rem;
+  padding: 1.15rem;
+  border: 1px solid rgba(255,255,255,.84);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,.9);
+}
+.users-create-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.users-create-heading h2 { margin: 0; color: var(--brand-ink); font-size: 1.1rem; }
+.users-create-heading p { margin: .28rem 0 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+.users-create-fields { display: grid; grid-template-columns: minmax(10rem, .82fr) minmax(10rem, .82fr) minmax(14rem, 1.3fr) auto; gap: .8rem; align-items: end; }
+.users-field { display: grid; gap: .38rem; min-width: 0; }
+.users-field .label { margin: 0; }
+.users-field .label em { color: var(--muted); font-size: .68rem; font-style: normal; font-weight: 620; letter-spacing: 0; text-transform: none; }
+.users-create-actions { display: flex; align-items: end; }
+.users-create-actions .btn { min-height: 2.85rem; white-space: nowrap; }
+
+.users-table-wrap { overflow: hidden; }
+.users-table { table-layout: fixed; }
+.users-table th:nth-child(1) { width: 17%; }
+.users-table th:nth-child(2) { width: 14%; }
+.users-table th:nth-child(3) { width: 23%; }
+.users-table th:nth-child(4) { width: 17%; }
+.users-table th:nth-child(5) { width: 15%; }
+.users-table th:nth-child(6) { width: 14%; }
+.users-table td { vertical-align: middle; }
+.users-actions-head, .users-actions-cell { text-align: right; }
+.users-row-inactive { opacity: .66; }
+.users-identity, .users-statuses, .users-row-actions, .users-reset-inline { display: flex; align-items: center; gap: .45rem; min-width: 0; }
+.users-identity { flex-wrap: wrap; }
+.users-identity strong { overflow: hidden; color: var(--brand-ink); font-weight: 720; text-overflow: ellipsis; white-space: nowrap; }
+.users-statuses { flex-wrap: wrap; }
+.users-row-select { width: 100%; min-height: 2.35rem; padding: .3rem .55rem; }
+.users-last-login { color: var(--muted); font-size: .82rem; font-variant-numeric: tabular-nums; line-height: 1.35; }
+.users-row-actions { justify-content: flex-end; flex-wrap: wrap; }
+.users-reset-inline { justify-content: flex-end; width: 100%; }
+.users-reset-input { width: min(11rem, 100%); min-height: 2.35rem; padding: .35rem .55rem; }
+
+.credential-backdrop { background: rgba(12, 42, 88, .38); }
+.credential-dialog { width: min(100%, 35rem); max-width: 35rem; gap: 1rem; padding: clamp(1.25rem, 3vw, 1.65rem); box-shadow: 0 28px 58px -32px rgba(0, 62, 136, .62), inset 0 1px 0 rgba(255,255,255,.94); }
+.credential-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.credential-dialog-once { padding: .34rem .58rem; border-radius: var(--radius-badge); color: #75520c; background: #fff5dd; font-size: .71rem; font-weight: 720; letter-spacing: .02em; }
+.credential-dialog-copy { display: grid; gap: .38rem; }
+.credential-dialog h2 { margin: 0; color: var(--brand-ink); font-size: clamp(1.28rem, 3vw, 1.55rem); letter-spacing: -.035em; }
+.credential-dialog-copy p { margin: 0; color: var(--muted); line-height: 1.5; }
+.credential-dialog-value { gap: .72rem; padding: .85rem; background: #f7fbff; }
+.credential-value-row { display: grid; gap: .25rem; min-width: 0; }
+.credential-dialog-value code { display: block; margin: 0; color: #113d89; font-variant-numeric: tabular-nums; }
+.credential-dialog-reminder { display: flex; align-items: flex-start; gap: .45rem; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.42; }
+.credential-dialog-reminder svg { flex: 0 0 auto; margin-top: .05rem; color: var(--brand-blue); }
+.credential-dialog-actions { justify-content: space-between; }
+.credential-dialog-actions .btn { min-width: 9.5rem; }
+
+@media (max-width: 1180px) {
+  .users-create-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .users-field-wide { grid-column: auto; }
+  .users-create-actions { justify-content: flex-start; }
+}
+
+@media (max-width: 860px) {
+  .users-table-wrap { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+  .users-table, .users-table tbody, .users-table tr, .users-table td { display: block; width: 100%; }
+  .users-table thead { display: none; }
+  .users-table tbody { display: grid; gap: .75rem; }
+  .users-table tbody tr { padding: .3rem 0; border: 1px solid rgba(255,255,255,.84); border-radius: var(--radius-panel); background: var(--surface-raised); box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,.92); }
+  .users-table tbody tr:hover { box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,.92); }
+  .users-table tbody tr:has(.empty) { padding: 0; }
+  .users-table td { display: grid; grid-template-columns: minmax(7.4rem, 38%) minmax(0, 1fr); gap: .8rem; align-items: center; padding: .68rem .85rem; border: 0; border-bottom: 1px solid var(--line-subtle); text-align: right; }
+  .users-table td::before { content: attr(data-label); color: var(--muted); font-size: .68rem; font-weight: 750; letter-spacing: .055em; line-height: 1.2; text-align: left; text-transform: uppercase; }
+  .users-table td:last-child { border-bottom: 0; }
+  .users-table td.empty { display: grid; padding: 2rem 1rem; text-align: center; }
+  .users-table td.empty::before { content: none; }
+  .users-identity, .users-statuses, .users-row-actions, .users-reset-inline { justify-content: flex-end; }
+  .users-identity strong { max-width: 100%; }
+  .users-row-actions { min-width: 0; }
+  .users-reset-inline { flex-wrap: wrap; }
+  .users-reset-input { flex: 1 1 10rem; }
+}
+
+@media (max-width: 620px) {
+  .users-commandbar { align-items: stretch; flex-direction: column; }
+  .users-commandbar .btn { width: 100%; }
+  .users-create-form { padding: 1rem; }
+  .users-create-fields { grid-template-columns: 1fr; }
+  .users-create-actions .btn { width: 100%; }
+  .users-table td { grid-template-columns: 1fr; gap: .3rem; text-align: left; }
+  .users-table td::before { text-align: left; }
+  .users-identity, .users-statuses, .users-row-actions, .users-reset-inline { justify-content: flex-start; }
+  .users-row-select { width: 100%; }
+  .credential-dialog { padding: 1.15rem; }
+  .credential-dialog-actions { flex-direction: column; }
+  .credential-dialog-actions .btn { width: 100%; }
+}
 .admin-route-guard {
   display: grid;
   grid-template-columns: clamp(13.5rem, 18vw, 16rem) minmax(0, 1fr);
