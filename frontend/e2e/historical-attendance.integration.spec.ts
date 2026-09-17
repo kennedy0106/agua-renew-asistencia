@@ -164,11 +164,14 @@ test("U09 real: Normal, Adicional, Recuperación y Mixto desde pantalla llegan a
   const daily = await api.get(`${API}/api/v1/payroll/periods/${periodId}/daily-report`);
   expect(daily.status()).toBe(200);
   expect(JSON.stringify(await daily.json())).toContain(recovery);
-  const csv = await api.get(`${API}/api/v1/exports/attendance.csv?date_from=2026-09-03&date_to=2026-09-03`);
-  expect(csv.status()).toBe(200);
-  const csvText = await csv.text();
-  expect((csvText.match(/CARGA_HISTORICA/g) ?? [])).toHaveLength(8);
-  expect(csvText).toContain(",240,120,120,");
+  for (const id of ids) {
+    const csv = await api.get(`${API}/api/v1/exports/attendance.csv?employee_id=${id}&date_from=2026-09-03&date_to=2026-09-03`);
+    expect(csv.status()).toBe(200);
+    const csvText = await csv.text();
+    // Each manual CSV row contains the source and status labels.
+    expect((csvText.match(/CARGA_HISTORICA/g) ?? [])).toHaveLength(2);
+    if (id === mixed) expect(csvText).toContain(",240,120,120,");
+  }
 });
 
 test("U02/U03 real: PATCH con R y VOID pierden respuesta después del commit y se recuperan", async ({ page }) => {
