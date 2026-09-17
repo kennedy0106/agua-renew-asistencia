@@ -195,6 +195,20 @@ los dos últimos casos; ya no libera una operación sólo por su status 422.
 Verificación dirigida H260-01, exclusivamente local: `npm run lint`,
 `npx tsc --noEmit`, `npm run build` y
 `npx playwright test e2e/historical-attendance.ui.spec.ts`: **15 passed**.
-No se consultó ni ejecutó GitHub Actions, ni se usó Neon, R2 real o un
-despliegue. La suite completa y su SHA se registran después de congelar el
-candidato, sin atribuir automáticamente resultados anteriores a este ajuste.
+
+Validación completa del candidato funcional
+`1ca252c6e1978e1694d849cd2defeb913a2e2167`, ejecutada exclusivamente en
+local con PostgreSQL 17.11 y MinIO desechables:
+
+- `uv --directory backend run python ../scripts/verify_local.py`: **OK**.
+- Backend: **410 passed**, 18 advertencias de deprecación, 0 fallos, 0 errores
+  y 0 pruebas omitidas.
+- Instalación reproducible, lint, TypeScript y build de Next.js: aprobados.
+- Playwright UI: **29 passed**.
+- Playwright con Next.js/FastAPI/PostgreSQL/MinIO locales: **25 passed**.
+- Alembic a `head`, seed ficticio, guarda del kiosco y `git diff --check`:
+  aprobados.
+- Evidencia completa: `.local-verify/20260917T152804Z/` (gitignored).
+
+No se consultó, ejecutó ni reintentó GitHub Actions. Tampoco se usó Neon,
+R2 real, datos reales o un despliegue.
