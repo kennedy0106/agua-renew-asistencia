@@ -5,12 +5,14 @@ import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import {
   ApiError,
+  authApi,
   employeesApi,
   Employee,
   historicalAttendanceApi,
   ManualAttendanceDay,
   ManualAttendanceRow,
 } from "@/lib/api";
+import { clearHistoricalOperation, readHistoricalOperation, saveHistoricalOperation } from "@/lib/historicalAttendanceOperation";
 
 type PaymentPreview = {
   status: string;
@@ -134,7 +136,10 @@ export default function HistoricalAttendancePage() {
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
   const [previewToken, setPreviewToken] = useState<string | null>(null);
   const previewRequest = useRef(0);
+  const mutationInFlight = useRef<string | null>(null);
+  const recoveryGeneration = useRef(0);
   const [batchKey, setBatchKey] = useState(() => crypto.randomUUID());
+  const [operationUserId, setOperationUserId] = useState<string | null>(null);
   const [history, setHistory] = useState<ManualAttendanceDay[]>([]);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [showVoided, setShowVoided] = useState(false);
@@ -156,12 +161,18 @@ export default function HistoricalAttendancePage() {
   const [commitmentMinutes, setCommitmentMinutes] = useState("");
   const [commitmentCovered, setCommitmentCovered] = useState(false);
   const [commitmentReference, setCommitmentReference] = useState("");
-  const loadHistory = (offset = historyOffset, includeVoided = showVoided) =>
-    historicalAttendanceApi
-      .list({ offset, limit: 50, include_voided: includeVoided })
-      .then((rows) => { setHistory(rows); setHistoryOffset(offset); })
-      .catch(() => undefined);
+  const loadHistory = async (offset = historyOffset, includeVoided = showVoided) => {
+    try {
+      const rows = await historicalAttendanceApi.list({ offset, limit: 50, include_voided: includeVoided });
+      setHistory(rows);
+      setHistoryOffset(offset);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   useEffect(() => {
+    void authApi.me().then((user) => setOperationUserId(user.id)).catch(() => setOperationUserId(null));
     employeesApi
       .list()
       .then((rows) => {
@@ -174,6 +185,33 @@ export default function HistoricalAttendancePage() {
     // recreated with the render state and must not retrigger the initial load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => {
+    if (!operationUserId) return;
+    const generation = ++recoveryGeneration.current;
+    const pending = readHistoricalOperation(operationUserId);
+    if (!pending) return;
+    void historicalAttendanceApi.operation(pending.key).then(async (receipt) => {
+      if (generation !== recoveryGeneration.current) return;
+      clearHistoricalOperation(operationUserId, pending.key);
+      const refreshed = await loadHistory();
+      if (generation !== recoveryGeneration.current) return;
+      setMessage(refreshed
+        ? `Operación recuperada: ${receipt.operation_type}. Historial actualizado.`
+        : `Operación recuperada: ${receipt.operation_type}. No se pudo actualizar el historial.`);
+    }).catch(() => {
+      if (generation !== recoveryGeneration.current) return;
+      setMessage("Hay una operación pendiente. Use Reintentar con el mismo envío; no cambie el formulario.");
+    });
+    return () => { recoveryGeneration.current += 1; };
+  // The recovery is intentionally scoped to a user identity, not form state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operationUserId]);
+  const refuseWhilePending = () => {
+    if (!operationUserId) return false;
+    if (!readHistoricalOperation(operationUserId)) return false;
+    setMessage("Hay una operación pendiente. Resuélvala o reinténtela con el mismo envío antes de iniciar otra.");
+    return true;
+  };
   const selected = useMemo(
     () => drafts.filter((draft) => draft.selected),
     [drafts],
@@ -324,24 +362,41 @@ export default function HistoricalAttendancePage() {
       setMessage("Previsualice nuevamente antes de aprobar.");
       return;
     }
+    const frozen = buildPayload(approveAdditional);
+    if (!operationUserId) {
+      setMessage("No se pudo confirmar el usuario actual; espere antes de guardar.");
+      return;
+    }
+    if (refuseWhilePending()) return;
+    if (mutationInFlight.current) return;
+    if (!saveHistoricalOperation({ key: frozen.idempotency_key, userId: operationUserId, kind: "BATCH", payload: frozen })) {
+      setMessage("No se pudo guardar el reintento local; la carga no fue enviada.");
+      return;
+    }
+    mutationInFlight.current = frozen.idempotency_key;
     setBusy(true);
     try {
       const saved = await historicalAttendanceApi.batch(
-        buildPayload(approveAdditional),
+        frozen,
       );
-      setMessage(`${saved.created.length} carga(s) registrada(s).`);
+      clearHistoricalOperation(operationUserId, frozen.idempotency_key);
       setPreview(null);
       setPreviewToken(null);
       setBatchKey(crypto.randomUUID());
       setDrafts(employees.map(makeDraft));
-      loadHistory();
+      const refreshed = await loadHistory();
+      setMessage(refreshed
+        ? `${saved.created.length} carga(s) registrada(s).`
+        : `${saved.created.length} carga(s) registrada(s). No se pudo actualizar el historial.`);
     } catch (error) {
-      setMessage(
-        error instanceof ApiError
-          ? error.message
-          : "No se pudo guardar la carga.",
-      );
+      if (error instanceof ApiError && ["STALE_PREVIEW", "STALE_VERSION", "PAYROLL_CLOSED", "IDEMPOTENCY_CONFLICT"].includes(error.code ?? "")) {
+        clearHistoricalOperation(operationUserId, frozen.idempotency_key);
+        setMessage(error.code === "STALE_PREVIEW" ? "La valoración cambió. Previsualice de nuevo antes de aprobar." : error.code === "STALE_VERSION" ? "La versión cambió realmente; actualice el historial." : error.message);
+      } else {
+        setMessage("Resultado no confirmado: puede reintentar el mismo envío.");
+      }
     } finally {
+      if (mutationInFlight.current === frozen.idempotency_key) mutationInFlight.current = null;
       setBusy(false);
     }
   };
@@ -508,20 +563,34 @@ export default function HistoricalAttendancePage() {
       setMessage("Previsualice la corrección antes de guardarla.");
       return;
     }
+    const frozen = { ...row, expected_version: edit.version, preview_token: editPreviewToken, idempotency_key: crypto.randomUUID() };
+    if (!operationUserId) { setMessage("No se pudo confirmar el usuario actual; espere antes de guardar."); return; }
+    if (refuseWhilePending()) return;
+    if (mutationInFlight.current) return;
+    if (!saveHistoricalOperation({ key: frozen.idempotency_key, userId: operationUserId, kind: "UPDATE", targetId: edit.id, payload: frozen })) {
+      setMessage("No se pudo guardar el reintento local; la corrección no fue enviada.");
+      return;
+    }
+    mutationInFlight.current = frozen.idempotency_key;
     setBusy(true);
     try {
       await historicalAttendanceApi.update(edit.id, {
-        ...row,
-        expected_version: edit.version,
-        preview_token: editPreviewToken,
+        ...frozen,
       });
-      setMessage("Corrección versionada guardada. El historial se actualizó.");
+      clearHistoricalOperation(operationUserId, frozen.idempotency_key);
       setEdit(null);
       setEditPreview(null);
       setEditPreviewToken(null);
-      await loadHistory();
+      setMessage(await loadHistory()
+        ? "Corrección versionada guardada. El historial se actualizó."
+        : "Corrección versionada guardada; no se pudo actualizar el historial.");
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && error.code === "STALE_PREVIEW") {
+        clearHistoricalOperation(operationUserId, frozen.idempotency_key);
+        setEditPreview(null); setEditPreviewToken(null);
+        setMessage("La valoración cambió. Actualice la previsualización antes de guardar.");
+      } else if (error instanceof ApiError && error.code === "STALE_VERSION") {
+        clearHistoricalOperation(operationUserId, frozen.idempotency_key);
         await loadHistory();
         setMessage(
           "Esta carga cambió en otra sesión. Recargue el historial y vuelva a editar la versión vigente.",
@@ -533,8 +602,122 @@ export default function HistoricalAttendancePage() {
             : "No se pudo guardar la corrección.",
         );
     } finally {
+      if (mutationInFlight.current === frozen.idempotency_key) mutationInFlight.current = null;
       setBusy(false);
     }
+  };
+  const voidItem = async (item: ManualAttendanceDay) => {
+    const key = crypto.randomUUID();
+    const payload = { expected_version: item.version, reason: "Anulación administrativa", idempotency_key: key };
+    if (!operationUserId) { setMessage("No se pudo confirmar el usuario actual; espere antes de anular."); return; }
+    if (refuseWhilePending()) return;
+    if (mutationInFlight.current) return;
+    if (!saveHistoricalOperation({ key, userId: operationUserId, kind: "VOID", targetId: item.id, payload })) {
+      setMessage("No se pudo guardar el reintento local; la anulación no fue enviada.");
+      return;
+    }
+    mutationInFlight.current = key;
+    setBusy(true);
+    try {
+      await historicalAttendanceApi.void(item.id, item.version, payload.reason, key);
+      clearHistoricalOperation(operationUserId, key);
+      setMessage(await loadHistory() ? "Anulación registrada." : "Anulación registrada; no se pudo actualizar el historial.");
+    } catch (error) {
+      if (error instanceof ApiError && ["STALE_VERSION", "PAYROLL_CLOSED", "IDEMPOTENCY_CONFLICT"].includes(error.code ?? "")) {
+        clearHistoricalOperation(operationUserId, key);
+        setMessage(error.code === "STALE_VERSION" ? "La carga cambió en otra sesión; actualice el historial." : error.message);
+      } else setMessage("Resultado no confirmado: reintente la misma anulación.");
+    } finally { if (mutationInFlight.current === key) mutationInFlight.current = null; setBusy(false); }
+  };
+  const approveItem = async (item: ManualAttendanceDay) => {
+    if (!operationUserId) { setMessage("No se pudo confirmar el usuario actual; espere antes de aprobar."); return; }
+    if (refuseWhilePending()) return;
+    if (mutationInFlight.current) return;
+    setBusy(true);
+    let currentSnapshot: Record<string, unknown>;
+    try {
+      const valuation = await historicalAttendanceApi.preview({
+        work_date: item.work_date,
+        rows: [{
+          employee_id: item.employee_id,
+          worked_minutes_net: item.worked_minutes_net,
+          normal_minutes: item.normal_minutes,
+          additional_minutes: item.additional_minutes,
+          recovery_minutes: item.recovery_minutes,
+          known_check_in_at: item.known_check_in_at,
+          known_check_out_at: item.known_check_out_at,
+          known_break_minutes: item.known_break_minutes,
+          day_context: item.day_context,
+          source_reference: item.source_reference,
+          payment_method: item.payment_method,
+          payment_concept: item.payment_concept,
+          reviewed_additional_amount: item.reviewed_additional_amount,
+          reason: item.reason,
+          recovery_allocations: item.recovery_allocations,
+        }],
+        idempotency_key: crypto.randomUUID(),
+        editing_manual_day_id: item.id,
+        expected_version: item.version,
+      });
+      currentSnapshot = valuation.rows[0].payment as Record<string, unknown>;
+      const amount = currentSnapshot.amount == null ? "sin importe calculado" : `S/ ${currentSnapshot.amount}`;
+      if (!window.confirm(`La valoración vigente es ${amount}. ¿Confirma aprobar exactamente este importe y contenido?`)) {
+        setMessage("Aprobación cancelada; no se realizó ningún cambio.");
+        return;
+      }
+    } catch (error) {
+      setMessage(error instanceof ApiError ? error.message : "No se pudo obtener la valoración vigente.");
+      return;
+    } finally {
+      setBusy(false);
+    }
+    const key = crypto.randomUUID();
+    const payload = { expected_version: item.version, expected_snapshot: currentSnapshot!, idempotency_key: key };
+    if (!saveHistoricalOperation({ key, userId: operationUserId, kind: "APPROVE", targetId: item.id, payload })) {
+      setMessage("No se pudo guardar el reintento local; la aprobación no fue enviada.");
+      return;
+    }
+    mutationInFlight.current = key;
+    setBusy(true);
+    try {
+      await historicalAttendanceApi.approve(item.id, item.version, payload.expected_snapshot, key);
+      clearHistoricalOperation(operationUserId, key);
+      setMessage(await loadHistory() ? "Adicional aprobado." : "Adicional aprobado; no se pudo actualizar el historial.");
+    } catch (error) {
+      if (error instanceof ApiError && ["STALE_PREVIEW", "STALE_VERSION", "PAYROLL_CLOSED", "IDEMPOTENCY_CONFLICT"].includes(error.code ?? "")) {
+        clearHistoricalOperation(operationUserId, key);
+        setMessage(error.code === "STALE_PREVIEW" ? "La valoración cambió. Abra la carga, previsualice y apruebe nuevamente." : error.code === "STALE_VERSION" ? "La versión ya cambió; actualice el historial." : error.message);
+      } else setMessage("Resultado no confirmado: reintente la misma aprobación.");
+    } finally { if (mutationInFlight.current === key) mutationInFlight.current = null; setBusy(false); }
+  };
+  const retryPendingOperation = async () => {
+    if (!operationUserId) return;
+    const pending = readHistoricalOperation(operationUserId);
+    if (!pending) { setMessage("No hay una operación pendiente para este usuario."); return; }
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = pending.key;
+    setBusy(true);
+    try {
+      if (pending.kind === "BATCH") await historicalAttendanceApi.batch(pending.payload as Parameters<typeof historicalAttendanceApi.batch>[0]);
+      if (pending.kind === "UPDATE" && pending.targetId) await historicalAttendanceApi.update(pending.targetId, pending.payload as Parameters<typeof historicalAttendanceApi.update>[1]);
+      if (pending.kind === "VOID" && pending.targetId) {
+        const p = pending.payload as { expected_version: number; reason: string; idempotency_key: string };
+        await historicalAttendanceApi.void(pending.targetId, p.expected_version, p.reason, p.idempotency_key);
+      }
+      if (pending.kind === "APPROVE" && pending.targetId) {
+        const p = pending.payload as { expected_version: number; expected_snapshot: Record<string, unknown>; idempotency_key: string };
+        await historicalAttendanceApi.approve(pending.targetId, p.expected_version, p.expected_snapshot, p.idempotency_key);
+      }
+      clearHistoricalOperation(operationUserId, pending.key);
+      setMessage(await loadHistory()
+        ? "Operación recuperada sin duplicar la carga."
+        : "Operación recuperada sin duplicar la carga; no se pudo actualizar el historial.");
+    } catch (error) {
+      if (error instanceof ApiError && ["STALE_PREVIEW", "STALE_VERSION", "PAYROLL_CLOSED", "IDEMPOTENCY_CONFLICT"].includes(error.code ?? "")) {
+        clearHistoricalOperation(operationUserId, pending.key);
+        setMessage(error.code === "STALE_PREVIEW" ? "La valoración quedó obsoleta; obtenga una previsualización nueva." : error.code === "STALE_VERSION" ? "La operación no puede aplicarse: la versión cambió realmente." : error.message);
+      } else setMessage("La operación sigue sin confirmación; conserve el mismo reintento.");
+    } finally { if (mutationInFlight.current === pending.key) mutationInFlight.current = null; setBusy(false); }
   };
   return (
     <AdminShell
@@ -568,9 +751,7 @@ export default function HistoricalAttendancePage() {
           </p>
         </div>
         {message && (
-          <p role="status" className="form-message">
-            {message}
-          </p>
+          <div className="form-message"><p role="status">{message}</p>{operationUserId && readHistoricalOperation(operationUserId) && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void retryPendingOperation()}>Reintentar operación pendiente</button>}</div>
         )}
         <label>
           <input
@@ -1111,22 +1292,7 @@ export default function HistoricalAttendancePage() {
                         <button
                           className="btn btn-ghost btn-sm"
                           disabled={busy}
-                          onClick={() =>
-                            void historicalAttendanceApi
-                              .void(
-                                item.id,
-                                item.version,
-                                "Anulación administrativa",
-                              )
-                              .then(() => loadHistory())
-                              .catch((error) =>
-                                setMessage(
-                                  error instanceof ApiError
-                                    ? error.message
-                                    : "No se pudo anular.",
-                                ),
-                              )
-                          }
+                          onClick={() => void voidItem(item)}
                         >
                           Anular
                         </button>
@@ -1135,22 +1301,7 @@ export default function HistoricalAttendancePage() {
                             <button
                               className="btn btn-ghost btn-sm"
                               disabled={busy}
-                              onClick={() =>
-                                void historicalAttendanceApi
-                                  .approve(
-                                    item.id,
-                                    item.version,
-                                    item.payment_snapshot!,
-                                  )
-                                  .then(() => loadHistory())
-                                  .catch((error) =>
-                                    setMessage(
-                                      error instanceof ApiError
-                                        ? error.message
-                                        : "No se pudo aprobar.",
-                                    ),
-                                  )
-                              }
+                              onClick={() => void approveItem(item)}
                             >
                               Aprobar
                             </button>

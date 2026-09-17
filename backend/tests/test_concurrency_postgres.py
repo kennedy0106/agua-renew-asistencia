@@ -2,6 +2,7 @@
 
 import os
 import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -26,6 +27,7 @@ from app.modules.payroll.service import PayrollService
 from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication, RecoveryCommitment
 from app.modules.attendance.manual_schemas import ManualBatchIn, ManualDayIn, ManualUpdateIn, RecoveryAllocationIn
 from app.modules.attendance.manual_service import ManualAttendanceService
+from app.modules.attendance.manual_operations import lock_operation
 from app.modules.system_roles.models import SystemRole
 from app.modules.users.models import User
 
@@ -246,8 +248,10 @@ def test_hst01_a30_same_idempotency_key_has_one_effective_creation(pg_engine):
     for thread in threads:
         thread.start()
     _join_finished(threads)
-    assert sum(isinstance(item, dict) for item in outcomes) == 1
-    assert outcomes.count(409) == 1
+    # The transaction advisory lock serializes the same key: both callers
+    # receive the committed receipt, not a false MANUAL_DAY_EXISTS conflict.
+    assert len(outcomes) == 2 and all(isinstance(item, dict) for item in outcomes)
+    assert outcomes[0] == outcomes[1]
 
     check = factory()
     try:
@@ -264,6 +268,74 @@ def test_hst01_a30_same_idempotency_key_has_one_effective_creation(pg_engine):
         _cleanup_payroll(check, period_id, record_id)
     finally:
         check.close()
+
+
+def test_h693_same_key_can_continue_after_first_transaction_rolls_back(pg_engine):
+    """C02: el advisory lock no reserva una clave cuando la primera transacción revierte."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+    finally:
+        setup.close()
+    key = f"c02-{uuid.uuid4().hex}"
+    payload = _manual_payload(employee_id, date(2026, 9, 13), key=key)
+    first = factory(); lock_operation(first, key)
+    pid_ready = threading.Event(); outcomes: list[object] = []
+
+    def second_request():
+        db = factory()
+        try:
+            pid = db.scalar(text("SELECT pg_backend_pid()"))
+            outcomes.append(("pid", pid)); pid_ready.set()
+            outcomes.append(ManualAttendanceService(db).batch(payload, actor_id))
+        except Exception as exc:  # surfaced below; never accepted as success
+            outcomes.append(exc)
+        finally:
+            db.close()
+
+    thread = threading.Thread(target=second_request); thread.start()
+    assert pid_ready.wait(timeout=5)
+    pid = next(value for label, value in outcomes if isinstance((label, value), tuple) and label == "pid")
+    observer = factory()
+    try:
+        waiting = False
+        for _ in range(100):
+            waiting = observer.scalar(text("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = :pid"), {"pid": pid}) is True
+            if waiting: break
+            time.sleep(0.02)
+        assert waiting, "la segunda conexión no alcanzó el advisory lock"
+    finally:
+        observer.close()
+    first.rollback(); first.close()
+    _join_finished([thread])
+    results = [item for item in outcomes if isinstance(item, dict)]
+    assert len(results) == 1
+    check = factory()
+    try:
+        assert check.query(ManualAttendanceDay).filter_by(employee_id=employee_id, work_date=date(2026, 9, 13)).count() == 1
+        assert check.execute(text("SELECT COUNT(*) FROM manual_attendance_idempotency WHERE idempotency_key = :key"), {"key": key}).scalar_one() == 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_h693_advisory_lock_timeout_is_controlled_and_keeps_same_key(pg_engine):
+    """C13: un lock ocupado termina en OPERATION_IN_PROGRESS, no en éxito falso."""
+    factory = _two_factory(pg_engine)
+    key = f"c13-{uuid.uuid4().hex}"
+    holder = factory(); contender = factory()
+    try:
+        lock_operation(holder, key)
+        with pytest.raises(HTTPException) as raised:
+            lock_operation(contender, key)
+        assert raised.value.status_code == 503
+        assert raised.value.detail["code"] == "OPERATION_IN_PROGRESS"
+    finally:
+        contender.close(); holder.rollback(); holder.close()
 
 
 def test_hst01_r04_two_concurrent_recoveries_do_not_consume_more_than_pending(pg_engine):
@@ -581,7 +653,8 @@ def test_hst01_f04_close_blocks_concurrent_versioned_edit(pg_engine):
                         reason="Edición concurrente",
                         expected_version=1,
                         preview_token="f" * 64,
-                ),
+                        idempotency_key=f"f04-edit-{uuid.uuid4().hex}",
+                    ),
                 expected_version=1,
                 actor_id=actor_id,
             )

@@ -67,14 +67,17 @@ class ManualBatchIn(BaseModel):
 class ManualUpdateIn(ManualDayIn):
     expected_version: int = Field(ge=1)
     preview_token: str = Field(min_length=64, max_length=64)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 class VoidIn(BaseModel):
     expected_version: int = Field(ge=1)
     reason: str = Field(min_length=3, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 class PaymentApproveIn(BaseModel):
     expected_version: int = Field(ge=1)
     expected_snapshot: dict
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 class CommitmentIn(BaseModel):
     employee_id: uuid.UUID

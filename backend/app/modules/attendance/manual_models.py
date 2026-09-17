@@ -89,4 +89,11 @@ class ManualAttendanceIdempotency(Base):
     idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # v1 rows deliberately retain null scope fields: a migration must not
+    # invent the historic actor or turn an old retry key into authorization.
+    protocol_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
+    operation_type: Mapped[str | None] = mapped_column(String(16))
+    target_manual_day_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("manual_attendance_days.id"), index=True)
+    http_status: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

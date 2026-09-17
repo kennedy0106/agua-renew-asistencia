@@ -6,14 +6,15 @@ from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import lima_tz
 from app.modules.attendance.manual_models import ManualAttendanceDay, ManualAttendanceIdempotency, ManualRecoveryApplication, RecoveryCommitment
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_schemas import CommitmentIn, ManualBatchIn, ManualDayIn, RecoveryAllocationIn
+from app.modules.attendance.manual_operations import commit_with_receipt_recovery, lock_operation, payload_hash, replay_or_conflict, store_receipt
 from app.modules.adjustments.models import ADJUSTMENT_APPROVED, ADJUSTMENT_PENDING, HourAdjustment
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
@@ -102,8 +103,17 @@ class ManualAttendanceService:
         dates = sorted(set(work_dates))
         if not dates:
             return
-        periods = list(self.db.scalars(select(PayrollPeriod).order_by(PayrollPeriod.root_period_id, PayrollPeriod.version).with_for_update()))
-        relevant = [p for p in periods if any(p.start_date <= item <= p.end_date for item in dates)]
+        date_predicates = [
+            (PayrollPeriod.start_date <= item) & (PayrollPeriod.end_date >= item)
+            for item in dates
+        ]
+        relevant = list(self.db.scalars(
+            select(PayrollPeriod)
+            .where(or_(*date_predicates))
+            .order_by(PayrollPeriod.root_period_id, PayrollPeriod.version)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ))
         by_root: dict[uuid.UUID, list[PayrollPeriod]] = {}
         for period in relevant:
             by_root.setdefault(period.root_period_id, []).append(period)
@@ -124,7 +134,7 @@ class ManualAttendanceService:
                 PayrollPeriod.start_date <= affected_date,
                 PayrollPeriod.end_date >= affected_date,
                 PayrollPeriod.status == PERIOD_CALCULATED,
-            ).order_by(PayrollPeriod.root_period_id, PayrollPeriod.version).with_for_update()):
+            ).order_by(PayrollPeriod.root_period_id, PayrollPeriod.version).execution_options(populate_existing=True).with_for_update()):
                 period.status = PERIOD_OPEN
                 period.inputs_fingerprint = None
 
@@ -135,7 +145,20 @@ class ManualAttendanceService:
             .where(ManualRecoveryApplication.manual_day_id == manual_day_id)
         ))
 
-    def _validate_row(self, work_date: date, row: ManualDayIn, *, exclude_manual_day_id: uuid.UUID | None = None, locked_commitments: dict[uuid.UUID, RecoveryCommitment] | None = None) -> None:
+    def _operation_replay(self, *, key: str | None, payload: object, actor_id: uuid.UUID, operation_type: str, target_id: uuid.UUID | None) -> tuple[str, dict | None]:
+        """Acquire the HST-only key lock and resolve a completed receipt first.
+
+        This deliberately runs before CLOSED/version/void checks, so a reply
+        lost after commit is always recoverable without rewriting later state.
+        """
+        digest = payload_hash(payload)
+        lock_operation(self.db, key)
+        return digest, replay_or_conflict(
+            self.db, key=key, digest=digest, actor_id=actor_id,
+            operation_type=operation_type, target_manual_day_id=target_id,
+        )
+
+    def _validate_row(self, work_date: date, row: ManualDayIn, *, exclude_manual_day_id: uuid.UUID | None = None, locked_commitments: dict[uuid.UUID, RecoveryCommitment] | None = None, validate_periods: bool = True) -> None:
         employee = self._employee(row.employee_id)
         self._assert_date(employee, work_date)
         requested_ids = [allocation.commitment_id for allocation in row.recovery_allocations]
@@ -147,7 +170,8 @@ class ManualAttendanceService:
         for allocation in row.recovery_allocations:
             commitment = commitments.get(allocation.commitment_id)
             if not commitment or commitment.employee_id != row.employee_id or commitment.status != "ACTIVE": self._error("RECOVERY_COMMITMENT_INVALID", "El compromiso de recuperación no corresponde al empleado", status.HTTP_409_CONFLICT)
-        self._assert_not_closed(work_date, *(commitment.permission_date for commitment in commitments.values()))
+        if validate_periods:
+            self._assert_not_closed(work_date, *(commitment.permission_date for commitment in commitments.values()))
         if self.db.scalar(select(AttendanceRecord.id).where(AttendanceRecord.employee_id == row.employee_id, AttendanceRecord.work_date == work_date)):
             self._error("DAY_ALREADY_HAS_ATTENDANCE", "La jornada ya tiene marcaciones; no se mezclan fuentes", status.HTTP_409_CONFLICT)
         if row.known_check_in_at and row.known_check_in_at.astimezone(lima_tz()).date() != work_date:
@@ -181,36 +205,79 @@ class ManualAttendanceService:
             used = self.db.scalar(used_query) or 0
             if int(used) + allocation.minutes > commitment.agreed_minutes: self._error("RECOVERY_EXCEEDS_PENDING", "La recuperación supera el pendiente del compromiso", status.HTTP_409_CONFLICT)
 
+    def _valuation_inputs(self, employee_id: uuid.UUID, work_date: date) -> tuple[object | None, object | None, dict]:
+        salary = SalaryService(self.db).get_for_date(employee_id, work_date)
+        schedule = ScheduleService(self.db).repo.get_for_date(employee_id, work_date)
+        rates_service = OvertimePolicyService(self.db)
+        rates = rates_service.get_effective_overtime_rates(employee_id, work_date)
+        policy = rates_service.repo.get_for_date(work_date) if rates.get("source") == "company_policy" else None
+        return salary, schedule, {
+            "salary_id": str(salary.id) if salary else None,
+            "salary_effective_from": salary.effective_from.isoformat() if salary else None,
+            "salary_effective_to": salary.effective_to.isoformat() if salary and salary.effective_to else None,
+            "monthly_salary": str(salary.monthly_salary) if salary else None,
+            "overtime_enabled": salary.overtime_enabled if salary else None,
+            "schedule_id": str(schedule.id) if schedule else None,
+            "schedule_effective_from": schedule.effective_from.isoformat() if schedule else None,
+            "schedule_effective_to": schedule.effective_to.isoformat() if schedule and schedule.effective_to else None,
+            "expected_minutes": getattr(schedule, (
+                "monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes",
+                "friday_minutes", "saturday_minutes", "sunday_minutes",
+            )[work_date.weekday()]) if schedule else 0,
+            "policy_id": str(policy.id) if policy else None,
+            "policy_effective_from": policy.effective_from.isoformat() if policy else None,
+            "policy_effective_to": policy.effective_to.isoformat() if policy and policy.effective_to else None,
+            "rate_source": rates.get("source"),
+            "first_two_hours_rate": str(rates["first_two_hours_rate"]),
+            "additional_hours_rate": str(rates["additional_hours_rate"]),
+        }
+
     def estimate_payment(self, employee_id: uuid.UUID, work_date: date, minutes: int, row: ManualDayIn | None = None) -> dict:
         if not minutes: return {"status": "NOT_APPLICABLE", "amount": "0.00", "minutes": 0}
+        salary, schedule, inputs = self._valuation_inputs(employee_id, work_date)
+        expected = inputs["expected_minutes"]
         if row is not None and row.payment_method == "REVIEWED":
-            # Importe incremental revisado: no se confunde con el salario base
-            # y no se inventa una tasa de sobretiempo para supuestos especiales.
-            return {"status": "PENDING", "amount": str(row.reviewed_additional_amount), "minutes": minutes, "method": "REVIEWED", "concept": row.payment_concept, "reference": row.source_reference}
-        salary = SalaryService(self.db).get_for_date(employee_id, work_date)
-        expected = ScheduleService(self.db).expected_minutes(employee_id, work_date)
+            ordinary = self._ordinary_payment(minutes, salary, expected, inputs)
+            return {"status": "PENDING", "amount": str(row.reviewed_additional_amount), "minutes": minutes, "method": "REVIEWED", "concept": row.payment_concept, "reference": row.source_reference, "ordinary_minimum_amount": ordinary.get("amount"), "valuation_inputs": inputs}
+        return self._ordinary_payment(minutes, salary, expected, inputs)
+
+    def _ordinary_payment(self, minutes: int, salary: object | None, expected: int, inputs: dict) -> dict:
         if salary is None or expected <= 0 or not salary.overtime_enabled:
-            return {"status": "PENDING", "amount": None, "minutes": minutes, "reason": "HISTORICAL_CONFIGURATION_MISSING" if salary is None or expected <= 0 else "OVERTIME_DISABLED"}
-        rates = OvertimePolicyService(self.db).get_effective_overtime_rates(employee_id, work_date)
+            return {"status": "PENDING", "amount": None, "minutes": minutes, "reason": "HISTORICAL_CONFIGURATION_MISSING" if salary is None or expected <= 0 else "OVERTIME_DISABLED", "valuation_inputs": inputs}
+        rates = inputs
         hourly = salary.monthly_salary / Decimal(30) / (Decimal(expected) / Decimal(60))
         first = min(minutes, 120); rest = max(0, minutes - 120)
-        amount = (Decimal(first) * hourly / 60 * (1 + rates["first_two_hours_rate"] / 100) + Decimal(rest) * hourly / 60 * (1 + rates["additional_hours_rate"] / 100)).quantize(_CENTS, rounding=ROUND_HALF_UP)
-        return {"status": "PENDING", "amount": str(amount), "minutes": minutes, "hourly_rate": str(hourly.quantize(Decimal("0.0001"))), "first_two_hours_rate": str(rates["first_two_hours_rate"]), "additional_hours_rate": str(rates["additional_hours_rate"])}
+        first_rate = Decimal(rates["first_two_hours_rate"])
+        additional_rate = Decimal(rates["additional_hours_rate"])
+        amount = (Decimal(first) * hourly / 60 * (1 + first_rate / 100) + Decimal(rest) * hourly / 60 * (1 + additional_rate / 100)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        return {"status": "PENDING", "amount": str(amount), "minutes": minutes, "hourly_rate": str(hourly.quantize(Decimal("0.0001"))), "first_two_hours_rate": rates["first_two_hours_rate"], "additional_hours_rate": rates["additional_hours_rate"], "valuation_inputs": inputs}
 
     @staticmethod
     def _preview_token(payload: ManualBatchIn, rows: list[dict]) -> str:
+        payload_rows = []
+        for source in payload.rows:
+            item = source.model_dump(mode="json", exclude={"expected_version", "preview_token", "idempotency_key"})
+            item["recovery_allocations"] = sorted(item["recovery_allocations"], key=lambda value: str(value["commitment_id"]))
+            payload_rows.append(item)
         canonical = {
             "work_date": payload.work_date.isoformat(),
             # Include every submitted business field (allocations, known
             # interval, reason/context/reference) as well as the valuation.
-            "payload_rows": [row.model_dump(mode="json", exclude={"expected_version", "preview_token"}) for row in payload.rows],
+            "payload_rows": payload_rows,
             "rows": [{key: value for key, value in row.items() if key != "warning"} for row in rows],
             "editing_manual_day_id": str(payload.editing_manual_day_id) if payload.editing_manual_day_id else None,
             "expected_version": payload.expected_version,
         }
         return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
-    def preview(self, payload: ManualBatchIn) -> dict:
+    def preview(
+        self,
+        payload: ManualBatchIn,
+        *,
+        locked_commitments: dict[uuid.UUID, RecoveryCommitment] | None = None,
+        employees_locked: bool = False,
+        validate_periods: bool = True,
+    ) -> dict:
         if len({r.employee_id for r in payload.rows}) != len(payload.rows): self._error("DUPLICATE_EMPLOYEE_DAY", "Un empleado solo puede aparecer una vez por fecha")
         # AttendanceService serializa los intentos del kiosco sobre la misma
         # fila de empleado.  La carga histórica toma ese mismo candado, en un
@@ -218,28 +285,44 @@ class ManualAttendanceService:
         # sesión. Así una fuente no puede colarse entre la comprobación y el
         # commit de la otra.
         employee_ids = [row.employee_id for row in payload.rows]
-        self._lock_employees(employee_ids)
+        if not employees_locked:
+            self._lock_employees(employee_ids)
         rows = []
         if payload.editing_manual_day_id and (payload.expected_version is None or len(payload.rows) != 1):
             self._error("EDIT_PREVIEW_INVALID", "La previsualización de edición exige una única fila y su versión")
+        old_commitment_ids: list[uuid.UUID] = []
         if payload.editing_manual_day_id:
-            current = self.db.get(ManualAttendanceDay, payload.editing_manual_day_id)
+            current = self._lock_manual_day_after_employee(payload.editing_manual_day_id)
             if not current or current.voided_at or current.version != payload.expected_version:
                 self._error("STALE_VERSION", "La carga cambió; recargue antes de previsualizar", status.HTTP_409_CONFLICT)
             if current.work_date != payload.work_date or current.employee_id != payload.rows[0].employee_id:
                 self._error("EDIT_IDENTITY_IMMUTABLE", "Empleado y fecha no cambian en una corrección")
+            old_commitment_ids = self._commitment_ids_for_day(current.id)
+        if locked_commitments is None:
+            locked_commitments = self._lock_commitments([
+                *old_commitment_ids,
+                *(allocation.commitment_id for row in payload.rows for allocation in row.recovery_allocations),
+            ])
+        if validate_periods:
+            self._assert_not_closed(payload.work_date, *(item.permission_date for item in locked_commitments.values()))
         for row in payload.rows:
-            self._validate_row(payload.work_date, row, exclude_manual_day_id=payload.editing_manual_day_id)
+            self._validate_row(
+                payload.work_date,
+                row,
+                exclude_manual_day_id=payload.editing_manual_day_id,
+                locked_commitments=locked_commitments,
+                validate_periods=False,
+            )
             rows.append({"employee_id": str(row.employee_id), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes, "payment": self.estimate_payment(row.employee_id, payload.work_date, row.additional_minutes, row), "warning": "NORMAL_MISSING" if ScheduleService(self.db).expected_minutes(row.employee_id, payload.work_date) > row.normal_minutes and row.additional_minutes else None})
         return {"work_date": payload.work_date, "rows": rows, "preview_token": self._preview_token(payload, rows)}
 
     def batch(self, payload: ManualBatchIn, actor_id: uuid.UUID) -> dict:
-        normalized = payload.model_dump(mode="json")
-        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        prior = self.db.get(ManualAttendanceIdempotency, payload.idempotency_key)
-        if prior:
-            if prior.payload_hash != digest: self._error("IDEMPOTENCY_CONFLICT", "La clave ya se usó con otro contenido", status.HTTP_409_CONFLICT)
-            return prior.result
+        digest, replay = self._operation_replay(
+            key=payload.idempotency_key, payload=payload, actor_id=actor_id,
+            operation_type="BATCH", target_id=None,
+        )
+        if replay is not None:
+            return replay
         # Writer order: employee -> existing manual day -> commitments ->
         # payroll periods.  The employee lock also serializes an empty-day
         # insert, for which PostgreSQL cannot lock a row that does not exist.
@@ -256,13 +339,31 @@ class ManualAttendanceService:
         ))
         if existing:
             self._error("MANUAL_DAY_EXISTS", "Ya existe una carga manual vigente", status.HTTP_409_CONFLICT)
-        preview = self.preview(payload)
+        # The complete set of origins must be known before periods are
+        # checked.  Relying on staged applications is incorrect here because
+        # this session deliberately runs with autoflush disabled.
+        requested_commitments = self._lock_commitments([
+            allocation.commitment_id
+            for row in payload.rows
+            for allocation in row.recovery_allocations
+        ])
+        affected_dates = [payload.work_date, *(item.permission_date for item in requested_commitments.values())]
+        self._assert_not_closed(*affected_dates)
+        preview = self.preview(
+            payload,
+            locked_commitments=requested_commitments,
+            employees_locked=True,
+            validate_periods=False,
+        )
         if payload.approve_additional and payload.preview_token != preview["preview_token"]:
             self._error("STALE_PREVIEW", "La valoración o el contenido cambió; vuelva a previsualizar", status.HTTP_409_CONFLICT)
         created = []
         try:
-            for row in payload.rows:
-                estimate = self.estimate_payment(row.employee_id, payload.work_date, row.additional_minutes, row)
+            for row, verified in zip(payload.rows, preview["rows"], strict=True):
+                # Persist the exact server valuation that was compared to the
+                # preview token.  Do not call estimate_payment a second time:
+                # salary/policy can change between validation and INSERT.
+                estimate = verified["payment"]
                 payment_status = estimate["status"]
                 approved_by = None; approved_at = None
                 if payload.approve_additional and row.additional_minutes:
@@ -274,14 +375,24 @@ class ManualAttendanceService:
                 for allocation in row.recovery_allocations: self.db.add(ManualRecoveryApplication(manual_day_id=item.id, commitment_id=allocation.commitment_id, minutes=allocation.minutes))
                 AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=item.id, action="created", old_values=None, new_values={"work_date": payload.work_date.isoformat(), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes}, reason=row.reason.strip(), performed_by=actor_id, commit=False)
                 created.append(item)
-            self._invalidate_calculated_periods(payload.work_date, *(permission_date for item in created for permission_date in self._recovery_permission_dates(item.id)))
-            # El resultado idempotente debe ser JSON puro; la previsualización
-            # se consulta antes de escribir y contiene objetos date.
+            # Applications have been staged with autoflush disabled.  Flush
+            # before deriving origin dates; audit flushes are not a contract.
+            self.db.flush()
+            self._invalidate_calculated_periods(*affected_dates)
             result = {"created": [str(i.id) for i in created]}
-            self.db.add(ManualAttendanceIdempotency(idempotency_key=payload.idempotency_key, payload_hash=digest, result=result)); self.db.commit()
+            store_receipt(self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id, operation_type="BATCH", target_manual_day_id=None, result=result)
+            result = commit_with_receipt_recovery(
+                self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id,
+                operation_type="BATCH", target_manual_day_id=None, result=result,
+            )
         except IntegrityError as exc:
             self.db.rollback()
-            self._error("MANUAL_DAY_EXISTS", "Otra operación registró esta jornada; vuelva a consultar", status.HTTP_409_CONFLICT)
+            constraint = getattr(getattr(exc, "orig", None), "diag", None)
+            constraint_name = getattr(constraint, "constraint_name", None)
+            message = str(getattr(exc, "orig", exc))
+            if constraint_name in {"uq_manual_day_active_employee_date", "uq_manual_day_employee_date_version"} or "manual_attendance_days.employee_id, manual_attendance_days.work_date" in message:
+                self._error("MANUAL_DAY_EXISTS", "Otra operación registró esta jornada; vuelva a consultar", status.HTTP_409_CONFLICT)
+            raise
         except Exception:
             self.db.rollback(); raise
         return result
@@ -301,11 +412,39 @@ class ManualAttendanceService:
             self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
         return self.serialize(item)
 
+    def get_operation(self, key: str, actor_id: uuid.UUID) -> dict:
+        try:
+            receipt = self.db.get(ManualAttendanceIdempotency, key)
+        except SQLAlchemyError as exc:
+            self._error("OPERATION_RESULT_UNKNOWN", "No se pudo consultar el resultado; reintente con la misma clave", status.HTTP_503_SERVICE_UNAVAILABLE)
+        # Do not expose a receipt from a different user (or legacy v1 scope)
+        # merely because the retry key is known.
+        if not receipt or receipt.protocol_version != 2 or receipt.actor_user_id != actor_id:
+            # The receipt may genuinely still be committing elsewhere.  This
+            # endpoint never calls that operation failed, and it must not
+            # reveal whether another actor owns the supplied key.
+            self._error("OPERATION_NOT_CONFIRMED", "La operación aún no tiene un resultado confirmado", status.HTTP_404_NOT_FOUND)
+        return {
+            "state": "CONFIRMED",
+            "idempotency_key": receipt.idempotency_key,
+            "operation_type": receipt.operation_type,
+            "target_manual_day_id": str(receipt.target_manual_day_id) if receipt.target_manual_day_id else None,
+            "http_status": receipt.http_status,
+            "result": receipt.result,
+        }
+
     def serialize(self, item: ManualAttendanceDay) -> dict:
         allocations = self.db.scalars(select(ManualRecoveryApplication).where(ManualRecoveryApplication.manual_day_id == item.id)).all()
         return {"id": str(item.id), "employee_id": str(item.employee_id), "work_date": item.work_date, "worked_minutes_net": item.worked_minutes_net, "normal_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "day_context": item.day_context, "source_reference": item.source_reference, "known_check_in_at": item.known_check_in_at, "known_check_out_at": item.known_check_out_at, "known_break_minutes": item.known_break_minutes, "reason": item.reason, "payment_status": item.payment_status, "payment_method": item.payment_method, "payment_concept": item.payment_concept, "reviewed_additional_amount": str((item.payment_snapshot or {}).get("amount")) if item.payment_method == "REVIEWED" and (item.payment_snapshot or {}).get("amount") is not None else None, "approved_additional_amount": str(item.approved_additional_amount) if item.approved_additional_amount is not None else None, "payment_snapshot": item.payment_snapshot, "recovery_allocations": [{"commitment_id": str(allocation.commitment_id), "minutes": allocation.minutes} for allocation in allocations], "version": item.version, "supersedes_id": str(item.supersedes_id) if item.supersedes_id else None, "voided_at": item.voided_at, "void_reason": item.void_reason, "created_at": item.created_at}
 
-    def approve(self, item_id: uuid.UUID, actor_id: uuid.UUID, expected_version: int, expected_snapshot: dict) -> dict:
+    def approve(self, item_id: uuid.UUID, actor_id: uuid.UUID, expected_version: int, expected_snapshot: dict, idempotency_key: str | None = None) -> dict:
+        digest, replay = self._operation_replay(
+            key=idempotency_key,
+            payload={"expected_version": expected_version, "expected_snapshot": expected_snapshot},
+            actor_id=actor_id, operation_type="APPROVE", target_id=item_id,
+        )
+        if replay is not None:
+            return replay
         # Obtain identity without taking the version lock, then use the common
         # writer order used by batch and kiosk requests.
         item = self.db.get(ManualAttendanceDay, item_id)
@@ -321,10 +460,11 @@ class ManualAttendanceService:
             self._error("STALE_VERSION", "La carga fue anulada por otra persona", status.HTTP_409_CONFLICT)
         commitment_ids = self._commitment_ids_for_day(item.id)
         commitments = self._lock_commitments(commitment_ids)
-        self._assert_not_closed(item.work_date, *(commitment.permission_date for commitment in commitments.values()))
+        affected_dates = [item.work_date, *(commitment.permission_date for commitment in commitments.values())]
+        self._assert_not_closed(*affected_dates)
         # A lost response may repeat the exact approval request.  It is a
         # stable read, never another version/audit transition.
-        if item.payment_status == "APPROVED" and item.payment_snapshot == {**expected_snapshot, "status": "APPROVED"}:
+        if not idempotency_key and item.payment_status == "APPROVED" and item.payment_snapshot == {**expected_snapshot, "status": "APPROVED"}:
             return self.serialize(item)
         if item.version != expected_version:
             self._error("STALE_VERSION", "La carga cambió; vuelva a previsualizar", status.HTTP_409_CONFLICT)
@@ -348,6 +488,7 @@ class ManualAttendanceService:
                 row,
                 exclude_manual_day_id=item.id,
                 locked_commitments=commitments,
+                validate_periods=False,
             )
         except HTTPException as exc:
             # Una valoración REVIEWED que ahora queda bajo el mínimo no se
@@ -362,54 +503,93 @@ class ManualAttendanceService:
             self._error("STALE_PREVIEW", "La configuración cambió; vuelva a previsualizar y apruebe explícitamente", status.HTTP_409_CONFLICT)
         if estimate["status"] != "PENDING" or estimate.get("amount") is None: self._error("PAYMENT_REVIEW_REQUIRED", "El adicional no tiene una valoración aprobable", status.HTTP_409_CONFLICT)
         item.payment_snapshot = {**estimate, "status": "APPROVED"}; item.payment_status = "APPROVED"; item.approved_additional_amount = Decimal(str(estimate["amount"])); item.approved_by_user_id = actor_id; item.approved_at = datetime.now(lima_tz()); item.version += 1
-        self._invalidate_calculated_periods(item.work_date)
-        AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=item.id, action="payment_approved", old_values=None, new_values={"payment": estimate}, reason=item.reason, performed_by=actor_id, commit=False); self.db.commit(); return self.serialize(item)
+        self._invalidate_calculated_periods(*affected_dates)
+        AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=item.id, action="payment_approved", old_values=None, new_values={"payment": estimate}, reason=item.reason, performed_by=actor_id, commit=False)
+        self.db.flush()
+        result = self.serialize(item)
+        store_receipt(self.db, key=idempotency_key, digest=digest, actor_id=actor_id, operation_type="APPROVE", target_manual_day_id=item_id, result=result)
+        return commit_with_receipt_recovery(
+            self.db, key=idempotency_key, digest=digest, actor_id=actor_id,
+            operation_type="APPROVE", target_manual_day_id=item_id, result=result,
+        )
 
-    def void(self, item_id: uuid.UUID, expected_version: int, reason: str, actor_id: uuid.UUID) -> dict:
+    def void(self, item_id: uuid.UUID, expected_version: int, reason: str, actor_id: uuid.UUID, idempotency_key: str | None = None) -> dict:
+        digest, replay = self._operation_replay(
+            key=idempotency_key, payload={"expected_version": expected_version, "reason": reason},
+            actor_id=actor_id, operation_type="VOID", target_id=item_id,
+        )
+        if replay is not None:
+            return replay
         item = self.db.get(ManualAttendanceDay, item_id)
-        if not item or item.voided_at: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if not item: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if item.voided_at: self._error("STALE_VERSION", "La carga ya fue anulada o sustituida", status.HTTP_409_CONFLICT)
         self._lock_employees([item.employee_id])
         item = self._lock_manual_day_after_employee(item_id)
-        if not item or item.voided_at: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if not item: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if item.voided_at: self._error("STALE_VERSION", "La carga ya fue anulada o sustituida", status.HTTP_409_CONFLICT)
         commitments = self._lock_commitments(self._commitment_ids_for_day(item.id))
-        self._assert_not_closed(item.work_date, *(commitment.permission_date for commitment in commitments.values()))
+        affected_dates = [item.work_date, *(commitment.permission_date for commitment in commitments.values())]
+        self._assert_not_closed(*affected_dates)
         if item.version != expected_version: self._error("STALE_VERSION", "La carga fue modificada por otra persona", status.HTTP_409_CONFLICT)
-        affected_dates = [item.work_date] + self._recovery_permission_dates(item.id)
         item.voided_at = datetime.now(lima_tz()); item.voided_by_user_id = actor_id; item.void_reason = reason.strip(); item.version += 1
         self._invalidate_calculated_periods(*affected_dates)
         AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=item.id, action="voided", old_values={"version": expected_version}, new_values={"version": item.version}, reason=item.void_reason, performed_by=actor_id, commit=False)
-        self.db.commit(); return self.serialize(item)
+        self.db.flush()
+        result = self.serialize(item)
+        store_receipt(self.db, key=idempotency_key, digest=digest, actor_id=actor_id, operation_type="VOID", target_manual_day_id=item_id, result=result)
+        return commit_with_receipt_recovery(
+            self.db, key=idempotency_key, digest=digest, actor_id=actor_id,
+            operation_type="VOID", target_manual_day_id=item_id, result=result,
+        )
 
-    def update(self, item_id: uuid.UUID, row: ManualDayIn, expected_version: int, actor_id: uuid.UUID) -> dict:
+    def update(self, item_id: uuid.UUID, row: ManualDayIn, expected_version: int, actor_id: uuid.UUID, idempotency_key: str | None = None) -> dict:
+        digest, replay = self._operation_replay(
+            key=idempotency_key, payload=row, actor_id=actor_id,
+            operation_type="UPDATE", target_id=item_id,
+        )
+        if replay is not None:
+            return replay
         current = self.db.get(ManualAttendanceDay, item_id)
-        if not current or current.voided_at: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if not current: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if current.voided_at: self._error("STALE_VERSION", "La carga ya fue anulada o sustituida", status.HTTP_409_CONFLICT)
         self._lock_employees([current.employee_id])
         current = self._lock_manual_day_after_employee(item_id)
-        if not current or current.voided_at: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if not current: self._error("MANUAL_DAY_NOT_FOUND", "Carga no encontrada", status.HTTP_404_NOT_FOUND)
+        if current.voided_at: self._error("STALE_VERSION", "La carga ya fue anulada o sustituida", status.HTTP_409_CONFLICT)
         commitment_ids = self._commitment_ids_for_day(current.id) + [allocation.commitment_id for allocation in row.recovery_allocations]
         commitments = self._lock_commitments(commitment_ids)
-        self._assert_not_closed(current.work_date, *(commitment.permission_date for commitment in commitments.values()))
+        affected_dates = [current.work_date, *(commitment.permission_date for commitment in commitments.values())]
+        self._assert_not_closed(*affected_dates)
         if current.version != expected_version: self._error("STALE_VERSION", "La carga fue modificada por otra persona", status.HTTP_409_CONFLICT)
         if row.employee_id != current.employee_id: self._error("EMPLOYEE_IMMUTABLE", "No cambie el empleado en una corrección")
         preview = self.preview(ManualBatchIn(
             work_date=current.work_date, rows=[row], idempotency_key="edit-preview-validation",
             editing_manual_day_id=current.id, expected_version=expected_version,
-        ))
+        ), locked_commitments=commitments, employees_locked=True, validate_periods=False)
         # ``preview_token`` is part of ManualUpdateIn; callers cannot turn a
         # previously viewed amount/content into a silent different approval.
         if row.preview_token != preview["preview_token"]:
             self._error("STALE_PREVIEW", "La corrección cambió; vuelva a previsualizar", status.HTTP_409_CONFLICT)
-        self._validate_row(current.work_date, row, exclude_manual_day_id=current.id)
         current.voided_at = datetime.now(lima_tz()); current.voided_by_user_id = actor_id; current.void_reason = row.reason.strip()
         # Libera el índice parcial activo antes de insertar la nueva versión.
         self.db.flush()
-        estimate = self.estimate_payment(row.employee_id, current.work_date, row.additional_minutes, row)
+        # Same server representation accepted by preview, not a post-token
+        # second valuation that could see different salary/policy rows.
+        estimate = preview["rows"][0]["payment"]
         replacement = ManualAttendanceDay(employee_id=row.employee_id, work_date=current.work_date, worked_minutes_net=row.worked_minutes_net, normal_minutes=row.normal_minutes, additional_minutes=row.additional_minutes, recovery_minutes=row.recovery_minutes, day_context=row.day_context, source_reference=row.source_reference, known_check_in_at=row.known_check_in_at, known_check_out_at=row.known_check_out_at, known_break_minutes=row.known_break_minutes, reason=row.reason.strip(), payment_status=estimate["status"], payment_method=row.payment_method, payment_concept=row.payment_concept, payment_snapshot={**estimate, "status": estimate["status"]}, version=current.version + 1, supersedes_id=current.id, created_by_user_id=actor_id)
         self.db.add(replacement); self.db.flush()
         for allocation in row.recovery_allocations: self.db.add(ManualRecoveryApplication(manual_day_id=replacement.id, commitment_id=allocation.commitment_id, minutes=allocation.minutes))
-        self._invalidate_calculated_periods(current.work_date, *self._recovery_permission_dates(current.id), *self._recovery_permission_dates(replacement.id))
+        # Capture old + new origins from the locked union.  The replacement
+        # applications are only pending at this point (autoflush=False).
+        self.db.flush()
+        self._invalidate_calculated_periods(*affected_dates)
         AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=replacement.id, action="versioned_update", old_values={"id":str(current.id),"version":current.version}, new_values={"version":replacement.version}, reason=row.reason.strip(), performed_by=actor_id, commit=False)
-        self.db.commit(); return self.serialize(replacement)
+        result = self.serialize(replacement)
+        store_receipt(self.db, key=idempotency_key, digest=digest, actor_id=actor_id, operation_type="UPDATE", target_manual_day_id=item_id, result=result)
+        return commit_with_receipt_recovery(
+            self.db, key=idempotency_key, digest=digest, actor_id=actor_id,
+            operation_type="UPDATE", target_manual_day_id=item_id, result=result,
+        )
 
     def create_commitment(self, payload: CommitmentIn, actor_id: uuid.UUID) -> dict:
         self._lock_employees([payload.employee_id])

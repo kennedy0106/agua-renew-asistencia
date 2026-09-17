@@ -3,6 +3,7 @@ from datetime import date
 import uuid
 
 from app.modules.attendance.manual_models import ManualAttendanceDay
+from app.modules.attendance.manual_models import ManualAttendanceIdempotency
 from app.modules.payroll.models import PayrollPeriod
 
 def _login(client):
@@ -38,6 +39,215 @@ def test_manual_batch_is_idempotent_and_rejects_wrong_distribution(client, db_se
     assert db_session.query(ManualAttendanceDay).count() == 1
     bad = _batch(employee, worked_minutes_net=100, normal_minutes=90); bad["idempotency_key"] = "hst-01-test-other"
     assert client.post("/api/v1/attendance/manual-days/batch", json=bad).status_code == 422
+
+
+def test_h693_batch_receipt_is_scoped_and_returns_original_result(client, db_session):
+    """C01/C03/C07: an authenticated v2 receipt replays before day state."""
+    _login(client); employee = _employee(client, db_session)
+    payload = _batch(employee, worked_minutes_net=120, normal_minutes=120)
+    payload["idempotency_key"] = "hst-h693-batch-receipt"
+    first = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert second.status_code == 200 and second.json() == first.json()
+    receipt = db_session.get(ManualAttendanceIdempotency, payload["idempotency_key"])
+    assert receipt.protocol_version == 2 and receipt.operation_type == "BATCH" and receipt.actor_user_id is not None
+    queried = client.get(f"/api/v1/attendance/manual-operations/{payload['idempotency_key']}")
+    assert queried.status_code == 200 and queried.json()["result"] == first.json()
+    changed = {**payload, "rows": [{**payload["rows"][0], "worked_minutes_net": 60, "normal_minutes": 60}]}
+    conflict = client.post("/api/v1/attendance/manual-days/batch", json=changed)
+    assert conflict.status_code == 409 and conflict.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+    assert db_session.query(ManualAttendanceDay).count() == 1
+    client.cookies.clear()
+    assert client.get(f"/api/v1/attendance/manual-operations/{payload['idempotency_key']}").status_code == 401
+    assert client.post("/api/v1/auth/login", json={"username": "boss", "password": "Boss123!"}).status_code == 200
+    assert client.get(f"/api/v1/attendance/manual-operations/{payload['idempotency_key']}").status_code == 404
+    client.cookies.clear()
+    assert client.post("/api/v1/auth/login", json={"username": "supervisor", "password": "Sup123!"}).status_code == 200
+    assert client.get(f"/api/v1/attendance/manual-operations/{payload['idempotency_key']}").status_code == 403
+
+
+def test_h693_replay_binds_the_preview_decision_and_hides_unscoped_v1(client, db_session):
+    """B09/C03/C12: retry metadata is excluded, but preview is not a free pass."""
+    _login(client); employee = _employee(client, db_session)
+    payload = _batch(employee, worked_minutes_net=120, normal_minutes=120)
+    payload["idempotency_key"] = "hst-h693-preview-bound"
+    first = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert first.status_code == 200, first.text
+    # A batch replay with a different expected preview is a different
+    # decision, even if the underlying row happens to be the same.
+    altered = {**payload, "preview_token": "b" * 64}
+    rejected = client.post("/api/v1/attendance/manual-days/batch", json=altered)
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "IDEMPOTENCY_CONFLICT"
+    db_session.add(ManualAttendanceIdempotency(
+        idempotency_key="hst-h693-v1-unscoped", payload_hash="c" * 64,
+        result={"created": ["legacy"]}, protocol_version=1,
+    ))
+    db_session.commit()
+    legacy = client.get("/api/v1/attendance/manual-operations/hst-h693-v1-unscoped")
+    assert legacy.status_code == 404
+    assert legacy.json()["detail"]["code"] == "OPERATION_NOT_CONFIRMED"
+
+
+def test_h693_preview_binds_configuration_identity_even_when_amount_is_equal(client, db_session):
+    """B02: sueldo/jornada proporcionales no pueden conservar una decisión vieja."""
+    from app.modules.salary.models import SalarySetting
+    from app.modules.schedules.models import WorkSchedule
+
+    _login(client); employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-08-01", "monthly_salary":"1500.00", "overtime_enabled":True}).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={"effective_from":"2026-08-01", "monday_minutes":480, "tuesday_minutes":480, "wednesday_minutes":480, "thursday_minutes":480, "friday_minutes":480}).status_code == 201
+    payload = _batch(employee, worked_minutes_net=120, normal_minutes=0, additional_minutes=120, payment_method="OVERTIME")
+    payload.update(idempotency_key="hst-h693-config-identity", approve_additional=True)
+    payload["preview_token"] = _preview_token(client, payload)
+    salary = db_session.query(SalarySetting).filter_by(employee_id=uuid.UUID(employee)).one()
+    schedule = db_session.query(WorkSchedule).filter_by(employee_id=uuid.UUID(employee)).one()
+    salary.monthly_salary = 3000
+    for field in ("monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes", "friday_minutes"):
+        setattr(schedule, field, 960)
+    db_session.commit()
+    response = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "STALE_PREVIEW"
+
+
+def test_h693_persists_the_exact_validated_valuation_without_second_estimate(client, db_session, monkeypatch):
+    """B03: un cambio tras construir preview no altera el importe persistido."""
+    from app.modules.attendance.manual_service import ManualAttendanceService
+    from app.modules.salary.models import SalarySetting
+
+    _login(client); employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-08-01", "monthly_salary":"1500.00", "overtime_enabled":True}).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={"effective_from":"2026-08-01", "monday_minutes":480, "tuesday_minutes":480, "wednesday_minutes":480, "thursday_minutes":480, "friday_minutes":480}).status_code == 201
+    payload = _batch(employee, worked_minutes_net=120, normal_minutes=0, additional_minutes=120, payment_method="OVERTIME")
+    payload.update(idempotency_key="hst-h693-one-valuation", approve_additional=True)
+    preview = client.post("/api/v1/attendance/manual-days/preview", json=payload).json()
+    payload["preview_token"] = preview["preview_token"]
+    expected_amount = preview["rows"][0]["payment"]["amount"]
+    original = ManualAttendanceService.preview
+
+    def change_after_verified(self, request, **kwargs):
+        result = original(self, request, **kwargs)
+        self.db.query(SalarySetting).filter_by(employee_id=uuid.UUID(employee)).one().monthly_salary = 9000
+        return result
+
+    monkeypatch.setattr(ManualAttendanceService, "preview", change_after_verified)
+    response = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert response.status_code == 200, response.text
+    item = client.get(f"/api/v1/attendance/manual-days/{response.json()['created'][0]}").json()
+    assert item["approved_additional_amount"] == expected_amount
+    assert item["payment_snapshot"]["amount"] == expected_amount
+
+
+def test_h693_unrelated_integrity_failure_rolls_back_instead_of_claiming_duplicate(client, db_session, monkeypatch):
+    """B07/C11: sólo la restricción del día se traduce a MANUAL_DAY_EXISTS."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+    from app.modules.audit.repository import AuditRepository
+
+    _login(client); employee = _employee(client, db_session)
+    def fail_audit(*args, **kwargs):
+        raise IntegrityError("audit insert", {}, Exception("different constraint"))
+    monkeypatch.setattr(AuditRepository, "create", fail_audit)
+    with pytest.raises(IntegrityError):
+        client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee))
+    assert db_session.query(ManualAttendanceDay).count() == 0
+    assert db_session.query(ManualAttendanceIdempotency).count() == 0
+
+
+def test_h693_ambiguous_commit_recovers_receipt_or_reports_unknown(db_session):
+    """C10: error de commit sólo converge si existe el recibo durable exacto."""
+    import pytest
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+    from app.modules.attendance.manual_operations import commit_with_receipt_recovery
+    from app.modules.users.models import User
+
+    actor = db_session.query(User).filter_by(username="admin").one()
+    key = "hst-h693-ambiguous-commit"
+    digest = "d" * 64
+    result = {"created": ["durable-result"]}
+    db_session.add(ManualAttendanceIdempotency(
+        idempotency_key=key, payload_hash=digest, result=result,
+        protocol_version=2, actor_user_id=actor.id, operation_type="BATCH", http_status=200,
+    ))
+    db_session.commit()
+
+    class AmbiguousSession:
+        def __init__(self, bind): self.bind = bind; self.rolled_back = False
+        def commit(self): raise OperationalError("COMMIT", {}, Exception("connection lost"))
+        def rollback(self): self.rolled_back = True
+        def get_bind(self): return self.bind
+
+    recovered = commit_with_receipt_recovery(
+        AmbiguousSession(db_session.get_bind()), key=key, digest=digest, actor_id=actor.id,
+        operation_type="BATCH", target_manual_day_id=None, result=result,
+    )
+    assert recovered == result
+    with pytest.raises(HTTPException) as raised:
+        commit_with_receipt_recovery(
+            AmbiguousSession(db_session.get_bind()), key="hst-h693-not-committed", digest=digest,
+            actor_id=actor.id, operation_type="BATCH", target_manual_day_id=None, result=result,
+        )
+    assert raised.value.status_code == 503
+    assert raised.value.detail["code"] == "OPERATION_RESULT_UNKNOWN"
+
+
+def test_h693_operation_query_database_failure_is_not_reported_as_missing(db_session, monkeypatch):
+    """C10: no poder consultar no equivale a confirmar que no hubo commit."""
+    import pytest
+    from fastapi import HTTPException
+    from sqlalchemy.exc import OperationalError
+    from app.modules.attendance.manual_service import ManualAttendanceService
+    from app.modules.users.models import User
+
+    actor = db_session.query(User).filter_by(username="admin").one()
+    monkeypatch.setattr(db_session, "get", lambda *args, **kwargs: (_ for _ in ()).throw(OperationalError("SELECT", {}, Exception("offline"))))
+    with pytest.raises(HTTPException) as raised:
+        ManualAttendanceService(db_session).get_operation("unknown-key", actor.id)
+    assert raised.value.status_code == 503
+    assert raised.value.detail["code"] == "OPERATION_RESULT_UNKNOWN"
+
+
+def test_h693_update_and_void_replay_their_immutable_receipts(client, db_session):
+    """C04/C05/C09: retries do not create a successor/audit twice."""
+    from app.modules.audit.models import AuditLog
+    _login(client); employee = _employee(client, db_session)
+    source = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee)).json()["created"][0]
+    patch = {"employee_id": employee, "worked_minutes_net": 360, "normal_minutes": 360, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Corrección H693", "recovery_allocations": [], "expected_version": 1, "idempotency_key": "hst-h693-update"}
+    patch["preview_token"] = _preview_token(client, {"work_date": "2026-09-01", "rows": [{key: value for key, value in patch.items() if key not in {"expected_version", "preview_token", "idempotency_key"}}], "idempotency_key": "preview-h693-update", "editing_manual_day_id": source, "expected_version": 1})
+    first = client.patch(f"/api/v1/attendance/manual-days/{source}", json=patch)
+    second = client.patch(f"/api/v1/attendance/manual-days/{source}", json=patch)
+    assert first.status_code == second.status_code == 200 and second.json()["id"] == first.json()["id"]
+    replacement = first.json()
+    assert db_session.query(AuditLog).filter(AuditLog.action == "versioned_update").count() == 1
+    next_patch = {**patch, "worked_minutes_net": 300, "normal_minutes": 300, "expected_version": replacement["version"], "idempotency_key": "hst-h693-update-two"}
+    next_patch["preview_token"] = _preview_token(client, {"work_date": "2026-09-01", "rows": [{key: value for key, value in next_patch.items() if key not in {"expected_version", "preview_token", "idempotency_key"}}], "idempotency_key": "preview-h693-update-two", "editing_manual_day_id": replacement["id"], "expected_version": replacement["version"]})
+    latest = client.patch(f"/api/v1/attendance/manual-days/{replacement['id']}", json=next_patch)
+    assert latest.status_code == 200, latest.text
+    queried_original = client.get("/api/v1/attendance/manual-operations/hst-h693-update")
+    assert queried_original.status_code == 200
+    assert queried_original.json()["result"]["id"] == replacement["id"]
+    void = {"expected_version": latest.json()["version"], "reason": "Anulación H693", "idempotency_key": "hst-h693-void"}
+    assert client.post(f"/api/v1/attendance/manual-days/{latest.json()['id']}/void", json=void).json() == client.post(f"/api/v1/attendance/manual-days/{latest.json()['id']}/void", json=void).json()
+    assert db_session.query(AuditLog).filter(AuditLog.action == "voided").count() == 1
+    closed = PayrollPeriod(name="Cierre replay H693", start_date=date(2026, 9, 1), end_date=date(2026, 9, 30), status="CLOSED")
+    db_session.add(closed); db_session.commit()
+    assert client.patch(f"/api/v1/attendance/manual-days/{source}", json=patch).json() == first.json()
+    assert client.post(f"/api/v1/attendance/manual-days/{latest.json()['id']}/void", json=void).status_code == 200
+
+
+def test_h693_new_decision_against_voided_version_is_stale_not_missing(client, db_session):
+    """C08: una fila anulada existe, pero una nueva decisión sobre ella quedó obsoleta."""
+    _login(client); employee = _employee(client, db_session)
+    item_id = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee)).json()["created"][0]
+    first = {"expected_version": 1, "reason": "Anulación inicial", "idempotency_key": "hst-h693-first-void"}
+    assert client.post(f"/api/v1/attendance/manual-days/{item_id}/void", json=first).status_code == 200
+    second = {**first, "idempotency_key": "hst-h693-second-void"}
+    response = client.post(f"/api/v1/attendance/manual-days/{item_id}/void", json=second)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "STALE_VERSION"
 
 def test_manual_day_rejects_existing_session(client, db_session):
     _login(client); employee = _employee(client, db_session)
@@ -75,16 +285,16 @@ def test_manual_day_versioned_update_and_void(client, db_session):
     from app.modules.audit.models import AuditLog
     _login(client); employee = _employee(client, db_session)
     created = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee)).json()["created"][0]
-    patch = {"employee_id": employee, "worked_minutes_net": 390, "normal_minutes": 390, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Corrección documentada", "recovery_allocations": [], "expected_version": 1}
+    patch = {"employee_id": employee, "worked_minutes_net": 390, "normal_minutes": 390, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Corrección documentada", "recovery_allocations": [], "expected_version": 1, "idempotency_key": "hst-versioned-update"}
     patch["preview_token"] = _preview_token(client, {"work_date": "2026-09-01", "rows": [{key: value for key, value in patch.items() if key not in {"expected_version", "preview_token"}}], "idempotency_key": "edit-preview-test", "editing_manual_day_id": created, "expected_version": 1})
     updated = client.patch(f"/api/v1/attendance/manual-days/{created}", json=patch)
     assert updated.status_code == 200, updated.text
     assert updated.json()["worked_minutes_net"] == 390 and updated.json()["version"] == 2
-    stale = client.patch(f"/api/v1/attendance/manual-days/{updated.json()['id']}", json={**patch, "expected_version": 1})
+    stale = client.patch(f"/api/v1/attendance/manual-days/{updated.json()['id']}", json={**patch, "expected_version": 1, "idempotency_key": "hst-versioned-update-stale"})
     assert stale.status_code == 409 and stale.json()["detail"]["code"] == "STALE_VERSION"
     audit = db_session.query(AuditLog).filter(AuditLog.action == "versioned_update").one()
     assert str(audit.entity_id) == updated.json()["id"] and audit.old_values["version"] == 1 and audit.new_values["version"] == 2
-    assert client.post(f"/api/v1/attendance/manual-days/{updated.json()['id']}/void", json={"expected_version":2,"reason":"Anulación de prueba"}).status_code == 200
+    assert client.post(f"/api/v1/attendance/manual-days/{updated.json()['id']}/void", json={"expected_version":2,"reason":"Anulación de prueba", "idempotency_key":"hst-versioned-void"}).status_code == 200
 
 def test_recovery_credit_is_once_at_permission_and_never_ordinary(client, db_session):
     _login(client); employee = _employee(client, db_session)
@@ -100,8 +310,71 @@ def test_recovery_credit_is_once_at_permission_and_never_ordinary(client, db_ses
     assert balance.json()["balance_minutes"] == 120
     # Una anulación libera la aplicación y no deja crédito/tiempo duplicado.
     item = client.get("/api/v1/attendance/manual-days").json()[0]
-    assert client.post(f"/api/v1/attendance/manual-days/{item['id']}/void", json={"expected_version": item["version"], "reason":"Prueba de reversión"}).status_code == 200
+    assert client.post(f"/api/v1/attendance/manual-days/{item['id']}/void", json={"expected_version": item["version"], "reason":"Prueba de reversión", "idempotency_key":"hst-recovery-credit-void"}).status_code == 200
     assert client.get(f"/api/v1/employees/{employee}/balance", params={"date_from":"2026-09-01", "date_to":"2026-09-02"}).json()["recovery_credit_minutes"] == 0
+
+
+def test_h693_cross_month_update_invalidates_work_and_permission_periods(client, db_session):
+    """A01/A06: a September R changes the August origin fingerprint, not August W."""
+    _login(client); employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-08-01", "monthly_salary":"1500.00", "overtime_enabled":True}).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={"effective_from":"2026-08-01", "monday_minutes":480, "tuesday_minutes":480, "wednesday_minutes":480, "thursday_minutes":480, "friday_minutes":480}).status_code == 201
+    august = client.post("/api/v1/payroll/periods", json={"name":"Agosto H693", "start_date":"2026-08-01", "end_date":"2026-08-31"}).json()
+    september = client.post("/api/v1/payroll/periods", json={"name":"Septiembre H693", "start_date":"2026-09-01", "end_date":"2026-09-30"}).json()
+    commitment = client.post("/api/v1/attendance/recovery-commitments", json={"employee_id":employee, "permission_date":"2026-08-31", "agreed_minutes":120, "covered_before":False, "reference":"Permiso agosto H693"}).json()
+    created = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee, worked_minutes_net=120, normal_minutes=120)).json()["created"][0]
+    assert client.post(f"/api/v1/payroll/periods/{august['id']}/calculate").status_code == 200
+    assert client.post(f"/api/v1/payroll/periods/{september['id']}/calculate").status_code == 200
+    patch = {"employee_id":employee, "worked_minutes_net":120, "normal_minutes":0, "additional_minutes":0, "recovery_minutes":120, "reason":"Recuperación cruzada H693", "recovery_allocations":[{"commitment_id":commitment["id"], "minutes":120}], "expected_version":1, "idempotency_key":"hst-h693-cross-month"}
+    patch["preview_token"] = _preview_token(client, {"work_date":"2026-09-01", "rows":[{key:value for key,value in patch.items() if key not in {"expected_version", "preview_token", "idempotency_key"}}], "idempotency_key":"preview-h693-cross-month", "editing_manual_day_id":created, "expected_version":1})
+    updated = client.patch(f"/api/v1/attendance/manual-days/{created}", json=patch)
+    assert updated.status_code == 200, updated.text
+    db_session.expire_all()
+    assert db_session.get(PayrollPeriod, uuid.UUID(august["id"])).status == "OPEN"
+    assert db_session.get(PayrollPeriod, uuid.UUID(september["id"])).status == "OPEN"
+    august_rows = client.post(f"/api/v1/payroll/periods/{august['id']}/calculate").json()
+    assert august_rows[0]["worked_minutes"] == 0  # incoming R never becomes origin-month work
+
+
+def test_h693_moves_recovery_origin_then_removes_it_without_residual_credit(client, db_session):
+    """A02/A03/A06: mover y retirar R invalida los tres meses y sólo acredita el origen activo."""
+    from app.modules.attendance.manual_models import ManualRecoveryApplication
+    _login(client); employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-07-01", "monthly_salary":"1500.00", "overtime_enabled":True}).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={"effective_from":"2026-07-01", "monday_minutes":480, "tuesday_minutes":480, "wednesday_minutes":480, "thursday_minutes":480, "friday_minutes":480}).status_code == 201
+    periods = {
+        month: client.post("/api/v1/payroll/periods", json={"name":f"{month} H693", "start_date":start, "end_date":end}).json()
+        for month, start, end in (("julio","2026-07-01","2026-07-31"),("agosto","2026-08-01","2026-08-31"),("septiembre","2026-09-01","2026-09-30"))
+    }
+    july = client.post("/api/v1/attendance/recovery-commitments", json={"employee_id":employee,"permission_date":"2026-07-20","agreed_minutes":120,"covered_before":False,"reference":"Permiso julio"}).json()
+    august = client.post("/api/v1/attendance/recovery-commitments", json={"employee_id":employee,"permission_date":"2026-08-20","agreed_minutes":120,"covered_before":False,"reference":"Permiso agosto"}).json()
+    initial = _batch(employee, worked_minutes_net=120, normal_minutes=0, recovery_minutes=120, recovery_allocations=[{"commitment_id":july["id"],"minutes":120}])
+    initial.update(work_date="2026-09-03", idempotency_key="hst-h693-origin-july")
+    source = client.post("/api/v1/attendance/manual-days/batch", json=initial).json()["created"][0]
+    for period in periods.values(): assert client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").status_code == 200
+    old_fingerprints = {name: db_session.get(PayrollPeriod, uuid.UUID(period["id"])).inputs_fingerprint for name, period in periods.items()}
+    move = {"employee_id":employee,"worked_minutes_net":120,"normal_minutes":0,"additional_minutes":0,"recovery_minutes":120,"reason":"Mover recuperación a agosto","recovery_allocations":[{"commitment_id":august["id"],"minutes":120}],"expected_version":1,"idempotency_key":"hst-h693-move-origin"}
+    move["preview_token"] = _preview_token(client, {"work_date":"2026-09-03","rows":[{k:v for k,v in move.items() if k not in {"expected_version","idempotency_key"}}],"idempotency_key":"preview-move-origin","editing_manual_day_id":source,"expected_version":1})
+    moved = client.patch(f"/api/v1/attendance/manual-days/{source}", json=move)
+    assert moved.status_code == 200, moved.text
+    db_session.expire_all()
+    for period in periods.values():
+        current = db_session.get(PayrollPeriod, uuid.UUID(period["id"]))
+        assert current.status == "OPEN" and current.inputs_fingerprint is None
+    july_balance = client.get(f"/api/v1/employees/{employee}/balance?date_from=2026-07-20&date_to=2026-07-20").json()
+    august_balance = client.get(f"/api/v1/employees/{employee}/balance?date_from=2026-08-20&date_to=2026-08-20").json()
+    assert july_balance["recovery_credit_minutes"] == 0 and august_balance["recovery_credit_minutes"] == 120
+    for name, period in periods.items():
+        assert client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").status_code == 200
+        db_session.expire_all()
+        assert db_session.get(PayrollPeriod, uuid.UUID(period["id"])).inputs_fingerprint != old_fingerprints[name]
+    remove = {**move,"worked_minutes_net":120,"normal_minutes":120,"recovery_minutes":0,"recovery_allocations":[],"expected_version":moved.json()["version"],"idempotency_key":"hst-h693-remove-origin"}
+    remove["preview_token"] = _preview_token(client, {"work_date":"2026-09-03","rows":[{k:v for k,v in remove.items() if k not in {"expected_version","idempotency_key","preview_token"}}],"idempotency_key":"preview-remove-origin","editing_manual_day_id":moved.json()["id"],"expected_version":moved.json()["version"]})
+    removed = client.patch(f"/api/v1/attendance/manual-days/{moved.json()['id']}", json=remove)
+    assert removed.status_code == 200, removed.text
+    assert client.get(f"/api/v1/employees/{employee}/balance?date_from=2026-08-20&date_to=2026-08-20").json()["recovery_credit_minutes"] == 0
+    effective_apps = db_session.query(ManualRecoveryApplication).join(ManualAttendanceDay).filter(ManualAttendanceDay.voided_at.is_(None)).count()
+    assert effective_apps == 0
 
 def test_covered_recovery_does_not_grant_credit_twice(client, db_session):
     _login(client); employee = _employee(client, db_session)
@@ -192,7 +465,7 @@ def test_manual_distribution_enters_payroll_fingerprint_and_invalidates_calculat
     assert records[0]["overtime_minutes"] == 60 and records[0]["overtime_amount"] == "12.50"
     fingerprint = db_session.get(PayrollPeriod, uuid.UUID(period["id"])).inputs_fingerprint
     item = client.get("/api/v1/attendance/manual-days").json()[0]
-    update = {"employee_id":employee,"worked_minutes_net":60,"normal_minutes":60,"additional_minutes":0,"recovery_minutes":0,"reason":"Reclasificación justificada","recovery_allocations":[],"expected_version":item["version"]}
+    update = {"employee_id":employee,"worked_minutes_net":60,"normal_minutes":60,"additional_minutes":0,"recovery_minutes":0,"reason":"Reclasificación justificada","recovery_allocations":[],"expected_version":item["version"],"idempotency_key":"hst-fingerprint-update"}
     update["preview_token"] = _preview_token(client, {"work_date": "2026-09-01", "rows": [{key: value for key, value in update.items() if key not in {"expected_version", "preview_token"}}], "idempotency_key": "fingerprint-edit-preview", "editing_manual_day_id": item["id"], "expected_version": item["version"]})
     assert client.patch(f"/api/v1/attendance/manual-days/{item['id']}", json=update).status_code == 200
     db_session.expire_all(); state = db_session.get(PayrollPeriod, uuid.UUID(period["id"]))
@@ -234,17 +507,19 @@ def test_approval_rejects_changed_preview_and_repeat_is_stable(client, db_sessio
     # preview.  Approval must not silently approve the new, unseen amount.
     changed = client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-09-01","monthly_salary":"3000.00","overtime_enabled":True})
     assert changed.status_code == 201, changed.text
-    stale = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json={"expected_version": 1, "expected_snapshot": item["payment_snapshot"]})
+    stale = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json={"expected_version": 1, "expected_snapshot": item["payment_snapshot"], "idempotency_key":"hst-approval-stale-request"})
     assert stale.status_code == 409 and stale.json()["detail"]["code"] == "STALE_PREVIEW"
 
     refreshed_preview = client.post("/api/v1/attendance/manual-days/preview", json=payload)
     assert refreshed_preview.status_code == 200, refreshed_preview.text
     fresh_snapshot = refreshed_preview.json()["rows"][0]["payment"]
-    approved = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json={"expected_version": 1, "expected_snapshot": fresh_snapshot})
+    approval_payload = {"expected_version": 1, "expected_snapshot": fresh_snapshot, "idempotency_key": "hst-approval-receipt"}
+    approved = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json=approval_payload)
     assert approved.status_code == 200, approved.text
-    replay = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json={"expected_version": 1, "expected_snapshot": fresh_snapshot})
+    replay = client.post(f"/api/v1/attendance/manual-days/{created}/payment/approve", json=approval_payload)
     assert replay.status_code == 200
     assert replay.json()["version"] == approved.json()["version"] == 2
+    assert replay.json() == approved.json()
     assert db_session.query(AuditLog).filter(AuditLog.entity_id == uuid.UUID(created), AuditLog.action == "payment_approved").count() == 1
 
 
@@ -272,7 +547,7 @@ def test_reviewed_approval_revalidates_live_salary_minimum(client, db_session):
     item_id = created.json()["created"][0]
     snapshot = client.get(f"/api/v1/attendance/manual-days/{item_id}").json()["payment_snapshot"]
     assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={"effective_from":"2026-09-01","monthly_salary":"3000.00","overtime_enabled":True}).status_code == 201
-    response = client.post(f"/api/v1/attendance/manual-days/{item_id}/payment/approve", json={"expected_version":1, "expected_snapshot":snapshot})
+    response = client.post(f"/api/v1/attendance/manual-days/{item_id}/payment/approve", json={"expected_version":1, "expected_snapshot":snapshot, "idempotency_key":"hst-reviewed-live-minimum-approve"})
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "STALE_PREVIEW"
 
@@ -281,11 +556,11 @@ def test_recreate_after_version_and_void_uses_monotonic_version(client, db_sessi
     _login(client); employee = _employee(client, db_session)
     payload = _batch(employee, worked_minutes_net=120, normal_minutes=120); payload["idempotency_key"] = "hst-lineage-v1"
     first = client.post("/api/v1/attendance/manual-days/batch", json=payload).json()["created"][0]
-    patch = {"employee_id": employee, "worked_minutes_net": 120, "normal_minutes": 120, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Motivo corregido", "recovery_allocations": [], "expected_version": 1}
+    patch = {"employee_id": employee, "worked_minutes_net": 120, "normal_minutes": 120, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Motivo corregido", "recovery_allocations": [], "expected_version": 1, "idempotency_key":"hst-lineage-update"}
     patch["preview_token"] = _preview_token(client, {"work_date":"2026-09-01", "rows":[{key:value for key,value in patch.items() if key not in {"expected_version", "preview_token"}}], "idempotency_key":"hst-lineage-preview", "editing_manual_day_id":first, "expected_version":1})
     second = client.patch(f"/api/v1/attendance/manual-days/{first}", json=patch).json()
     assert second["version"] == 2
-    assert client.post(f"/api/v1/attendance/manual-days/{second['id']}/void", json={"expected_version":2,"reason":"Anulación documentada"}).status_code == 200
+    assert client.post(f"/api/v1/attendance/manual-days/{second['id']}/void", json={"expected_version":2,"reason":"Anulación documentada", "idempotency_key":"hst-lineage-void"}).status_code == 200
     payload["idempotency_key"] = "hst-lineage-v3"
     recreated = client.post("/api/v1/attendance/manual-days/batch", json=payload)
     assert recreated.status_code == 200, recreated.text

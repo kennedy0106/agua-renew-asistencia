@@ -567,7 +567,7 @@ export const historicalAttendanceApi = {
     editing_manual_day_id?: string;
     expected_version?: number;
   }) =>
-    apiFetch<{ work_date: string; rows: unknown[]; preview_token: string }>(
+    apiFetch<{ work_date: string; rows: Array<ManualAttendanceRow & { payment: { status: string; amount: string | null; [key: string]: unknown } }>; preview_token: string }>(
       "/api/v1/attendance/manual-days/preview",
       { method: "POST", body: JSON.stringify(payload) },
     ),
@@ -587,6 +587,7 @@ export const historicalAttendanceApi = {
     payload: ManualAttendanceRow & {
       expected_version: number;
       preview_token: string;
+      idempotency_key?: string;
     },
   ) =>
     apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`, {
@@ -597,19 +598,21 @@ export const historicalAttendanceApi = {
     id: string,
     expected_version: number,
     expected_snapshot: Record<string, unknown>,
+    idempotencyKey?: string,
   ) =>
     apiFetch<ManualAttendanceDay>(
       `/api/v1/attendance/manual-days/${id}/payment/approve`,
       {
         method: "POST",
-        body: JSON.stringify({ expected_version, expected_snapshot }),
+        body: JSON.stringify({ expected_version, expected_snapshot, idempotency_key: idempotencyKey }),
       },
     ),
-  void: (id: string, expected_version: number, reason: string) =>
+  void: (id: string, expected_version: number, reason: string, idempotencyKey?: string) =>
     apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/void`, {
       method: "POST",
-      body: JSON.stringify({ expected_version, reason }),
+      body: JSON.stringify({ expected_version, reason, idempotency_key: idempotencyKey }),
     }),
+  operation: (key: string) => apiFetch<{ state: "CONFIRMED"; idempotency_key: string; operation_type: string; target_manual_day_id: string | null; http_status: number; result: Record<string, unknown> }>(`/api/v1/attendance/manual-operations/${encodeURIComponent(key)}`),
   commitments: (employeeId?: string) =>
     apiFetch<
       {

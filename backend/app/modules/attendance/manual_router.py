@@ -24,7 +24,7 @@ def create_manual_days(payload: ManualBatchIn, db: Session = Depends(get_db), us
 
 @router.post("/manual-days/{manual_day_id}/payment/approve")
 def approve_manual_payment(manual_day_id: uuid.UUID, payload: PaymentApproveIn, db: Session = Depends(get_db), user=Depends(_manage)):
-    return ManualAttendanceService(db).approve(manual_day_id, user.id, payload.expected_version, payload.expected_snapshot)
+    return ManualAttendanceService(db).approve(manual_day_id, user.id, payload.expected_version, payload.expected_snapshot, payload.idempotency_key)
 
 @router.get("/manual-days/{manual_day_id}")
 def get_manual_day(manual_day_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(_manage)):
@@ -32,11 +32,15 @@ def get_manual_day(manual_day_id: uuid.UUID, db: Session = Depends(get_db), _: o
 
 @router.patch("/manual-days/{manual_day_id}")
 def update_manual_day(manual_day_id: uuid.UUID, payload: ManualUpdateIn, db: Session = Depends(get_db), user=Depends(_manage)):
-    return ManualAttendanceService(db).update(manual_day_id, payload, payload.expected_version, user.id)
+    return ManualAttendanceService(db).update(manual_day_id, payload, payload.expected_version, user.id, payload.idempotency_key)
 
 @router.post("/manual-days/{manual_day_id}/void")
 def void_manual_day(manual_day_id: uuid.UUID, payload: VoidIn, db: Session = Depends(get_db), user=Depends(_manage)):
-    return ManualAttendanceService(db).void(manual_day_id, payload.expected_version, payload.reason, user.id)
+    return ManualAttendanceService(db).void(manual_day_id, payload.expected_version, payload.reason, user.id, payload.idempotency_key)
+
+@router.get("/manual-operations/{idempotency_key}")
+def get_manual_operation(idempotency_key: str, db: Session = Depends(get_db), user=Depends(_manage)):
+    return ManualAttendanceService(db).get_operation(idempotency_key, user.id)
 
 @router.post("/recovery-commitments")
 def create_recovery_commitment(payload: CommitmentIn, db: Session = Depends(get_db), user=Depends(_manage)):

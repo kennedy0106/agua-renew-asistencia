@@ -306,3 +306,96 @@ test("A39/A40: cada empleado conserva su compromiso y R se reasigna al cambiar e
     { employee_id: "employee-additional", recovery_minutes: 120, recovery_allocations: [{ commitment_id: "commitment-a", minutes: 120 }] },
   ]);
 });
+
+test("U01: una respuesta perdida conserva DTO y clave, bloquea otra mutación y reintenta una sola vez", async ({ page }) => {
+  const attempts: Array<Record<string, unknown>> = [];
+  let effects = 0;
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) {
+      const body = request.postDataJSON() as { rows: Array<Record<string, unknown>> };
+      return route.fulfill({ json: { preview_token: "f".repeat(64), rows: body.rows.map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    }
+    if (path.endsWith("/manual-days/batch")) {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      attempts.push(body);
+      if (effects === 0) effects += 1;
+      if (attempts.length === 1) return route.abort("connectionreset");
+      return route.fulfill({ json: { created: ["created-once"] } });
+    }
+    if (path.includes("/manual-operations/")) return route.fulfill({ status: 404, json: { detail: { code: "OPERATION_NOT_CONFIRMED", message: "Pendiente" } } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  const row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check();
+  await row.getByLabel("Horas").fill("8");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Resultado no confirmado: puede reintentar el mismo envío.")).toBeVisible();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText(/Hay una operación pendiente/)).toBeVisible();
+  expect(attempts).toHaveLength(1);
+  await page.getByRole("button", { name: "Reintentar operación pendiente" }).click();
+  await expect(page.getByText("Operación recuperada sin duplicar la carga.")).toBeVisible();
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1]).toEqual(attempts[0]);
+  expect(effects).toBe(1);
+});
+
+test("U06/U07: al recargar consulta el recibo del usuario y recupera sin reenviar", async ({ page }) => {
+  const key = "pending-operation-key-123";
+  let mutations = 0;
+  await page.addInitScript(({ sessionUser, operationKey }) => {
+    sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser }));
+    sessionStorage.setItem(`hst01.pending-operation.v2.${sessionUser.id}`, JSON.stringify({
+      key: operationKey, userId: sessionUser.id, kind: "BATCH",
+      payload: { work_date: "2026-09-10", rows: [], approve_additional: false, idempotency_key: operationKey },
+    }));
+  }, { sessionUser: user, operationKey: key });
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith(`/manual-operations/${key}`)) return route.fulfill({ json: { state: "CONFIRMED", idempotency_key: key, operation_type: "BATCH", target_manual_day_id: null, http_status: 200, result: { created: ["one"] } } });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (request.method() !== "GET") mutations += 1;
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await expect(page.getByText("Operación recuperada: BATCH. Historial actualizado.")).toBeVisible();
+  expect(mutations).toBe(0);
+  expect(await page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBeNull();
+});
+
+test("B08/U08: aprobación individual muestra y envía la valoración vigente confirmada", async ({ page }) => {
+  const pending = {
+    id: "pending-payment", employee_id: "employee-additional", work_date: "2026-09-10",
+    worked_minutes_net: 120, normal_minutes: 0, additional_minutes: 120, recovery_minutes: 0,
+    known_check_in_at: null, known_check_out_at: null, known_break_minutes: null,
+    reason: "Adicional", day_context: "ORDINARY", source_reference: null, payment_method: "OVERTIME",
+    payment_concept: null, reviewed_additional_amount: null, recovery_allocations: [],
+    payment_status: "PENDING", payment_snapshot: { status: "PENDING", amount: "31.50" }, version: 1, created_at: "2026-09-11T00:00:00Z",
+  };
+  let approved: Record<string, unknown> | undefined;
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [pending] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "1".repeat(64), rows: [{ ...pending, payment: { status: "PENDING", amount: "55.00", valuation_inputs: { salary_id: "salary-current" } } }] } });
+    if (path.endsWith("/manual-days/pending-payment/payment/approve")) { approved = request.postDataJSON() as Record<string, unknown>; return route.fulfill({ json: { ...pending, payment_status: "APPROVED", version: 2 } }); }
+    return route.fulfill({ json: [] });
+  });
+  page.once("dialog", async (dialog) => { expect(dialog.message()).toContain("S/ 55.00"); await dialog.accept(); });
+  await page.goto("/admin/attendance/history");
+  await page.getByRole("button", { name: "Aprobar" }).click();
+  await expect(page.getByText("Adicional aprobado.")).toBeVisible();
+  expect(approved?.expected_snapshot).toEqual({ status: "PENDING", amount: "55.00", valuation_inputs: { salary_id: "salary-current" } });
+});

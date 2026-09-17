@@ -22,6 +22,35 @@ def ordinary_minutes(db: Session, employee_id: uuid.UUID, date_from: date, date_
     manual = db.scalar(select(func.coalesce(func.sum(ManualAttendanceDay.normal_minutes), 0)).where(ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.voided_at.is_(None), ManualAttendanceDay.work_date >= date_from, ManualAttendanceDay.work_date <= date_to)) or 0
     return int(sessions) + int(manual)
 
+def recovery_credit_components(db: Session, commitment: RecoveryCommitment) -> dict[str, int | bool]:
+    """Canonical origin-side recovery inputs shared by balances/fingerprints."""
+    employee_id = commitment.employee_id
+    applied = db.scalar(select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(
+        ManualRecoveryApplication.commitment_id == commitment.id,
+        ManualAttendanceDay.voided_at.is_(None),
+    )) or 0
+    expected = ScheduleService(db).expected_minutes(employee_id, commitment.permission_date)
+    present = ordinary_minutes(db, employee_id, commitment.permission_date, commitment.permission_date)
+    legacy_coverage = db.scalar(
+        select(func.coalesce(func.sum(HourAdjustment.minutes), 0)).where(
+            HourAdjustment.employee_id == employee_id,
+            HourAdjustment.adjustment_date == commitment.permission_date,
+            HourAdjustment.status == ADJUSTMENT_APPROVED,
+            HourAdjustment.minutes > 0,
+            HourAdjustment.adjustment_type != "OVERTIME",
+        )
+    ) or 0
+    missing = max(expected - present - int(legacy_coverage), 0) if expected > 0 else max(commitment.agreed_minutes - int(legacy_coverage), 0)
+    return {
+        "covered_before": commitment.covered_before,
+        "applied_minutes": int(applied),
+        "expected_minutes_at_origin": int(expected),
+        "ordinary_minutes_at_origin": int(present),
+        "legacy_coverage_minutes": int(legacy_coverage),
+        "effective_credit_minutes": 0 if commitment.covered_before else min(int(applied), commitment.agreed_minutes, missing),
+    }
+
+
 def recovery_credit_minutes(db: Session, employee_id: uuid.UUID, date_from: date, date_to: date) -> int:
     """Crédito en la fecha del permiso, sin convertir R en presencia ordinaria.
 
@@ -35,36 +64,5 @@ def recovery_credit_minutes(db: Session, employee_id: uuid.UUID, date_from: date
     ))
     credit = 0
     for commitment in commitments:
-        applied = db.scalar(select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(
-            ManualRecoveryApplication.commitment_id == commitment.id,
-            ManualAttendanceDay.voided_at.is_(None),
-        )) or 0
-        if commitment.covered_before:
-            continue
-        # Recovery repays only the authorized absence at its origin date; it
-        # never creates a second ordinary presence or credit beyond the gap.
-        expected = ScheduleService(db).expected_minutes(employee_id, commitment.permission_date)
-        present = ordinary_minutes(db, employee_id, commitment.permission_date, commitment.permission_date)
-        # Los ajustes legados aprobados ya reconocen cobertura de la falta en
-        # la fecha origen.  R no puede acreditar por segunda vez los mismos
-        # minutos (N360/E480 + ajuste120 + R120 => crédito nuevo 0).
-        legacy_coverage = db.scalar(
-            select(func.coalesce(func.sum(HourAdjustment.minutes), 0)).where(
-                HourAdjustment.employee_id == employee_id,
-                HourAdjustment.adjustment_date == commitment.permission_date,
-                HourAdjustment.status == ADJUSTMENT_APPROVED,
-                HourAdjustment.minutes > 0,
-                # OVERTIME remunera trabajo adicional; no cubre la ausencia
-                # ordinaria en el permiso ni puede reducir el crédito R.
-                HourAdjustment.adjustment_type != "OVERTIME",
-            )
-        ) or 0
-        # A historical commitment can predate a configured schedule; its
-        # agreed minutes are then the only authorized missing-time ceiling.
-        missing = (
-            max(expected - present - int(legacy_coverage), 0)
-            if expected > 0
-            else max(commitment.agreed_minutes - int(legacy_coverage), 0)
-        )
-        credit += min(int(applied), commitment.agreed_minutes, missing)
+        credit += int(recovery_credit_components(db, commitment)["effective_credit_minutes"])
     return credit

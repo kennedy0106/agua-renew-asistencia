@@ -10,6 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.core.test_db import assert_disposable_postgres_url
 
@@ -220,6 +221,59 @@ def test_hst01_corrective_upgrade_from_l8f9_preserves_rows_or_reports_duplicate(
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM recovery_commitments")).scalar_one() == 2
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "l8f9a0b1c2d3"
+
+
+def test_h693_operation_receipt_upgrade_keeps_v1_unscoped(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C14: v1 bytes survive and the migration never invents an owner."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "m9a0b1c2d3e4")
+    payload_hash = "a" * 64
+    result = '{"created":["legacy-id"]}'
+    with engine.begin() as conn:
+        conn.execute(
+            text("""INSERT INTO manual_attendance_idempotency
+                (idempotency_key, payload_hash, result)
+                VALUES ('legacy-h693-receipt', :hash, CAST(:result AS json))"""),
+            {"hash": payload_hash, "result": result},
+        )
+        created_at = conn.execute(text("SELECT created_at FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'")).scalar_one()
+    command.upgrade(cfg, "n0b1c2d3e4f5")
+    with engine.connect() as conn:
+        row = conn.execute(text("""SELECT payload_hash, result, protocol_version,
+            actor_user_id, operation_type, target_manual_day_id, http_status
+            FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'""")).one()
+        assert row[0] == payload_hash
+        assert row[1] == {"created": ["legacy-id"]}
+        assert row[2:] == (1, None, None, None, None)
+        assert conn.execute(text("SELECT created_at FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'")).scalar_one() == created_at
+        constraints = {item["name"] for item in inspect(engine).get_check_constraints("manual_attendance_idempotency")}
+        assert {"ck_manual_attendance_idempotency_protocol", "ck_manual_attendance_idempotency_v2_scope"} <= constraints
+    with engine.begin() as conn:
+        role_id = "81111111-1111-1111-1111-111111111111"
+        actor_id = "82222222-2222-2222-2222-222222222222"
+        conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'H693-RECEIPT', true)"), {"id": role_id})
+        conn.execute(text("INSERT INTO users (id, username, password_hash, system_role_id, active, must_change_password) VALUES (:id, 'hst-receipt-check', 'hash', :role, true, false)"), {"id": actor_id, "role": role_id})
+    for key, operation_type, http_status in (
+        ("invalid-null-operation", None, 200),
+        ("invalid-null-status", "BATCH", None),
+    ):
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(text("""INSERT INTO manual_attendance_idempotency
+                    (idempotency_key, payload_hash, result, protocol_version, actor_user_id, operation_type, http_status)
+                    VALUES (:key, :hash, CAST(:result AS json), 2, :actor, :operation_type, :http_status)"""),
+                    {"key": key, "hash": "b" * 64, "result": '{}', "actor": actor_id, "operation_type": operation_type, "http_status": http_status})
+    with pytest.raises(RuntimeError, match="cannot be downgraded safely"):
+        command.downgrade(cfg, "m9a0b1c2d3e4")
 
 
 def test_alembic_upgrade_conserva_nonces_sin_device_id(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,7 +26,8 @@ from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.totals import worked_minutes as consolidated_worked_minutes
-from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication
+from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication, RecoveryCommitment
+from app.modules.attendance.totals import recovery_credit_components
 from app.modules.attendance.service import AttendanceService
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
@@ -166,6 +167,7 @@ class PayrollService:
             overtime_amount = valued_overtime["value"]
             manual_additional = self._approved_manual_additional(employee.id, period)
             manual_distribution = self._manual_distribution(employee.id, period)
+            incoming_recovery_inputs = self._incoming_recovery_inputs(employee.id, period)
             # OvertimeService ya incorpora el importe aprobado de P; aquí solo
             # conservamos su identidad/distribución en el fingerprint.
             snapshots.append(
@@ -178,6 +180,7 @@ class PayrollService:
                     "overtime_amount": overtime_amount,
                     "manual_additional": manual_additional["fingerprint"],
                     "manual_distribution": manual_distribution,
+                    "incoming_recovery_inputs": incoming_recovery_inputs,
                     # P manual is not an HourAdjustment.  Never subtract it
                     # from the legacy set: that created phantom negative
                     # adjustments in snapshots/CSV.
@@ -211,6 +214,35 @@ class PayrollService:
             output.append({"id": str(row.id), "version": row.version, "work_date": row.work_date.isoformat(), "W": row.worked_minutes_net, "N": row.normal_minutes, "P": row.additional_minutes, "R": row.recovery_minutes, "payment_status": row.payment_status, "allocations": sorted(({"commitment_id": str(commitment_id), "minutes": minutes} for commitment_id, minutes in allocations), key=lambda item: item["commitment_id"])})
         return output
 
+    def _incoming_recovery_inputs(self, employee_id: uuid.UUID, period: PayrollPeriod) -> list[dict]:
+        """Stable origin-month input for R worked in any other month.
+
+        It is fingerprint-only: actual work remains in the work-month's
+        distribution and is never added to this period's worked minutes.
+        """
+        commitments = list(self.db.scalars(select(RecoveryCommitment).where(
+            RecoveryCommitment.employee_id == employee_id,
+            RecoveryCommitment.permission_date >= period.start_date,
+            RecoveryCommitment.permission_date <= period.end_date,
+        ).order_by(RecoveryCommitment.id)))
+        result = []
+        for commitment in commitments:
+            components = recovery_credit_components(self.db, commitment)
+            applications = self.db.execute(
+                select(ManualRecoveryApplication, ManualAttendanceDay)
+                .join(ManualAttendanceDay, ManualAttendanceDay.id == ManualRecoveryApplication.manual_day_id)
+                .where(ManualRecoveryApplication.commitment_id == commitment.id, ManualAttendanceDay.voided_at.is_(None))
+                .order_by(ManualRecoveryApplication.manual_day_id, ManualRecoveryApplication.id)
+            ).all()
+            result.append({
+                "commitment_id": str(commitment.id), "permission_date": commitment.permission_date.isoformat(),
+                "agreed_minutes": commitment.agreed_minutes, "covered_before": commitment.covered_before,
+                "status": commitment.status,
+                **{key: value for key, value in components.items() if key not in {"covered_before", "applied_minutes"}},
+                "applications": [{"application_id": str(application.id), "manual_day_id": str(day.id), "manual_day_version": day.version, "work_date": day.work_date.isoformat(), "minutes": application.minutes} for application, day in applications],
+            })
+        return result
+
     def _approved_manual_additional(self, employee_id: uuid.UUID, period: PayrollPeriod) -> dict:
         rows = list(self.db.scalars(select(ManualAttendanceDay).where(
             ManualAttendanceDay.employee_id == employee_id,
@@ -243,11 +275,12 @@ class PayrollService:
                 "overtime_amount": str(item["overtime_amount"]),
                 "manual_additional": item.get("manual_additional", []),
                 "manual_distribution": item.get("manual_distribution", []),
+                "incoming_recovery_inputs": item.get("incoming_recovery_inputs", []),
                 "adjustment_minutes": item["adjustment_minutes"],
                 "base_salary": str(item["base_salary"]),
                 "missing_salary_days": item["missing_salary_days"],
             }
-            for item in snapshots
+            for item in sorted(snapshots, key=lambda value: str(value["employee_id"]))
         ]
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -257,7 +290,7 @@ class PayrollService:
                 select(Employee).where(
                     or_(Employee.hire_date.is_(None), Employee.hire_date <= period.end_date),
                     or_(Employee.termination_date.is_(None), Employee.termination_date >= period.start_date),
-                )
+                ).order_by(Employee.id)
             )
         )
 
