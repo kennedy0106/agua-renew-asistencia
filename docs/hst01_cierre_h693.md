@@ -154,5 +154,21 @@ pasar el HTTPException controlado sin una segunda limpieza.
 | E11 | tests E08/E09 | Reintento posterior converge en un solo resultado: PASS. |
 | E12 | `test_e12_programming_error_is_not_relabelled_as_ambiguous_result` | Unitario local: PASS, conserva ProgrammingError. |
 
-Verificación completa del candidato posterior queda a cargo del cierre final;
-esta sección no reemplaza los resultados de `a5861fb` anteriores.
+Validación completa del candidato funcional
+`98d3b9f09909f441ed2daabe90774ecb3edc3fff`, ejecutada exclusivamente en
+local con Python 3.11.16, Node 24.21.0, PostgreSQL 17.11 y MinIO
+`RELEASE.2025-09-07T16-13-09Z`:
+
+- `uv --directory backend run python ../scripts/verify_local.py`: **OK**.
+- Backend: **410 passed**, 18 advertencias de deprecación, 0 fallos, 0 errores
+  y 0 pruebas omitidas.
+- Instalación reproducible, lint, TypeScript y build de Next.js: aprobados.
+- Playwright UI: **24 passed**.
+- Playwright con Next.js/FastAPI/PostgreSQL/MinIO locales: **25 passed**.
+- Alembic a `head`, seed ficticio, guarda contra bypass de cámara y
+  `git diff --check`: aprobados.
+- Evidencia completa: `.local-verify/20260917T143626Z/` (gitignored).
+
+Esta sección conserva y no sustituye el historial de `a5861fb`/`f8caf88`. La
+CI remota queda pendiente por cuota agotada de GitHub Actions; la aceptación
+de este incremento se basa en la verificación local del candidato indicado.
