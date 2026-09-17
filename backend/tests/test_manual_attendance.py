@@ -194,6 +194,150 @@ def test_h693_ambiguous_commit_recovers_receipt_or_reports_unknown(db_session):
     assert raised.value.detail["code"] == "OPERATION_RESULT_UNKNOWN"
 
 
+def test_e08_http_commit_and_rollback_failures_keep_controlled_unknown(client, db_session, monkeypatch):
+    """E08: real HTTP batch keeps 503 when commit and cleanup both lose connectivity."""
+    from sqlalchemy.exc import OperationalError
+
+    _login(client); employee = _employee(client, db_session)
+    original_commit, original_rollback = db_session.commit, db_session.rollback
+    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(OperationalError("COMMIT", {}, Exception("offline"))))
+    monkeypatch.setattr(db_session, "rollback", lambda: (_ for _ in ()).throw(OperationalError("ROLLBACK", {}, Exception("offline"))))
+    response = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee, idempotency_key="hst-e08-cleanup-fails"))
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "OPERATION_RESULT_UNKNOWN"
+    # Restore explicitly before the shared SQLite fixture tears down, then
+    # prove the original DTO/key can make one later, revalidated decision.
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    monkeypatch.setattr(db_session, "rollback", original_rollback)
+    db_session.rollback()
+    recovered = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee, idempotency_key="hst-e08-cleanup-fails"))
+    assert recovered.status_code == 200, recovered.text
+    assert db_session.query(ManualAttendanceDay).count() == 1
+
+
+def test_batch_business_http_error_rolls_back_and_keeps_its_contract(client, db_session, monkeypatch):
+    """Only the helper's ambiguous 503 bypasses batch cleanup, never 409 business errors."""
+    from app.modules.attendance.manual_service import ManualAttendanceService
+
+    _login(client); employee = _employee(client, db_session)
+    original_preview, original_rollback = ManualAttendanceService.preview, db_session.rollback
+    rollbacks: list[str] = []
+
+    def payment_not_approvable(self, payload, **kwargs):
+        return {"preview_token": "p" * 64, "rows": [{"payment": {"status": "NOT_APPLICABLE", "amount": None}}]}
+
+    def tracked_rollback():
+        rollbacks.append("rollback")
+        return original_rollback()
+
+    monkeypatch.setattr(ManualAttendanceService, "preview", payment_not_approvable)
+    monkeypatch.setattr(db_session, "rollback", tracked_rollback)
+    payload = _batch(employee, worked_minutes_net=120, normal_minutes=0, additional_minutes=120, payment_method="OVERTIME")
+    payload.update(approve_additional=True, preview_token="p" * 64, idempotency_key="hst-business-error-rolls-back")
+    response = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PAYMENT_REVIEW_REQUIRED"
+    assert rollbacks == ["rollback"]
+    assert db_session.query(ManualAttendanceDay).count() == 0
+    assert db_session.query(ManualAttendanceIdempotency).count() == 0
+    monkeypatch.setattr(ManualAttendanceService, "preview", original_preview)
+
+
+def test_e09_http_commit_cleanup_failure_recovers_exact_durable_receipt(client, db_session, monkeypatch):
+    """E09/E11: one healthy alternative connection returns the original receipt once."""
+    from app.modules.audit.models import AuditLog
+    from sqlalchemy.exc import OperationalError
+
+    _login(client); employee = _employee(client, db_session)
+    payload = _batch(employee, idempotency_key="hst-e09-committed-receipt")
+    original_commit, original_rollback = db_session.commit, db_session.rollback
+
+    def commit_then_disconnect():
+        original_commit()
+        raise OperationalError("COMMIT", {}, Exception("response lost after commit"))
+
+    monkeypatch.setattr(db_session, "commit", commit_then_disconnect)
+    monkeypatch.setattr(db_session, "rollback", lambda: (_ for _ in ()).throw(OperationalError("ROLLBACK", {}, Exception("offline"))))
+    first = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert first.status_code == 200, first.text
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    monkeypatch.setattr(db_session, "rollback", original_rollback)
+    replay = client.post("/api/v1/attendance/manual-days/batch", json=payload)
+    assert replay.status_code == 200 and replay.json() == first.json()
+    assert db_session.query(ManualAttendanceDay).count() == 1
+    assert db_session.query(ManualAttendanceIdempotency).filter_by(idempotency_key=payload["idempotency_key"]).count() == 1
+    assert db_session.query(AuditLog).filter_by(action="created").count() == 1
+
+
+def test_e10_alternative_recovery_connection_failure_is_stable_unknown(client, db_session, monkeypatch):
+    """E10: a failed sole recovery connection neither loops nor guesses success."""
+    from sqlalchemy.exc import OperationalError
+    import app.modules.attendance.manual_operations as manual_operations
+
+    _login(client); employee = _employee(client, db_session)
+    original_commit, original_rollback = db_session.commit, db_session.rollback
+
+    class OfflineRecovery:
+        def __init__(self, bind):
+            self.bind = bind
+        def __enter__(self):
+            raise OperationalError("SELECT", {}, Exception("offline"))
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(db_session, "commit", lambda: (_ for _ in ()).throw(OperationalError("COMMIT", {}, Exception("offline"))))
+    monkeypatch.setattr(db_session, "rollback", lambda: (_ for _ in ()).throw(OperationalError("ROLLBACK", {}, Exception("offline"))))
+    monkeypatch.setattr(manual_operations, "Session", OfflineRecovery)
+    response = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee, idempotency_key="hst-e10-alt-offline"))
+    assert response.status_code == 503
+    assert response.json()["detail"] == {"code": "OPERATION_RESULT_UNKNOWN", "message": "No se pudo confirmar el resultado; reintente con la misma clave"}
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    monkeypatch.setattr(db_session, "rollback", original_rollback)
+    db_session.rollback()
+    assert db_session.query(ManualAttendanceDay).count() == 0
+
+
+def test_e12_programming_error_is_not_relabelled_as_ambiguous_result(db_session):
+    """E12: implementation defects retain their exception type for diagnosis."""
+    import pytest
+    from sqlalchemy.exc import ProgrammingError
+    from app.modules.attendance.manual_operations import commit_with_receipt_recovery
+    from app.modules.users.models import User
+
+    actor = db_session.query(User).filter_by(username="admin").one()
+
+    class BrokenImplementationSession:
+        def commit(self):
+            raise ProgrammingError("COMMIT", {}, Exception("bad SQL"))
+
+    with pytest.raises(ProgrammingError):
+        commit_with_receipt_recovery(
+            BrokenImplementationSession(), key="hst-e12-programming", digest="p" * 64,
+            actor_id=actor.id, operation_type="BATCH", target_manual_day_id=None, result={"created": []},
+        )
+
+
+def test_e04_closed_edit_is_rejected_then_rectification_allows_the_same_business_change(client, db_session):
+    """E04: a previewed edit cannot cross CLOSED, but an editable rectification can."""
+    from app.modules.payroll.models import PERIOD_CLOSED, PERIOD_OPEN
+
+    _login(client); employee = _employee(client, db_session)
+    source = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee, idempotency_key="hst-e04-source"))
+    assert source.status_code == 200
+    source_id = source.json()["created"][0]
+    patch = {"employee_id": employee, "worked_minutes_net": 120, "normal_minutes": 120, "additional_minutes": 0, "recovery_minutes": 0, "reason": "Edición E04", "recovery_allocations": [], "expected_version": 1, "idempotency_key": "hst-e04-edit"}
+    patch["preview_token"] = _preview_token(client, {"work_date": "2026-09-01", "rows": [{key: value for key, value in patch.items() if key not in {"expected_version", "preview_token", "idempotency_key"}}], "idempotency_key": "hst-e04-preview", "editing_manual_day_id": source_id, "expected_version": 1})
+    root = uuid.uuid4()
+    closed = PayrollPeriod(name="E04 cerrado", start_date=date(2026, 9, 1), end_date=date(2026, 9, 30), status=PERIOD_CLOSED, root_period_id=root, version=1)
+    db_session.add(closed); db_session.commit()
+    blocked = client.patch(f"/api/v1/attendance/manual-days/{source_id}", json=patch)
+    assert blocked.status_code == 409 and blocked.json()["detail"]["code"] == "PAYROLL_CLOSED"
+    rectification = PayrollPeriod(name="E04 rectificación", start_date=date(2026, 9, 1), end_date=date(2026, 9, 30), status=PERIOD_OPEN, root_period_id=root, version=2, supersedes_period_id=closed.id)
+    db_session.add(rectification); db_session.commit()
+    accepted = client.patch(f"/api/v1/attendance/manual-days/{source_id}", json={**patch, "idempotency_key": "hst-e04-after-rectification"})
+    assert accepted.status_code == 200, accepted.text
+
+
 def test_h693_operation_query_database_failure_is_not_reported_as_missing(db_session, monkeypatch):
     """C10: no poder consultar no equivale a confirmar que no hubo commit."""
     import pytest

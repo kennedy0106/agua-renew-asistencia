@@ -124,3 +124,35 @@ exclusivamente documental después de congelar y verificar el candidato.
   pendientes en el candidato verificado.
 
 No se ejecutó carga real ni migración en Neon.
+
+## Cierre dirigido H693-03/UI y H693-03/COMMIT (candidato posterior a `a5861fb`)
+
+La reproducción inicial sobre el árbol publicado mostró dos fallos concretos:
+`MANUAL_DAY_EXISTS` se conservaba como pendiente de pantalla y el `rollback()`
+sin protección sustituía el 503 controlado cuando COMMIT ya había fallado. El
+cierre añade `classifyHistoricalOperationResult`/`runHistoricalOperation` y lo
+usa en guardar, editar, anular, aprobar, reintentar y consultar una operación
+restaurada. Sólo los contratos emitidos por asistencia y el 422 parseado se
+liberan como rechazo antes de escribir; red, 404 sin recibo y 503 permanecen
+con el mismo DTO/clave. `commit_with_receipt_recovery` limita la recuperación
+a errores operacionales/de interfaz, tolera ese mismo fallo en rollback y usa
+como máximo una sesión alternativa para un recibo v2 completo. `batch()` deja
+pasar el HTTPException controlado sin una segunda limpieza.
+
+| ID | Prueba efectiva | Entorno / resultado dirigido |
+|---|---|---|
+| E01 | `E01 real: la pantalla libera...` | Playwright + FastAPI/PG/MinIO local: PASS. |
+| E02 | `E02 real: una edición rechazada...` | Playwright + FastAPI/PG/MinIO local: PASS. |
+| E03 | `E03/E07: un 422 contractual...` | Playwright UI: PASS; conserva otra clave. |
+| E04 | `test_e04_closed_edit_is_rejected_then_rectification_allows_the_same_business_change` | HTTP local: PASS. |
+| E05 | `E05/E06 real: respuesta perdida...` | Playwright + API local: PASS; consulta 503 conserva el envío. |
+| E06 | mismo test E05/E06 | Recarga recupera recibo sin reenviar: PASS. |
+| E07 | `E03/E07: ... error tardío...` | Playwright UI: PASS. |
+| E08 | `test_e08_http_commit_and_rollback_failures_keep_controlled_unknown` | Ruta HTTP local: PASS, 503 estable. |
+| E09 | `test_e09_http_commit_cleanup_failure_recovers_exact_durable_receipt` | Ruta HTTP local: PASS, un recibo/fila/auditoría. |
+| E10 | `test_e10_alternative_recovery_connection_failure_is_stable_unknown` | HTTP local: PASS, sin bucle ni éxito supuesto. |
+| E11 | tests E08/E09 | Reintento posterior converge en un solo resultado: PASS. |
+| E12 | `test_e12_programming_error_is_not_relabelled_as_ambiguous_result` | Unitario local: PASS, conserva ProgrammingError. |
+
+Verificación completa del candidato posterior queda a cargo del cierre final;
+esta sección no reemplaza los resultados de `a5861fb` anteriores.

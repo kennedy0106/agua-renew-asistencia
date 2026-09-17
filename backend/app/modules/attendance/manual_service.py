@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import lima_tz
@@ -385,6 +385,24 @@ class ManualAttendanceService:
                 self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id,
                 operation_type="BATCH", target_manual_day_id=None, result=result,
             )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if (
+                exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+                and detail.get("code") == "OPERATION_RESULT_UNKNOWN"
+            ):
+                # Only the commit helper owns this ambiguous outcome.  Do not
+                # turn its controlled response into a second cleanup failure.
+                raise
+            # Every ordinary business rejection remains transactional: release
+            # locks/staged state before returning its original contract.  A
+            # connection already lost during cleanup cannot relabel that
+            # documented rejection as a new availability outcome.
+            try:
+                self.db.rollback()
+            except (OperationalError, InterfaceError):
+                pass
+            raise
         except IntegrityError as exc:
             self.db.rollback()
             constraint = getattr(getattr(exc, "orig", None), "diag", None)

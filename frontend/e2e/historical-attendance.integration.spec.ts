@@ -99,6 +99,100 @@ test("HST-01 real: REVIEWED conserva importe aprobado y rechaza S/0, concepto o 
   }
 });
 
+test("E01 real: la pantalla libera un conflicto MANUAL_DAY_EXISTS y permite otra fecha", async ({ page }) => {
+  const api = page.request;
+  await login(api);
+  const scenario = 30_000 + Math.floor(Math.random() * 60_000);
+  const employeeId = await employee(api, scenario);
+  const occupied = { work_date: "2026-09-08", rows: [{ employee_id: employeeId, worked_minutes_net: 120, normal_minutes: 120, additional_minutes: 0, recovery_minutes: 0, reason: "Origen E01", recovery_allocations: [] }], idempotency_key: `e01-source-${crypto.randomUUID()}` };
+  expect((await api.post(`${API}/api/v1/attendance/manual-days/batch`, { data: occupied })).status()).toBe(200);
+  await page.goto("/admin/attendance/history");
+  const row = page.locator("tbody tr").filter({ hasText: `Hist${scenario}` });
+  await page.getByLabel("Fecha trabajada").fill("2026-09-08");
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Ya existe una carga manual vigente")).toBeVisible();
+  const currentUser = await api.get(`${API}/api/v1/auth/me`);
+  const userId = (await currentUser.json() as { id: string }).id;
+  expect(await page.evaluate((id) => sessionStorage.getItem(`hst01.pending-operation.v2.${id}`), userId)).toBeNull();
+  await page.getByLabel("Fecha trabajada").fill("2026-09-09");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
+});
+
+test("E05/E06 real: respuesta perdida conserva el mismo envío hasta consulta y recuperación", async ({ page }) => {
+  const api = page.request;
+  await login(api);
+  const scenario = 30_000 + Math.floor(Math.random() * 60_000);
+  const employeeId = await employee(api, scenario);
+  let batchCalls = 0;
+  let lookupFails = true;
+  await page.route("**/api/v1/attendance/manual-days/batch", async (route) => {
+    batchCalls += 1;
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    return route.abort("connectionreset");
+  });
+  await page.route("**/api/v1/attendance/manual-operations/**", async (route) => {
+    if (lookupFails) return route.fulfill({ status: 503, json: { detail: { code: "OPERATION_RESULT_UNKNOWN", message: "Resultado incierto" } } });
+    return route.continue();
+  });
+  await page.goto("/admin/attendance/history");
+  const row = page.locator("tbody tr").filter({ hasText: `Hist${scenario}` });
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Resultado no confirmado: puede reintentar el mismo envío.")).toBeVisible();
+  const userId = (await (await api.get(`${API}/api/v1/auth/me`)).json() as { id: string }).id;
+  const pendingBeforeReload = await page.evaluate((id) => sessionStorage.getItem(`hst01.pending-operation.v2.${id}`), userId);
+  expect(pendingBeforeReload).toContain("2026-09-10");
+  await page.reload();
+  await expect(page.getByText("Hay una operación pendiente. Use Reintentar con el mismo envío; no cambie el formulario.")).toBeVisible();
+  expect(await page.evaluate((id) => sessionStorage.getItem(`hst01.pending-operation.v2.${id}`), userId)).toBe(pendingBeforeReload);
+  lookupFails = false;
+  await page.reload();
+  await expect(page.getByText("Operación recuperada: BATCH. Historial actualizado.")).toBeVisible();
+  expect(await page.evaluate((id) => sessionStorage.getItem(`hst01.pending-operation.v2.${id}`), userId)).toBeNull();
+  expect(batchCalls).toBe(1);
+  const listed = await api.get(`${API}/api/v1/attendance/manual-days?employee_id=${employeeId}&date_from=2026-09-10&date_to=2026-09-10`);
+  expect(await listed.json()).toHaveLength(1);
+});
+
+test("E02 real: una edición rechazada por versión conserva borrador, libera contexto y permite continuar", async ({ page }) => {
+  const api = page.request;
+  await login(api);
+  const scenario = 30_000 + Math.floor(Math.random() * 60_000);
+  const employeeId = await employee(api, scenario);
+  const source = { work_date: "2026-09-11", rows: [{ employee_id: employeeId, worked_minutes_net: 120, normal_minutes: 120, additional_minutes: 0, recovery_minutes: 0, reason: "Origen E02", recovery_allocations: [] }], idempotency_key: `e02-source-${crypto.randomUUID()}` };
+  const sourceResponse = await api.post(`${API}/api/v1/attendance/manual-days/batch`, { data: source });
+  expect(sourceResponse.status()).toBe(200);
+  const sourceId = (await sourceResponse.json() as { created: string[] }).created[0];
+  await page.goto("/admin/attendance/history");
+  const sourceRow = page.locator("tbody tr").filter({ hasText: `Hist${scenario}` });
+  await sourceRow.getByRole("button", { name: "Editar" }).click();
+  await page.getByRole("button", { name: "Previsualizar cambios" }).click();
+  const visibleDraft = await page.getByLabel("Horas editadas").inputValue();
+  const item = await api.get(`${API}/api/v1/attendance/manual-days/${sourceId}`);
+  const current = await item.json() as { version: number };
+  const voided = await api.post(`${API}/api/v1/attendance/manual-days/${sourceId}/void`, { data: { expected_version: current.version, reason: "Cambio externo E02", idempotency_key: `e02-void-${crypto.randomUUID()}` } });
+  expect(voided.status()).toBe(200);
+  await page.getByRole("button", { name: "Guardar corrección" }).click();
+  await expect(page.getByText("Esta carga cambió en otra sesión. Recargue el historial y vuelva a editar la versión vigente.")).toBeVisible();
+  expect(await page.getByLabel("Horas editadas").inputValue()).toBe(visibleDraft);
+  const userId = (await (await api.get(`${API}/api/v1/auth/me`)).json() as { id: string }).id;
+  expect(await page.evaluate((id) => sessionStorage.getItem(`hst01.pending-operation.v2.${id}`), userId)).toBeNull();
+  await page.getByRole("button", { name: "Cancelar" }).click();
+  const row = page.locator("tbody tr").filter({ hasText: `Hist${scenario}` });
+  await page.getByLabel("Fecha trabajada").fill("2026-09-12");
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
+});
+
 test("U09 real: Normal, Adicional, Recuperación y Mixto desde pantalla llegan a saldo, diario y CSV", async ({ page }) => {
   const api = page.request;
   await login(api);

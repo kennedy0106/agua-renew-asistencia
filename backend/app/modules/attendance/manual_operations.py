@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.modules.attendance.manual_models import ManualAttendanceIdempotency
@@ -158,8 +158,16 @@ def commit_with_receipt_recovery(
     try:
         db.commit()
         return result
-    except SQLAlchemyError as exc:
-        db.rollback()
+    except (OperationalError, InterfaceError) as exc:
+        # A dead connection can fail again while SQLAlchemy tries to clean up.
+        # That secondary operational/interface failure does not establish a
+        # rollback, so it must not prevent the one allowed fresh-session
+        # receipt lookup.  Programming/integrity errors deliberately escape:
+        # they are not availability results.
+        try:
+            db.rollback()
+        except (OperationalError, InterfaceError):
+            pass
         if key:
             try:
                 with Session(db.get_bind()) as recovery:
@@ -173,7 +181,7 @@ def commit_with_receipt_recovery(
                         and receipt.target_manual_day_id == target_manual_day_id
                     ):
                         return receipt.result
-            except SQLAlchemyError:
+            except (OperationalError, InterfaceError):
                 pass
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

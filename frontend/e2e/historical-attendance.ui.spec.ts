@@ -348,6 +348,69 @@ test("U01: una respuesta perdida conserva DTO y clave, bloquea otra mutación y 
   expect(effects).toBe(1);
 });
 
+test("E01 reproducción: un rechazo MANUAL_DAY_EXISTS libera sólo ese envío y deja corregir la fecha", async ({ page }) => {
+  const attempts: Array<Record<string, unknown>> = [];
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "e".repeat(64), rows: (body?.rows ?? []).map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    if (path.endsWith("/manual-days/batch")) {
+      attempts.push(request.postDataJSON() as Record<string, unknown>);
+      if (attempts.length === 1) return route.fulfill({ status: 409, json: { detail: { code: "MANUAL_DAY_EXISTS", message: "Ya existe una carga manual vigente" } } });
+      return route.fulfill({ json: { created: ["valid-next-date"] } });
+    }
+    if (path.includes("/manual-operations/")) return route.fulfill({ status: 404, json: { detail: { code: "OPERATION_NOT_CONFIRMED", message: "Sin recibo" } } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  const row = page.locator("tbody tr").first();
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await row.getByRole("checkbox").check();
+  await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Ya existe una carga manual vigente")).toBeVisible();
+  await page.getByLabel("Fecha trabajada").fill("2026-09-11");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
+  expect(attempts).toHaveLength(2);
+});
+
+test("E03/E07: un 422 contractual libera sólo su clave y un error tardío no borra otra", async ({ page }) => {
+  let release: (() => Promise<void>) | undefined;
+  const replacement = { key: "replacement-pending-key", userId: user.id, kind: "BATCH", payload: { work_date: "2026-09-11", rows: [], approve_additional: false, idempotency_key: "replacement-pending-key" } };
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "g".repeat(64), rows: (body?.rows ?? []).map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    if (path.endsWith("/manual-days/batch")) {
+      await new Promise<void>((resolve) => { release = async () => { await route.fulfill({ status: 422, json: { detail: { code: "NORMAL_EXCEEDS_EXPECTED", message: "La parte normal supera la jornada pactada" } } }); resolve(); }; });
+      return;
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  const row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect.poll(() => Boolean(release)).toBe(true);
+  await page.evaluate((operation) => sessionStorage.setItem(`hst01.pending-operation.v2.${operation.userId}`, JSON.stringify(operation)), replacement);
+  await release?.();
+  await expect(page.getByText("La parte normal supera la jornada pactada")).toBeVisible();
+  await expect.poll(() => page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBe(JSON.stringify(replacement));
+});
+
 test("U06/U07: al recargar consulta el recibo del usuario y recupera sin reenviar", async ({ page }) => {
   const key = "pending-operation-key-123";
   let mutations = 0;
