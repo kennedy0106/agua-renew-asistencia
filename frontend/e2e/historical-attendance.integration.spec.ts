@@ -296,7 +296,7 @@ test("U02/U03 real: PATCH con R y VOID pierden respuesta después del commit y s
   await page.getByLabel("Compromiso editado").selectOption(commitmentId);
   await page.getByRole("button", { name: "Previsualizar cambios" }).click();
   await page.getByRole("button", { name: "Guardar corrección" }).click();
-  await expect(page.getByText("No se pudo guardar la corrección.")).toBeVisible();
+  await expect(page.getByText("Resultado no confirmado: puede reintentar la misma corrección.")).toBeVisible();
   await page.reload();
   await expect(page.getByText("Operación recuperada: UPDATE. Historial actualizado.")).toBeVisible();
   const active = (await (await api.get(`${API}/api/v1/attendance/manual-days?employee_id=${employeeId}`)).json() as Array<{ id: string; version: number; recovery_minutes: number }>);
