@@ -58,7 +58,11 @@ def test_override_without_schedule_and_gross_below_threshold(client, db_session)
     employee_id = _employee(client, db_session)
     day = _complete(db_session, employee_id, minutes=300)
     response = client.get(f"/api/v1/attendance/daily?employee_id={employee_id}&date_from={day}&date_to={day}")
-    assert response.json()[0]["break_source"] == "NONE"
+    daily = response.json()[0]
+    assert daily["break_source"] == "NONE"
+    # Compatibilidad W/N/P/R: una sesión normal del kiosco es íntegramente N,
+    # no una fila que los defaults del schema conviertan en N=0.
+    assert (daily["worked_minutes"], daily["ordinary_minutes"], daily["additional_minutes"], daily["recovery_minutes"]) == (300, 300, 0, 0)
     response = client.put(_url(employee_id, day), json={"requested_break_minutes": 30, "reason": "Almuerzo corto"})
     assert response.status_code == 200
     assert response.json()["worked_minutes"] == 270

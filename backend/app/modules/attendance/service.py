@@ -776,6 +776,20 @@ class AttendanceService:
 
         now = datetime.now(timezone.utc)
         work_date = now.astimezone(lima_tz()).date()
+        # A historical administrative day and a kiosk session are mutually
+        # exclusive sources for one employee/date.  Both services lock the
+        # employee first, so this check remains valid through the commit.
+        if self.db.scalar(
+            select(ManualAttendanceDay.id).where(
+                ManualAttendanceDay.employee_id == employee_id,
+                ManualAttendanceDay.work_date == work_date,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La jornada tiene una carga histórica; no se mezclan fuentes",
+            )
         try:
             record = AttendanceRecord(
                 employee_id=employee_id,
@@ -881,6 +895,10 @@ class AttendanceService:
         return record
 
     def list_evidence_for_record(self, record_id: uuid.UUID) -> dict:
+        record = self.repo.get_by_id(record_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+        self.repo.lock_employee_for_attempt(record.employee_id)
         record = self.repo.get_by_id(record_id)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
@@ -1328,6 +1346,12 @@ class AttendanceService:
                     "override_requested_minutes": override_requested_minutes,
                     "override_limited": override_limited,
                     "worked_minutes": worked,
+                    # Las sesiones del kiosco son presencia ordinaria.  No
+                    # depender de los defaults del schema: estos valores se
+                    # consumen junto con las filas históricas W/N/P/R.
+                    "ordinary_minutes": worked,
+                    "additional_minutes": 0,
+                    "recovery_minutes": 0,
                     "expected_minutes": expected,
                     "difference_minutes": worked - expected,
                     "has_open_entry": has_open,
@@ -1346,7 +1370,7 @@ class AttendanceService:
         for item in self.db.scalars(manual_query):
             employee = item.employee
             expected = schedules.expected_minutes(item.employee_id, item.work_date)
-            result.append({"employee_id": item.employee_id, "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None, "work_date": item.work_date, "session_count": 0, "gross_minutes": item.worked_minutes_net, "break_minutes": 0, "break_source": "NONE", "override_requested_minutes": None, "override_limited": False, "worked_minutes": item.worked_minutes_net, "expected_minutes": expected, "difference_minutes": item.normal_minutes - expected, "has_open_entry": False, "incident_codes": ["HISTORICAL_MANUAL"]})
+            result.append({"employee_id": item.employee_id, "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None, "work_date": item.work_date, "session_count": 0, "gross_minutes": item.worked_minutes_net, "break_minutes": 0, "break_source": "NONE", "override_requested_minutes": None, "override_limited": False, "worked_minutes": item.worked_minutes_net, "ordinary_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "expected_minutes": expected, "difference_minutes": item.normal_minutes - expected, "has_open_entry": False, "incident_codes": ["HISTORICAL_MANUAL"]})
         return sorted(result, key=lambda item: (item["work_date"], str(item["employee_id"])), reverse=True)
 
     # --- Correcciones y auditoría (Fase 8) ---
@@ -1386,6 +1410,20 @@ class AttendanceService:
         reason = reason.strip()
 
         record = self.repo.get_by_id(record_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+
+        # Todos los escritores que pueden decidir entre kiosco y carga
+        # histórica toman primero la fila Employee.  Tomarla antes de mutar
+        # work_date/corroborar ManualAttendanceDay evita que una corrección
+        # cruce de fecha mientras batch decide que esa fecha está libre.
+        self.repo.lock_employee_for_attempt(record.employee_id)
+        record = self.db.scalar(
+            select(AttendanceRecord)
+            .where(AttendanceRecord.id == record_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
 

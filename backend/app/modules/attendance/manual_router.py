@@ -11,8 +11,8 @@ router = APIRouter(prefix="/api/v1/attendance", tags=["manual-attendance"])
 _manage = require_admin_or_boss
 
 @router.get("/manual-days")
-def list_manual_days(employee_id: uuid.UUID | None = None, date_from: date | None = None, date_to: date | None = None, offset: int = 0, limit: int = 50, db: Session = Depends(get_db), _: object = Depends(_manage)):
-    return ManualAttendanceService(db).list(employee_id, date_from, date_to, offset=max(0, offset), limit=min(max(1, limit), 100))
+def list_manual_days(employee_id: uuid.UUID | None = None, date_from: date | None = None, date_to: date | None = None, include_voided: bool = False, offset: int = 0, limit: int = 50, db: Session = Depends(get_db), _: object = Depends(_manage)):
+    return ManualAttendanceService(db).list(employee_id, date_from, date_to, offset=max(0, offset), limit=min(max(1, limit), 100), include_voided=include_voided)
 
 @router.post("/manual-days/preview")
 def preview_manual_days(payload: ManualBatchIn, db: Session = Depends(get_db), _: object = Depends(_manage)):

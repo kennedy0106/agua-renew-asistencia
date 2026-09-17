@@ -49,6 +49,8 @@ class BalanceOut(BaseModel):
     date_from: date
     date_to: date
     worked_minutes: int
+    actual_worked_minutes: int = 0
+    ordinary_minutes: int = 0
     expected_minutes: int
     adjustment_minutes: int
     overtime_minutes: int = 0

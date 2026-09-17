@@ -3,7 +3,7 @@
 import os
 import threading
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -15,8 +15,10 @@ from app.core.security import create_attendance_token, decode_attendance_token
 from app.core.test_db import assert_disposable_postgres_url
 from app.db.base import Base
 import app.modules  # noqa: F401
-from app.modules.attendance.models import AttendanceConsumedNonce
+from app.modules.attendance.models import AttendanceConsumedNonce, AttendanceRecord
 from app.modules.attendance.service import AttendanceService
+from app.modules.adjustments.models import HourAdjustment
+from app.modules.adjustments.service import AdjustmentService
 from app.modules.employees.models import Employee
 from app.modules.job_roles.models import JobRole
 from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PayrollPeriod, PayrollRecord
@@ -215,6 +217,55 @@ def test_hst01_d03_two_concurrent_creations_leave_one_active_day(pg_engine):
         check.close()
 
 
+def test_hst01_a30_same_idempotency_key_has_one_effective_creation(pg_engine):
+    """A30: una respuesta perdida se puede recuperar; nunca duplica la jornada."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+    finally:
+        setup.close()
+
+    payload = _manual_payload(employee_id, date(2026, 9, 12), key=f"a30-{uuid.uuid4().hex}")
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def create_same_request():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).batch(payload, actor_id))
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create_same_request), threading.Thread(target=create_same_request)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert outcomes.count(409) == 1
+
+    check = factory()
+    try:
+        active = list(check.scalars(select(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date == date(2026, 9, 12),
+            ManualAttendanceDay.voided_at.is_(None),
+        )))
+        assert len(active) == 1
+        replay = ManualAttendanceService(check).batch(payload, actor_id)
+        assert replay == next(item for item in outcomes if isinstance(item, dict))
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
 def test_hst01_r04_two_concurrent_recoveries_do_not_consume_more_than_pending(pg_engine):
     """R04: el bloqueo del compromiso permite una sola aplicación de 120 min."""
     factory = _two_factory(pg_engine)
@@ -263,6 +314,226 @@ def test_hst01_r04_two_concurrent_recoveries_do_not_consume_more_than_pending(pg
         check.close()
 
 
+def test_hst01_a31_correct_record_and_batch_leave_one_source_per_day(pg_engine):
+    """A31: corrección que cruza de fecha y batch toman primero Employee."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+        original_day, target_day = date(2026, 9, 10), date(2026, 9, 11)
+        start = datetime(2026, 9, 10, 13, tzinfo=timezone.utc)
+        record = AttendanceRecord(
+            employee_id=employee_id, work_date=original_day,
+            check_in_at=start, check_out_at=start + timedelta(minutes=60),
+            worked_minutes=60, status="COMPLETE",
+        )
+        setup.add(record); setup.commit()
+        attendance_id = record.id
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def correct():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            shifted = datetime(2026, 9, 11, 13, tzinfo=timezone.utc)
+            outcomes.append(AttendanceService(db).correct_record(
+                attendance_id, reason="Corrección A31 de fecha", current_user_id=actor_id,
+                check_in_at=shifted, check_out_at=shifted + timedelta(minutes=60),
+            ))
+        except HTTPException as exc:
+            db.rollback(); outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    def batch():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).batch(
+                _manual_payload(employee_id, target_day, normal=60, key=f"a31-{uuid.uuid4().hex}"), actor_id
+            ))
+        except HTTPException as exc:
+            db.rollback(); outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=correct), threading.Thread(target=batch)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert sum(item == 409 for item in outcomes) == 1
+    assert len(outcomes) == 2
+
+    check = factory()
+    try:
+        session_count = check.scalar(select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.employee_id == employee_id, AttendanceRecord.work_date == target_day
+        ))
+        manual_count = check.scalar(select(func.count()).select_from(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.work_date == target_day,
+            ManualAttendanceDay.voided_at.is_(None),
+        ))
+        assert int(session_count or 0) + int(manual_count or 0) == 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM attendance_records WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_hst01_overtime_adjustment_and_manual_p_are_exclusive_under_race(pg_engine):
+    """P y OVERTIME legado no pasan simultáneamente las guardas recíprocas."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+    finally:
+        setup.close()
+
+    work_date = date(2026, 9, 12)
+    payload = ManualBatchIn(
+        work_date=work_date, idempotency_key=f"p-vs-overtime-{uuid.uuid4().hex}",
+        rows=[ManualDayIn(
+            employee_id=employee_id, worked_minutes_net=60, normal_minutes=0,
+            additional_minutes=60, recovery_minutes=0, payment_method="OVERTIME",
+            reason="P concurrente con ajuste legado",
+        )],
+    )
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def create_manual():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).batch(payload, actor_id))
+        except HTTPException as exc:
+            db.rollback(); outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    def create_overtime():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(AdjustmentService(db).create(
+                employee_id=employee_id, adjustment_date=work_date, minutes=60,
+                adjustment_type="OVERTIME", reason="Legado concurrente",
+            ))
+        except HTTPException as exc:
+            db.rollback(); outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create_manual), threading.Thread(target=create_overtime)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert outcomes.count(409) == 1
+
+    check = factory()
+    try:
+        manual_count = check.scalar(select(func.count()).select_from(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.work_date == work_date,
+            ManualAttendanceDay.additional_minutes > 0, ManualAttendanceDay.voided_at.is_(None),
+        ))
+        overtime_count = check.scalar(select(func.count()).select_from(HourAdjustment).where(
+            HourAdjustment.employee_id == employee_id, HourAdjustment.adjustment_date == work_date,
+            HourAdjustment.adjustment_type == "OVERTIME", HourAdjustment.status.in_(("PENDING", "APPROVED")),
+        ))
+        assert int(manual_count or 0) + int(overtime_count or 0) == 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM hour_adjustments WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
+def test_hst01_a32_approval_and_void_leave_no_approved_old_version(pg_engine):
+    """A32: aprobar y anular compiten sobre la misma versión, con un solo ganador."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+        payload = ManualBatchIn(
+            work_date=date(2026, 9, 13),
+            idempotency_key=f"a32-{uuid.uuid4().hex}",
+            rows=[ManualDayIn(
+                employee_id=employee_id,
+                worked_minutes_net=60,
+                normal_minutes=0,
+                additional_minutes=60,
+                recovery_minutes=0,
+                payment_method="REVIEWED",
+                payment_concept="Trabajo especial",
+                source_reference="Acta A32",
+                reviewed_additional_amount=Decimal("20.00"),
+                reason="Aprobación concurrente",
+            )],
+        )
+        created = ManualAttendanceService(setup).batch(payload, actor_id)
+        item = setup.get(ManualAttendanceDay, uuid.UUID(created["created"][0]))
+        assert item is not None
+        item_id, snapshot, version = item.id, dict(item.payment_snapshot or {}), item.version
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def approve():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).approve(item_id, actor_id, version, snapshot))
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    def void():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            outcomes.append(ManualAttendanceService(db).void(item_id, version, "Anulación A32", actor_id))
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=approve), threading.Thread(target=void)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert outcomes.count(409) == 1
+
+    check = factory()
+    try:
+        persisted = check.get(ManualAttendanceDay, item_id)
+        assert persisted is not None
+        if persisted.voided_at:
+            assert persisted.payment_status != "APPROVED"
+        else:
+            assert persisted.payment_status == "APPROVED" and persisted.version == version + 1
+        check.execute(text("DELETE FROM manual_attendance_idempotency"))
+        check.execute(text("DELETE FROM manual_attendance_days WHERE employee_id = :id"), {"id": employee_id})
+        _cleanup_payroll(check, period_id, record_id)
+    finally:
+        check.close()
+
+
 def test_hst01_f04_close_blocks_concurrent_versioned_edit(pg_engine):
     """F04: después de tomar el lock de cierre, una edición no se publica."""
     factory = _two_factory(pg_engine)
@@ -306,9 +577,10 @@ def test_hst01_f04_close_blocks_concurrent_versioned_edit(pg_engine):
                     worked_minutes_net=390,
                     normal_minutes=390,
                     additional_minutes=0,
-                    recovery_minutes=0,
-                    reason="Edición concurrente",
-                    expected_version=1,
+                        recovery_minutes=0,
+                        reason="Edición concurrente",
+                        expected_version=1,
+                        preview_token="f" * 64,
                 ),
                 expected_version=1,
                 actor_id=actor_id,

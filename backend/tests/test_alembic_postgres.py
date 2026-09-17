@@ -70,6 +70,10 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
     assert "device_id" in nonce_cols
     assert "attendance_attempt_resolutions" in tables
+    assert "manual_attendance_days" in tables
+    assert "recovery_commitments" in tables
+    commitment_constraints = {item["name"] for item in inspector.get_unique_constraints("recovery_commitments")}
+    assert "uq_recovery_commitment_employee_permission" in commitment_constraints
     resolution_cols = {col["name"] for col in inspector.get_columns("attendance_attempt_resolutions")}
     assert {"nonce", "employee_id", "device_id", "resolution", "reason"} <= resolution_cols
     reason_col = next(
@@ -170,6 +174,52 @@ def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypa
         nonce_cols = {col["name"] for col in inspect(engine).get_columns("attendance_consumed_nonces")}
         assert "result_payload" in nonce_cols
         assert "device_id" in nonce_cols
+
+
+def test_hst01_corrective_upgrade_from_l8f9_preserves_rows_or_reports_duplicate(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A46: m9 upgrades l8f9 data, but never silently chooses a duplicate."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    cfg = Config("alembic.ini")
+
+    def reset_to_l8f9() -> tuple[str, str]:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "l8f9a0b1c2d3")
+        role_id = "71111111-1111-1111-1111-111111111111"
+        employee_id = "72222222-2222-2222-2222-222222222222"
+        user_id = "73333333-3333-3333-3333-333333333333"
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario HST', true)"), {"id": role_id})
+            conn.execute(text("INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token) VALUES (:id, '71845632', 'HST-MIG', 'Ana', 'Migración', :role_id, true, 'qr-hst-mig')"), {"id": employee_id, "role_id": role_id})
+            conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'ADMIN-HST-MIG', true)"), {"id": role_id})
+            # The role used by the audit actor must be distinct from job_roles.
+            actor_role_id = "74444444-4444-4444-4444-444444444444"
+            conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'AUDIT-HST-MIG', true)"), {"id": actor_role_id})
+            conn.execute(text("INSERT INTO users (id, username, password_hash, system_role_id, active, must_change_password) VALUES (:id, 'hst-migration-user', 'hash', :role_id, true, false)"), {"id": user_id, "role_id": actor_role_id})
+            conn.execute(text("INSERT INTO recovery_commitments (id, employee_id, permission_date, agreed_minutes, covered_before, reference, status, created_by_user_id) VALUES ('75555555-5555-5555-5555-555555555555', :employee_id, '2026-08-01', 120, false, 'Compromiso conservado', 'ACTIVE', :user_id)"), {"employee_id": employee_id, "user_id": user_id})
+        return employee_id, user_id
+
+    employee_id, user_id = reset_to_l8f9()
+    command.upgrade(cfg, "m9a0b1c2d3e4")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT reference FROM recovery_commitments")).scalar_one() == "Compromiso conservado"
+        constraints = {item[0] for item in conn.execute(text("SELECT conname FROM pg_constraint WHERE conrelid = 'recovery_commitments'::regclass"))}
+        assert "uq_recovery_commitment_employee_permission" in constraints
+
+    employee_id, user_id = reset_to_l8f9()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO recovery_commitments (id, employee_id, permission_date, agreed_minutes, covered_before, reference, status, created_by_user_id) VALUES ('76666666-6666-6666-6666-666666666666', :employee_id, '2026-08-01', 60, false, 'Duplicado auditado', 'ACTIVE', :user_id)"), {"employee_id": employee_id, "user_id": user_id})
+    with pytest.raises(RuntimeError, match="duplicate recovery commitments"):
+        command.upgrade(cfg, "m9a0b1c2d3e4")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM recovery_commitments")).scalar_one() == 2
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "l8f9a0b1c2d3"
 
 
 def test_alembic_upgrade_conserva_nonces_sin_device_id(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:

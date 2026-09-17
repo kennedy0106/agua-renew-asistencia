@@ -1,4 +1,5 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   status: number;
@@ -11,7 +12,10 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     credentials: "include", // la cookie de sesión viaja en cada request
@@ -25,8 +29,12 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
       const body = await res.json();
       if (typeof body?.detail === "string") detail = body.detail;
       else if (body?.detail && typeof body.detail === "object") {
-        code = typeof body.detail.code === "string" ? body.detail.code : undefined;
-        detail = typeof body.detail.message === "string" ? body.detail.message : detail;
+        code =
+          typeof body.detail.code === "string" ? body.detail.code : undefined;
+        detail =
+          typeof body.detail.message === "string"
+            ? body.detail.message
+            : detail;
       }
     } catch {
       // sin cuerpo JSON: mantener el mensaje genérico
@@ -57,7 +65,8 @@ export const authApi = {
       body: JSON.stringify({ username, password }),
     }),
   me: () => apiFetch<UserOut>("/api/v1/auth/me"),
-  logout: () => apiFetch<{ status: string }>("/api/v1/auth/logout", { method: "POST" }),
+  logout: () =>
+    apiFetch<{ status: string }>("/api/v1/auth/logout", { method: "POST" }),
 };
 
 export type JobRole = {
@@ -76,7 +85,10 @@ export const jobRolesApi = {
       method: "POST",
       body: JSON.stringify({ name, description }),
     }),
-  update: (id: string, patch: Partial<Pick<JobRole, "name" | "description" | "active">>) =>
+  update: (
+    id: string,
+    patch: Partial<Pick<JobRole, "name" | "description" | "active">>,
+  ) =>
     apiFetch<JobRole>(`/api/v1/job-roles/${id}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -107,7 +119,9 @@ export type DniLookup = {
   full_name: string;
 };
 
-function toQueryString(params: Record<string, string | boolean | undefined>): string {
+function toQueryString(
+  params: Record<string, string | boolean | undefined>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") search.set(key, String(value));
@@ -138,7 +152,15 @@ export const employeesApi = {
   update: (
     id: string,
     patch: Partial<
-      Pick<Employee, "dni" | "first_name" | "last_name" | "job_role_id" | "hire_date" | "termination_date">
+      Pick<
+        Employee,
+        | "dni"
+        | "first_name"
+        | "last_name"
+        | "job_role_id"
+        | "hire_date"
+        | "termination_date"
+      >
     >,
   ) =>
     apiFetch<Employee>(`/api/v1/employees/${id}`, {
@@ -146,7 +168,9 @@ export const employeesApi = {
       body: JSON.stringify(patch),
     }),
   deactivate: (id: string) =>
-    apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, { method: "POST" }),
+    apiFetch<Employee>(`/api/v1/employees/${id}/deactivate`, {
+      method: "POST",
+    }),
   get: (id: string) => apiFetch<Employee>(`/api/v1/employees/${id}`),
   qrUrl: (id: string) => `${API_URL}/api/v1/employees/${id}/qr`,
   rotateQr: (id: string) =>
@@ -188,7 +212,9 @@ export const scheduleApi = {
   get: (employeeId: string) =>
     apiFetch<WorkSchedule>(`/api/v1/employees/${employeeId}/schedule`),
   history: (employeeId: string) =>
-    apiFetch<WorkSchedule[]>(`/api/v1/employees/${employeeId}/schedule/history`),
+    apiFetch<WorkSchedule[]>(
+      `/api/v1/employees/${employeeId}/schedule/history`,
+    ),
   set: (employeeId: string, payload: SchedulePayload) =>
     apiFetch<WorkSchedule>(`/api/v1/employees/${employeeId}/schedule`, {
       method: "POST",
@@ -223,7 +249,9 @@ export const salaryApi = {
   get: (employeeId: string) =>
     apiFetch<SalarySetting>(`/api/v1/employees/${employeeId}/salary-settings`),
   history: (employeeId: string) =>
-    apiFetch<SalarySetting[]>(`/api/v1/employees/${employeeId}/salary-settings/history`),
+    apiFetch<SalarySetting[]>(
+      `/api/v1/employees/${employeeId}/salary-settings/history`,
+    ),
   set: (employeeId: string, payload: SalaryPayload) =>
     apiFetch<SalarySetting>(`/api/v1/employees/${employeeId}/salary-settings`, {
       method: "POST",
@@ -274,7 +302,8 @@ export type AttendanceRecordOut = {
 };
 
 export type AttemptStatusResponse = {
-  state: "CONFIRMED" | "PENDING" | "EXPIRED_UNCONFIRMED" | "CANCELLED" | "REVIEWED";
+  state:
+    "CONFIRMED" | "PENDING" | "EXPIRED_UNCONFIRMED" | "CANCELLED" | "REVIEWED";
   record: AttendanceRecordOut | null;
   evidence_ready?: boolean;
   write_token_valid?: boolean;
@@ -286,24 +315,34 @@ export type AttemptStatusResponse = {
 
 export const attendanceApi = {
   pairTerminal: (pairingCode: string) =>
-    apiFetch<{ id: string; name: string; device_code: string }>("/api/v1/attendance/terminal/pair", {
-      method: "POST",
-      body: JSON.stringify({ pairing_code: pairingCode }),
-    }),
+    apiFetch<{ id: string; name: string; device_code: string }>(
+      "/api/v1/attendance/terminal/pair",
+      {
+        method: "POST",
+        body: JSON.stringify({ pairing_code: pairingCode }),
+      },
+    ),
   identify: (identifier: string) =>
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
       method: "POST",
       body: JSON.stringify({ identifier }),
     }),
-  captureEvidence: (markingToken: string, imageBase64: string, contentType = "image/jpeg") =>
-    apiFetch<{ id: string; content_type: string }>("/api/v1/attendance/evidence", {
-      method: "POST",
-      body: JSON.stringify({
-        marking_token: markingToken,
-        image_base64: imageBase64,
-        content_type: contentType,
-      }),
-    }),
+  captureEvidence: (
+    markingToken: string,
+    imageBase64: string,
+    contentType = "image/jpeg",
+  ) =>
+    apiFetch<{ id: string; content_type: string }>(
+      "/api/v1/attendance/evidence",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          marking_token: markingToken,
+          image_base64: imageBase64,
+          content_type: contentType,
+        }),
+      },
+    ),
   checkIn: (markingToken: string) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-in", {
       method: "POST",
@@ -319,10 +358,16 @@ export const attendanceApi = {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),
-  resolveAttempt: (markingToken: string, reasonCode: "TOKEN_EXPIRED" | "PHOTO_RETAKE" | "USER_CANCELLED") =>
+  resolveAttempt: (
+    markingToken: string,
+    reasonCode: "TOKEN_EXPIRED" | "PHOTO_RETAKE" | "USER_CANCELLED",
+  ) =>
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/resolve", {
       method: "POST",
-      body: JSON.stringify({ marking_token: markingToken, reason_code: reasonCode }),
+      body: JSON.stringify({
+        marking_token: markingToken,
+        reason_code: reasonCode,
+      }),
     }),
 };
 
@@ -370,20 +415,46 @@ export type AttendanceSummary = {
 
 export const attendanceAdminApi = {
   list: (
-    params: { employee_id?: string; date_from?: string; date_to?: string; status?: string } = {},
-  ) => apiFetch<AttendanceListItem[]>(`/api/v1/attendance${toQueryString(params)}`),
-  daily: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) =>
-    apiFetch<AttendanceDailyItem[]>(`/api/v1/attendance/daily${toQueryString(params)}`),
-  setBreakOverride: (employeeId: string, workDate: string, requestedBreakMinutes: number, reason: string) =>
-    apiFetch<AttendanceDailyItem>(`/api/v1/attendance/daily/${employeeId}/${workDate}/break`, {
-      method: "PUT",
-      body: JSON.stringify({ requested_break_minutes: requestedBreakMinutes, reason }),
-    }),
+    params: {
+      employee_id?: string;
+      date_from?: string;
+      date_to?: string;
+      status?: string;
+    } = {},
+  ) =>
+    apiFetch<AttendanceListItem[]>(
+      `/api/v1/attendance${toQueryString(params)}`,
+    ),
+  daily: (
+    params: { employee_id?: string; date_from?: string; date_to?: string } = {},
+  ) =>
+    apiFetch<AttendanceDailyItem[]>(
+      `/api/v1/attendance/daily${toQueryString(params)}`,
+    ),
+  setBreakOverride: (
+    employeeId: string,
+    workDate: string,
+    requestedBreakMinutes: number,
+    reason: string,
+  ) =>
+    apiFetch<AttendanceDailyItem>(
+      `/api/v1/attendance/daily/${employeeId}/${workDate}/break`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          requested_break_minutes: requestedBreakMinutes,
+          reason,
+        }),
+      },
+    ),
   clearBreakOverride: (employeeId: string, workDate: string, reason: string) =>
-    apiFetch<AttendanceDailyItem>(`/api/v1/attendance/daily/${employeeId}/${workDate}/break`, {
-      method: "DELETE",
-      body: JSON.stringify({ reason }),
-    }),
+    apiFetch<AttendanceDailyItem>(
+      `/api/v1/attendance/daily/${employeeId}/${workDate}/break`,
+      {
+        method: "DELETE",
+        body: JSON.stringify({ reason }),
+      },
+    ),
   summary: () => apiFetch<AttendanceSummary>("/api/v1/attendance/summary"),
   correct: (
     recordId: string,
@@ -401,13 +472,26 @@ export const attendanceAdminApi = {
   evidenceMeta: (recordId: string) =>
     apiFetch<{
       record_id: string;
-      check_in: { id: string | null; captured_at: string | null; content_type: string | null; available: boolean } | null;
-      check_out: { id: string | null; captured_at: string | null; content_type: string | null; available: boolean } | null;
+      check_in: {
+        id: string | null;
+        captured_at: string | null;
+        content_type: string | null;
+        available: boolean;
+      } | null;
+      check_out: {
+        id: string | null;
+        captured_at: string | null;
+        content_type: string | null;
+        available: boolean;
+      } | null;
     }>(`/api/v1/attendance/${recordId}/evidence`),
   evidenceImage: async (evidenceId: string): Promise<string> => {
-    const res = await fetch(`${API_URL}/api/v1/attendance/evidence/${evidenceId}/image`, {
-      credentials: "include",
-    });
+    const res = await fetch(
+      `${API_URL}/api/v1/attendance/evidence/${evidenceId}/image`,
+      {
+        credentials: "include",
+      },
+    );
     if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto");
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -427,16 +511,30 @@ export const attendanceAdminApi = {
       resolution: string | null;
     }>(`/api/v1/attendance/attempts/${encodeURIComponent(nonce)}`),
   reviewAttempt: (nonce: string, reason: string) =>
-    apiFetch<unknown>(`/api/v1/attendance/attempts/${encodeURIComponent(nonce)}/review`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
+    apiFetch<unknown>(
+      `/api/v1/attendance/attempts/${encodeURIComponent(nonce)}/review`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      },
+    ),
 };
 
 export type ManualAttendanceRow = {
-  employee_id: string; worked_minutes_net: number; normal_minutes: number; additional_minutes: number; recovery_minutes: number;
-  known_check_in_at?: string | null; known_check_out_at?: string | null; known_break_minutes?: number | null; reason: string;
-  day_context?: "ORDINARY" | "UNSCHEDULED" | "SPECIAL"; source_reference?: string | null; payment_method?: "OVERTIME" | "REVIEWED" | null; payment_concept?: string | null; reviewed_additional_amount?: string | null;
+  employee_id: string;
+  worked_minutes_net: number;
+  normal_minutes: number;
+  additional_minutes: number;
+  recovery_minutes: number;
+  known_check_in_at?: string | null;
+  known_check_out_at?: string | null;
+  known_break_minutes?: number | null;
+  reason: string;
+  day_context?: "ORDINARY" | "UNSCHEDULED" | "SPECIAL";
+  source_reference?: string | null;
+  payment_method?: "OVERTIME" | "REVIEWED" | null;
+  payment_concept?: string | null;
+  reviewed_additional_amount?: string | null;
   recovery_allocations: { commitment_id: string; minutes: number }[];
 };
 export type ManualAttendanceDay = ManualAttendanceRow & {
@@ -445,19 +543,98 @@ export type ManualAttendanceDay = ManualAttendanceRow & {
   payment_status: string;
   payment_snapshot: Record<string, unknown> | null;
   approved_additional_amount?: string | null;
+  reviewed_additional_amount?: string | null;
+  supersedes_id?: string | null;
+  voided_at?: string | null;
+  void_reason?: string | null;
   version: number;
   created_at: string;
 };
 export const historicalAttendanceApi = {
-  list: (params: { employee_id?: string; date_from?: string; date_to?: string } = {}) => apiFetch<ManualAttendanceDay[]>(`/api/v1/attendance/manual-days${toQueryString(params)}`),
-  get: (id: string) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`),
-  preview: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ work_date: string; rows: unknown[] }>("/api/v1/attendance/manual-days/preview", { method: "POST", body: JSON.stringify(payload) }),
-  batch: (payload: { work_date: string; rows: ManualAttendanceRow[]; idempotency_key: string; approve_additional?: boolean }) => apiFetch<{ created: string[] }>("/api/v1/attendance/manual-days/batch", { method: "POST", body: JSON.stringify(payload) }),
-  update: (id: string, payload: ManualAttendanceRow & { expected_version: number }) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  approve: (id: string, expected_version: number, expected_snapshot: Record<string, unknown>) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/payment/approve`, { method: "POST", body: JSON.stringify({ expected_version, expected_snapshot }) }),
-  void: (id: string, expected_version: number, reason: string) => apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/void`, { method: "POST", body: JSON.stringify({ expected_version, reason }) }),
-  commitments: (employeeId?: string) => apiFetch<{ id: string; employee_id: string; permission_date: string; agreed_minutes: number; pending_minutes: number; covered_before: boolean; reference: string }[]>(`/api/v1/attendance/recovery-commitments${toQueryString({ employee_id: employeeId })}`),
-  createCommitment: (payload: { employee_id: string; permission_date: string; agreed_minutes: number; covered_before: boolean; reference: string }) => apiFetch<{ id: string }>("/api/v1/attendance/recovery-commitments", { method: "POST", body: JSON.stringify(payload) }),
+  list: (
+    params: { employee_id?: string; date_from?: string; date_to?: string; include_voided?: boolean; offset?: number; limit?: number } = {},
+  ) =>
+    apiFetch<ManualAttendanceDay[]>(
+      `/api/v1/attendance/manual-days${toQueryString({ employee_id: params.employee_id, date_from: params.date_from, date_to: params.date_to, include_voided: params.include_voided, offset: params.offset !== undefined ? String(params.offset) : undefined, limit: params.limit !== undefined ? String(params.limit) : undefined })}`,
+    ),
+  get: (id: string) =>
+    apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`),
+  preview: (payload: {
+    work_date: string;
+    rows: ManualAttendanceRow[];
+    idempotency_key: string;
+    approve_additional?: boolean;
+    editing_manual_day_id?: string;
+    expected_version?: number;
+  }) =>
+    apiFetch<{ work_date: string; rows: unknown[]; preview_token: string }>(
+      "/api/v1/attendance/manual-days/preview",
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  batch: (payload: {
+    work_date: string;
+    rows: ManualAttendanceRow[];
+    idempotency_key: string;
+    approve_additional?: boolean;
+    preview_token?: string | null;
+  }) =>
+    apiFetch<{ created: string[] }>("/api/v1/attendance/manual-days/batch", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  update: (
+    id: string,
+    payload: ManualAttendanceRow & {
+      expected_version: number;
+      preview_token: string;
+    },
+  ) =>
+    apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  approve: (
+    id: string,
+    expected_version: number,
+    expected_snapshot: Record<string, unknown>,
+  ) =>
+    apiFetch<ManualAttendanceDay>(
+      `/api/v1/attendance/manual-days/${id}/payment/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expected_version, expected_snapshot }),
+      },
+    ),
+  void: (id: string, expected_version: number, reason: string) =>
+    apiFetch<ManualAttendanceDay>(`/api/v1/attendance/manual-days/${id}/void`, {
+      method: "POST",
+      body: JSON.stringify({ expected_version, reason }),
+    }),
+  commitments: (employeeId?: string) =>
+    apiFetch<
+      {
+        id: string;
+        employee_id: string;
+        permission_date: string;
+        agreed_minutes: number;
+        pending_minutes: number;
+        covered_before: boolean;
+        reference: string;
+      }[]
+    >(
+      `/api/v1/attendance/recovery-commitments${toQueryString({ employee_id: employeeId })}`,
+    ),
+  createCommitment: (payload: {
+    employee_id: string;
+    permission_date: string;
+    agreed_minutes: number;
+    covered_before: boolean;
+    reference: string;
+  }) =>
+    apiFetch<{ id: string }>("/api/v1/attendance/recovery-commitments", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
 
 export type AttendanceDevice = {
@@ -482,8 +659,14 @@ export const devicesApi = {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
-  rotate: (id: string) => apiFetch<AttendanceDeviceCreated>(`/api/v1/devices/${id}/pairing-code`, { method: "POST" }),
-  revoke: (id: string) => apiFetch<AttendanceDevice>(`/api/v1/devices/${id}/revoke`, { method: "POST" }),
+  rotate: (id: string) =>
+    apiFetch<AttendanceDeviceCreated>(`/api/v1/devices/${id}/pairing-code`, {
+      method: "POST",
+    }),
+  revoke: (id: string) =>
+    apiFetch<AttendanceDevice>(`/api/v1/devices/${id}/revoke`, {
+      method: "POST",
+    }),
 };
 
 // --- Auditoría (solo ADMIN) ---
@@ -556,7 +739,9 @@ export const adjustmentsApi = {
       body: JSON.stringify(payload),
     }),
   approve: (id: string) =>
-    apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/approve`, { method: "PATCH" }),
+    apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/approve`, {
+      method: "PATCH",
+    }),
   reject: (id: string, reason: string) =>
     apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/reject`, {
       method: "PATCH",
@@ -685,7 +870,11 @@ export type PayrollRecord = {
 
 export const payrollApi = {
   periods: () => apiFetch<PayrollPeriod[]>("/api/v1/payroll/periods"),
-  createPeriod: (payload: { name: string; start_date: string; end_date: string }) =>
+  createPeriod: (payload: {
+    name: string;
+    start_date: string;
+    end_date: string;
+  }) =>
     apiFetch<PayrollPeriod>("/api/v1/payroll/periods", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -708,14 +897,20 @@ export const payrollApi = {
   summary: (periodId: string) =>
     apiFetch<PayrollSummary>(`/api/v1/payroll/periods/${periodId}/summary`),
   dailyReport: (periodId: string) =>
-    apiFetch<PayrollDailyReport>(`/api/v1/payroll/periods/${periodId}/daily-report`, { cache: "no-store" }),
+    apiFetch<PayrollDailyReport>(
+      `/api/v1/payroll/periods/${periodId}/daily-report`,
+      { cache: "no-store" },
+    ),
   readiness: (periodId: string) =>
     apiFetch<PayrollReadiness>(`/api/v1/payroll/periods/${periodId}/readiness`),
   rectify: (periodId: string, reason: string) =>
-    apiFetch<PayrollPeriod>(`/api/v1/payroll/periods/${periodId}/rectifications`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
+    apiFetch<PayrollPeriod>(
+      `/api/v1/payroll/periods/${periodId}/rectifications`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      },
+    ),
 };
 
 export type PayrollReadinessIssue = {
@@ -751,7 +946,8 @@ export type PayrollDailyReportItem = {
   worked_minutes: number;
   expected_minutes: number;
   recognized_minutes: number;
-  status: "FUTURE_PENDING" | "PENDING" | "NO_ATTENDANCE" | "PARTIAL" | "RECOGNIZED";
+  status:
+    "FUTURE_PENDING" | "PENDING" | "NO_ATTENDANCE" | "PARTIAL" | "RECOGNIZED";
   base_amount: string;
   recognized_base_amount: string;
   overtime_minutes: number;
@@ -821,10 +1017,17 @@ export const usersApi = {
     system_role_id: string;
     employee_id?: string | null;
   }) =>
-    apiFetch<AdminUser & { temporary_password: string }>("/api/v1/users", { method: "POST", body: JSON.stringify(payload) }),
+    apiFetch<AdminUser & { temporary_password: string }>("/api/v1/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   update: (
     userId: string,
-    payload: { system_role_id?: string; active?: boolean; employee_id?: string | null },
+    payload: {
+      system_role_id?: string;
+      active?: boolean;
+      employee_id?: string | null;
+    },
   ) =>
     apiFetch<AdminUser>(`/api/v1/users/${userId}`, {
       method: "PATCH",
@@ -838,6 +1041,9 @@ export const usersApi = {
   changeOwnPassword: (currentPassword: string, newPassword: string) =>
     apiFetch<null>("/api/v1/auth/change-password", {
       method: "POST",
-      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
     }),
 };

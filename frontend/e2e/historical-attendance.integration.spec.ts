@@ -85,8 +85,9 @@ test("HST-01 real: REVIEWED conserva importe aprobado y rechaza S/0, concepto o 
   };
   const preview = await request.post(`${API}/api/v1/attendance/manual-days/preview`, { data: { work_date: "2026-09-03", rows: [valid], idempotency_key: `hst-reviewed-preview-${crypto.randomUUID()}` } });
   expect(preview.status(), await preview.text()).toBe(200);
-  expect((await preview.json() as { rows: Array<{ payment: { method: string; amount: string; concept: string; reference: string } }> }).rows[0].payment).toMatchObject({ method: "REVIEWED", amount: "125.50", concept: "Feriado trabajado", reference: "Acta RRHH E2E 001" });
-  const saved = await request.post(`${API}/api/v1/attendance/manual-days/batch`, { data: { work_date: "2026-09-03", rows: [valid], approve_additional: true, idempotency_key: `hst-reviewed-batch-${crypto.randomUUID()}` } });
+  const previewBody = await preview.json() as { preview_token: string; rows: Array<{ payment: { method: string; amount: string; concept: string; reference: string } }> };
+  expect(previewBody.rows[0].payment).toMatchObject({ method: "REVIEWED", amount: "125.50", concept: "Feriado trabajado", reference: "Acta RRHH E2E 001" });
+  const saved = await request.post(`${API}/api/v1/attendance/manual-days/batch`, { data: { work_date: "2026-09-03", rows: [valid], approve_additional: true, preview_token: previewBody.preview_token, idempotency_key: `hst-reviewed-batch-${crypto.randomUUID()}` } });
   expect(saved.status(), await saved.text()).toBe(200);
   const item = await request.get(`${API}/api/v1/attendance/manual-days/${(await saved.json() as { created: string[] }).created[0]}`);
   expect(item.status(), await item.text()).toBe(200);

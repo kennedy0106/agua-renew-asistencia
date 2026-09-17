@@ -46,7 +46,7 @@ test("HST-01 previsualiza, guarda y consulta normal, adicional, recuperación y 
     if (path.endsWith("/recovery-commitments")) {
       return route.fulfill({ json: [{ id: "commitment-1", employee_id: "employee-recovery", pending_minutes: 120, reference: "Permiso 120" }] });
     }
-    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { rows: (body?.rows ?? []).map((row) => ({
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "a".repeat(64), rows: (body?.rows ?? []).map((row) => ({
       ...row,
       payment: Number(row.additional_minutes) > 0 ? {
         status: "PENDING",
@@ -134,7 +134,7 @@ test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos inc
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees")) return route.fulfill({ json: employees });
     if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
-    if (path.endsWith("/manual-days/preview")) { previewRequests += 1; previewPayload = body?.rows?.[0]; return route.fulfill({ json: { rows: [{ ...previewPayload, payment: { status: "PENDING", amount: "125.50", method: "REVIEWED", concept: "Feriado trabajado", reference: "Acta RRHH 001" } }] } }); }
+    if (path.endsWith("/manual-days/preview")) { previewRequests += 1; previewPayload = body?.rows?.[0]; return route.fulfill({ json: { preview_token: "b".repeat(64), rows: [{ ...previewPayload, payment: { status: "PENDING", amount: "125.50", method: "REVIEWED", concept: "Feriado trabajado", reference: "Acta RRHH 001" } }] } }); }
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
@@ -184,7 +184,7 @@ test("HST-01 edita una carga normal como distribución y avisa si su versión qu
     if (path.endsWith("/employees")) return route.fulfill({ json: employees });
     if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [latest] });
     if (path.endsWith("/recovery-commitments")) return route.fulfill({ json: [] });
-    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { rows: [{ ...body?.rows?.[0], payment: { status: "PENDING", amount: "31.50", method: "OVERTIME" } }] } });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "c".repeat(64), rows: [{ ...body?.rows?.[0], payment: { status: "PENDING", amount: "31.50", method: "OVERTIME" } }] } });
     if (path.endsWith("/manual-days/history-1") && request.method() === "GET") return route.fulfill({ json: latest });
     if (path.endsWith("/manual-days/history-1") && request.method() === "PATCH") {
       patchCalls += 1; updatePayload = body ?? undefined;
@@ -213,10 +213,96 @@ test("HST-01 edita una carga normal como distribución y avisa si su versión qu
   await page.getByRole("button", { name: "Previsualizar cambios" }).click();
   await expect(page.getByText("Previsualización: W 480 min · N 360 min · P 120 min · R 0 min")).toBeVisible();
   await page.getByRole("button", { name: "Guardar corrección" }).click();
-  await expect(page.getByText("Corrección versionada guardada. El historial y la previsualización se actualizaron.")).toBeVisible();
+  await expect(page.getByText("Corrección versionada guardada. El historial se actualizó.")).toBeVisible();
   expect(updatePayload).toMatchObject({ employee_id: "employee-normal", worked_minutes_net: 480, normal_minutes: 360, additional_minutes: 120, recovery_minutes: 0, expected_version: 1 });
   await expect(page.getByText("Versión 2")).toBeVisible();
   await page.getByRole("button", { name: "Editar" }).click();
+  await page.getByRole("button", { name: "Previsualizar cambios" }).click();
   await page.getByRole("button", { name: "Guardar corrección" }).click();
   await expect(page.getByText("Esta carga cambió en otra sesión. Recargue el historial y vuelva a editar la versión vigente.")).toBeVisible();
+});
+
+test("A09/A14: descarta un preview tardío y el estado efectivo aprobado manda sobre el snapshot", async ({ page }) => {
+  let releasePreview: (() => Promise<void>) | undefined;
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [{
+      id: "approved-but-old-snapshot", employee_id: "employee-additional", work_date: "2026-09-10",
+      worked_minutes_net: 120, normal_minutes: 0, additional_minutes: 120, recovery_minutes: 0,
+      reason: "A14", payment_status: "APPROVED", payment_snapshot: { status: "PENDING", amount: "31.50", method: "OVERTIME" }, version: 2,
+    }] });
+    if (path.endsWith("/manual-days/preview")) {
+      const body = request.postDataJSON() as { rows?: unknown[] } | null;
+      releasePreview = () => route.fulfill({ json: { preview_token: "d".repeat(64), rows: (body?.rows ?? []).map((row) => ({ ...(row as object), payment: { status: "PENDING", amount: "31.50", method: "OVERTIME" } })) } });
+      return;
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await expect(page.getByText("Sobretiempo ordinario · S/ 31.50 · Aprobado")).toBeVisible();
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  const row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check();
+  await row.getByLabel("Horas").fill("2");
+  await row.locator("select").first().selectOption("ADDITIONAL");
+  await row.getByLabel("Método de pago adicional").selectOption("OVERTIME");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await expect.poll(() => Boolean(releasePreview)).toBe(true);
+  await row.getByLabel("Horas").fill("3");
+  await releasePreview?.();
+  await expect(page.getByRole("heading", { name: "Previsualización" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Guardar y aprobar adicionales" })).toHaveCount(0);
+});
+
+test("A39/A40: cada empleado conserva su compromiso y R se reasigna al cambiar el total", async ({ page }) => {
+  let saved: Record<string, unknown> | undefined;
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (url.pathname.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (url.pathname.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (url.pathname.endsWith("/recovery-commitments")) {
+      const employeeId = url.searchParams.get("employee_id");
+      return route.fulfill({ json: employeeId === "employee-normal"
+        ? [{ id: "commitment-n", employee_id: employeeId, pending_minutes: 240, reference: "Permiso Nora" }]
+        : [{ id: "commitment-a", employee_id: employeeId, pending_minutes: 240, reference: "Permiso Adela" }] });
+    }
+    if (url.pathname.endsWith("/manual-days/preview")) {
+      const body = request.postDataJSON() as { rows: Array<Record<string, unknown>> };
+      return route.fulfill({ json: { preview_token: "e".repeat(64), rows: body.rows.map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    }
+    if (url.pathname.endsWith("/manual-days/batch")) {
+      saved = request.postDataJSON() as Record<string, unknown>;
+      return route.fulfill({ json: { created: ["a", "b"] } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  const nora = page.locator("tbody tr").first();
+  const adela = page.locator("tbody tr").nth(1);
+  await nora.getByRole("checkbox").check();
+  await nora.getByLabel("Horas").fill("2");
+  await nora.locator("select").first().selectOption("RECOVERY");
+  await expect(nora.getByLabel("Compromiso").getByRole("option", { name: /Permiso Nora/ })).toHaveCount(1);
+  await adela.getByRole("checkbox").check();
+  await adela.getByLabel("Horas").fill("2");
+  await adela.locator("select").first().selectOption("RECOVERY");
+  await expect(adela.getByLabel("Compromiso").getByRole("option", { name: /Permiso Adela/ })).toHaveCount(1);
+  await expect(nora.getByLabel("Compromiso").getByRole("option", { name: /Permiso Nora/ })).toHaveCount(1);
+  await nora.getByLabel("Compromiso").selectOption("commitment-n");
+  await adela.getByLabel("Compromiso").selectOption("commitment-a");
+  await nora.getByLabel("Horas").fill("3");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  expect(saved?.rows).toMatchObject([
+    { employee_id: "employee-normal", recovery_minutes: 180, recovery_allocations: [{ commitment_id: "commitment-n", minutes: 180 }] },
+    { employee_id: "employee-additional", recovery_minutes: 120, recovery_allocations: [{ commitment_id: "commitment-a", minutes: 120 }] },
+  ]);
 });

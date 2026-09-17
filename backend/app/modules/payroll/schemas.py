@@ -109,6 +109,9 @@ class PayrollDailyReportItemOut(BaseModel):
     employee_name: str | None = None
     work_date: date
     worked_minutes: int
+    ordinary_minutes: int = 0
+    additional_minutes: int = 0
+    recovery_minutes: int = 0
     expected_minutes: int
     recognized_minutes: int
     status: str
@@ -127,6 +130,7 @@ class PayrollEmployeeDailySummaryOut(BaseModel):
     employee_id: uuid.UUID
     employee_name: str | None = None
     worked_minutes: int
+    ordinary_minutes: int = 0
     expected_minutes: int
     programmed_base_amount: Decimal
     recognized_base_amount: Decimal

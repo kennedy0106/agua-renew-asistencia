@@ -120,6 +120,9 @@ class AttendanceDailyItem(BaseModel):
     override_requested_minutes: int | None = None
     override_limited: bool = False
     worked_minutes: int
+    ordinary_minutes: int = 0
+    additional_minutes: int = 0
+    recovery_minutes: int = 0
     expected_minutes: int
     difference_minutes: int
     has_open_entry: bool

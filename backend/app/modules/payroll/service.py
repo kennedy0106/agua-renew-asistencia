@@ -178,10 +178,14 @@ class PayrollService:
                     "overtime_amount": overtime_amount,
                     "manual_additional": manual_additional["fingerprint"],
                     "manual_distribution": manual_distribution,
+                    # P manual is not an HourAdjustment.  Never subtract it
+                    # from the legacy set: that created phantom negative
+                    # adjustments in snapshots/CSV.
                     "adjustment_minutes": adjustments.approved_minutes_in_range(
-                        employee.id, period.start_date, period.end_date
-                    )
-                    - overtime_minutes,
+                        employee.id, period.start_date, period.end_date, adjustment_type=None
+                    ) - adjustments.approved_minutes_in_range(
+                        employee.id, period.start_date, period.end_date, adjustment_type="OVERTIME"
+                    ),
                     "base_salary": base,
                     "missing_salary_days": missing_salary_days,
                 }
@@ -475,14 +479,23 @@ class PayrollService:
             while day <= active_to:
                 expected_minutes = schedules.expected_minutes(employee.id, day)
                 overtime_item = overtime_by_day.get(day, {"minutes": 0, "amount": Decimal("0.00")})
-                approved_minutes = approved_by_day.get(day, 0)
+                # Recovery is recognized at the permission origin, not at the
+                # later recovery-work date; R remains separate from presence.
+                from app.modules.attendance.totals import recovery_credit_minutes
+                approved_minutes = approved_by_day.get(day, 0) + recovery_credit_minutes(self.db, employee.id, day, day)
                 attendance = attendance_by_day.get(day)
                 worked_minutes = int(attendance["worked_minutes"]) if attendance else 0
+                ordinary_minutes = int(attendance.get("ordinary_minutes", worked_minutes)) if attendance else 0
+                recovery_minutes = int(attendance.get("recovery_minutes", 0)) if attendance else 0
+                additional_minutes = int(attendance.get("additional_minutes", 0)) if attendance else 0
                 if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0:
                     days.append(
                         {
                             "work_date": day,
                             "worked_minutes": worked_minutes,
+                            "ordinary_minutes": ordinary_minutes,
+                            "additional_minutes": additional_minutes,
+                            "recovery_minutes": recovery_minutes,
                             "expected_minutes": expected_minutes,
                             "overtime_minutes": overtime_item["minutes"],
                             "overtime_amount": overtime_item["amount"],
@@ -515,6 +528,7 @@ class PayrollService:
                     "employee_id": employee.id,
                     "employee_name": f"{employee.first_name} {employee.last_name}",
                     "worked_minutes": sum(item["worked_minutes"] for item in days),
+                    "ordinary_minutes": sum(item.get("ordinary_minutes", item["worked_minutes"]) for item in days),
                     "expected_minutes": sum(item["expected_minutes"] for item in days),
                     "programmed_base_amount": sum((item["base_amount"] for item in days), Decimal("0.00")),
                     "recognized_base_amount": sum((item["recognized_base_amount"] for item in days), Decimal("0.00")),
@@ -566,7 +580,7 @@ class PayrollService:
         else:
             recognized_minutes = max(
                 0,
-                min(item["worked_minutes"] + item["approved_adjustment_minutes"], expected_minutes),
+                min(item.get("ordinary_minutes", item["worked_minutes"]) + item["approved_adjustment_minutes"], expected_minutes),
             )
             if expected_minutes <= 0:
                 status = "RECOGNIZED" if item["overtime_minutes"] > 0 else "NO_ATTENDANCE"
@@ -614,6 +628,9 @@ class PayrollService:
         return {
             item["work_date"]: {
                 "worked_minutes": int(item["worked_minutes"]),
+                "ordinary_minutes": int(item.get("ordinary_minutes", item["worked_minutes"])),
+                "additional_minutes": int(item.get("additional_minutes", 0)),
+                "recovery_minutes": int(item.get("recovery_minutes", 0)),
                 "has_open_entry": bool(item["has_open_entry"]),
             }
             for item in daily

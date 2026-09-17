@@ -20,8 +20,10 @@ from app.modules.adjustments.models import (
 )
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
-from app.modules.attendance.totals import ordinary_minutes, recovery_credit_minutes
+from app.modules.attendance.manual_models import ManualAttendanceDay
+from app.modules.attendance.totals import ordinary_minutes, recovery_credit_minutes, worked_minutes as actual_worked_minutes
 from app.modules.audit.repository import AuditRepository
+from app.modules.employees.models import Employee
 from app.modules.employees.repository import EmployeeRepository
 from app.modules.schedules.service import ScheduleService
 
@@ -37,6 +39,25 @@ class AdjustmentService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
         return employee
 
+    def _lock_employee(self, employee_id: uuid.UUID) -> Employee:
+        """Serializa escritores con kiosco y carga histórica por empleado."""
+        employee = self.db.scalar(
+            select(Employee).where(Employee.id == employee_id).with_for_update()
+        )
+        if employee is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
+        return employee
+
+    def _reject_manual_additional(self, employee_id: uuid.UUID, adjustment_date: date) -> None:
+        manual = self.db.scalar(select(ManualAttendanceDay.id).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date == adjustment_date,
+            ManualAttendanceDay.additional_minutes > 0,
+            ManualAttendanceDay.voided_at.is_(None),
+        ))
+        if manual is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Existe un adicional histórico vigente; reconcilie antes de registrar sobretiempo legado")
+
     def create(
         self,
         *,
@@ -46,13 +67,17 @@ class AdjustmentService:
         adjustment_type: str,
         reason: str,
     ) -> HourAdjustment:
-        self._get_employee(employee_id)
+        # Orden global de escritura: Employee -> registro/ajuste -> guardas.
+        # Así un OVERTIME legado no puede pasar la consulta de P manual al
+        # mismo tiempo que batch crea dicha carga.
+        self._lock_employee(employee_id)
         if adjustment_type == "OVERTIME" and minutes <= 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Las horas extra deben registrarse con minutos positivos",
             )
         if adjustment_type == "OVERTIME":
+            self._reject_manual_additional(employee_id, adjustment_date)
             existing = self.repo.active_overtime_for_day(employee_id, adjustment_date)
             if existing is not None:
                 raise HTTPException(
@@ -76,11 +101,22 @@ class AdjustmentService:
 
     def approve(self, adjustment_id: uuid.UUID, approver_id: uuid.UUID) -> HourAdjustment:
         adjustment = self._get_or_404(adjustment_id)
+        self._lock_employee(adjustment.employee_id)
+        adjustment = self.db.scalar(
+            select(HourAdjustment)
+            .where(HourAdjustment.id == adjustment_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if adjustment is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ajuste no encontrado")
         if adjustment.status != ADJUSTMENT_PENDING:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"El ajuste ya fue {adjustment.status.lower()}; solo se pueden aprobar pendientes",
             )
+        if adjustment.adjustment_type == "OVERTIME":
+            self._reject_manual_additional(adjustment.employee_id, adjustment.adjustment_date)
         saved = self.repo.set_status(adjustment, status=ADJUSTMENT_APPROVED, approved_by=approver_id)
         AuditRepository(self.db).create(
             entity_type="adjustment",
@@ -124,6 +160,7 @@ class AdjustmentService:
         self._get_employee(employee_id)
 
         worked = ordinary_minutes(self.db, employee_id, date_from, date_to)
+        actual_worked = actual_worked_minutes(self.db, employee_id, date_from, date_to)
         recovery_credit = recovery_credit_minutes(self.db, employee_id, date_from, date_to)
 
         expected = 0
@@ -145,6 +182,8 @@ class AdjustmentService:
             "date_from": date_from,
             "date_to": date_to,
             "worked_minutes": worked,
+            "actual_worked_minutes": actual_worked,
+            "ordinary_minutes": worked,
             "expected_minutes": expected,
             "adjustment_minutes": hour_adjustments,
             "overtime_minutes": overtime_minutes,

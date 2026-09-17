@@ -58,7 +58,10 @@ class ManualAttendanceDay(Base):
 
 class RecoveryCommitment(Base):
     __tablename__ = "recovery_commitments"
-    __table_args__ = (CheckConstraint("agreed_minutes > 0", name="ck_recovery_commitment_positive"),)
+    __table_args__ = (
+        CheckConstraint("agreed_minutes > 0", name="ck_recovery_commitment_positive"),
+        UniqueConstraint("employee_id", "permission_date", name="uq_recovery_commitment_employee_permission"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
     permission_date: Mapped[date] = mapped_column(Date, nullable=False)

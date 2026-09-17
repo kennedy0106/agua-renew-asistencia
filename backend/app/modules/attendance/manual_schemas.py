@@ -35,6 +35,10 @@ class ManualDayIn(BaseModel):
             raise ValueError("RECOVERY_ALLOCATION_MISMATCH")
         if len({item.commitment_id for item in self.recovery_allocations}) != len(self.recovery_allocations):
             raise ValueError("DUPLICATE_RECOVERY_COMMITMENT")
+        if self.additional_minutes and self.payment_method is None:
+            raise ValueError("PAYMENT_METHOD_REQUIRED")
+        if self.additional_minutes and self.day_context != "ORDINARY" and self.payment_method == "OVERTIME":
+            raise ValueError("SPECIAL_CONTEXT_REQUIRES_REVIEWED_PAYMENT")
         if self.payment_method == "REVIEWED" and self.additional_minutes:
             if (self.reviewed_additional_amount is None or not self.payment_concept
                     or not self.payment_concept.strip() or not self.source_reference
@@ -42,6 +46,9 @@ class ManualDayIn(BaseModel):
                 raise ValueError("REVIEWED_PAYMENT_DETAILS_REQUIRED")
         if self.reviewed_additional_amount is not None and self.payment_method != "REVIEWED":
             raise ValueError("REVIEWED_PAYMENT_METHOD_REQUIRED")
+        for known_time in (self.known_check_in_at, self.known_check_out_at):
+            if known_time is not None and known_time.tzinfo is None:
+                raise ValueError("KNOWN_TIME_TIMEZONE_REQUIRED")
         return self
 
 class ManualBatchIn(BaseModel):
@@ -49,9 +56,17 @@ class ManualBatchIn(BaseModel):
     rows: list[ManualDayIn] = Field(min_length=1, max_length=50)
     idempotency_key: str = Field(min_length=8, max_length=128)
     approve_additional: bool = False
+    # A preview is a server-derived representation of both the content and
+    # the valuation.  It is deliberately short lived/stateless: a change in
+    # salary, policy, schedule or row data changes the hash and requires a
+    # new explicit preview.
+    preview_token: str | None = Field(default=None, min_length=64, max_length=64)
+    editing_manual_day_id: uuid.UUID | None = None
+    expected_version: int | None = Field(default=None, ge=1)
 
 class ManualUpdateIn(ManualDayIn):
     expected_version: int = Field(ge=1)
+    preview_token: str = Field(min_length=64, max_length=64)
 
 class VoidIn(BaseModel):
     expected_version: int = Field(ge=1)
