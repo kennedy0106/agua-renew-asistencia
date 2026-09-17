@@ -172,3 +172,29 @@ local con Python 3.11.16, Node 24.21.0, PostgreSQL 17.11 y MinIO
 Esta sección conserva y no sustituye el historial de `a5861fb`/`f8caf88`. La
 CI remota queda pendiente por cuota agotada de GitHub Actions; la aceptación
 de este incremento se basa en la verificación local del candidato indicado.
+
+## Cierre puntual H260-01 — procedencia de HTTP 422
+
+`ApiError` conserva ahora `responseKind` compatible (`UNSPECIFIED` para los
+llamadores existentes). `apiFetch()` lee el cuerpo fallido una sola vez y sólo
+reconoce como rechazo de validación el 422 con la lista FastAPI/Pydantic no
+vacía de `loc`, `msg` y `type`. Un código empresarial con forma válida se
+marca `DOMAIN_ERROR`; JSON ajeno es `OTHER_JSON` y un cuerpo HTML, texto o
+interrumpido es `UNREADABLE`. El clasificador común HST-01 deja como inciertos
+los dos últimos casos; ya no libera una operación sólo por su status 422.
+
+| ID | Prueba dirigida efectiva | Resultado local |
+|---|---|---|
+| T422-01 | UI `T422-01: un 422 Pydantic reconocido...` | PASS: libera la clave, conserva borrador y guarda corregido. |
+| T422-02 | `T422-02/T422-04: HTML y JSON 422 no contractuales...` | PASS: HTML/texto `UNREADABLE` y clasificación UNKNOWN. |
+| T422-03 | `T422-03: un fallo de json() después de headers...` | PASS: doble de `Response.json()` rechaza tras headers; una lectura, `UNREADABLE` y UNKNOWN. |
+| T422-04 | `T422-02/T422-04: HTML y JSON 422 no contractuales...` | PASS: `{ other: "unexpected" }` es `OTHER_JSON` y UNKNOWN. |
+| T422-05 | UI `T422-05: tras 422 ilegible, recarga y 404...` | PASS: conserva DTO/clave, consulta 404, reintenta idéntico, recibe validación, libera y guarda corregido. |
+| T422-06 | `T422-06: 409 empresarial conocido...` y regresiones UI HST de este archivo | PASS dirigido: 409 conocido sigue definitivo; 503/404 inciertos y aislamiento U01/E01/E03/U06 permanecen verdes. Las regresiones backend/integradas se ejecutan en la validación completa del candidato, no se reatribuyen a esta prueba dirigida. |
+
+Verificación dirigida H260-01, exclusivamente local: `npm run lint`,
+`npx tsc --noEmit`, `npm run build` y
+`npx playwright test e2e/historical-attendance.ui.spec.ts`: **15 passed**.
+No se consultó ni ejecutó GitHub Actions, ni se usó Neon, R2 real o un
+despliegue. La suite completa y su SHA se registran después de congelar el
+candidato, sin atribuir automáticamente resultados anteriores a este ajuste.

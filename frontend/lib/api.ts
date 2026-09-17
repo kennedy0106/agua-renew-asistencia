@@ -1,16 +1,52 @@
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+/** The body contract recognized while reading an unsuccessful HTTP response. */
+export type ApiErrorResponseKind =
+  | "DOMAIN_ERROR"
+  | "REQUEST_VALIDATION"
+  | "OTHER_JSON"
+  | "UNREADABLE"
+  | "UNSPECIFIED";
+
 export class ApiError extends Error {
   status: number;
   code?: string;
+  responseKind: ApiErrorResponseKind;
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    responseKind: ApiErrorResponseKind = "UNSPECIFIED",
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.responseKind = responseKind;
   }
 }
+
+type ValidationIssue = { loc: unknown[]; msg: string; type: string };
+
+const isBusinessCode = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Z][A-Z0-9_]*$/.test(value);
+
+const isValidationIssue = (value: unknown): value is ValidationIssue => {
+  if (!value || typeof value !== "object") return false;
+  const issue = value as Partial<ValidationIssue>;
+  return (
+    Array.isArray(issue.loc) &&
+    issue.loc.length > 0 &&
+    typeof issue.msg === "string" && issue.msg.trim().length > 0 &&
+    typeof issue.type === "string" && issue.type.trim().length > 0
+  );
+};
+
+const validationMessage = (issues: ValidationIssue[]) => {
+  const messages = issues.map((issue) => issue.msg.trim()).slice(0, 3);
+  return `Solicitud inválida: ${messages.join("; ")}`;
+};
 
 export async function apiFetch<T>(
   path: string,
@@ -25,21 +61,36 @@ export async function apiFetch<T>(
   if (!res.ok) {
     let detail = `Error ${res.status}`;
     let code: string | undefined;
+    let responseKind: ApiErrorResponseKind = "UNREADABLE";
     try {
-      const body = await res.json();
-      if (typeof body?.detail === "string") detail = body.detail;
-      else if (body?.detail && typeof body.detail === "object") {
-        code =
-          typeof body.detail.code === "string" ? body.detail.code : undefined;
-        detail =
-          typeof body.detail.message === "string"
-            ? body.detail.message
-            : detail;
+      const body: unknown = await res.json();
+      const response = body as { detail?: unknown } | null;
+      const domainDetail = response?.detail;
+      if (
+        domainDetail &&
+        typeof domainDetail === "object" &&
+        isBusinessCode((domainDetail as { code?: unknown }).code)
+      ) {
+        responseKind = "DOMAIN_ERROR";
+        code = (domainDetail as { code: string }).code;
+        const message = (domainDetail as { message?: unknown }).message;
+        if (typeof message === "string" && message.trim()) detail = message;
+      } else if (
+        res.status === 422 &&
+        Array.isArray(domainDetail) &&
+        domainDetail.length > 0 &&
+        domainDetail.every(isValidationIssue)
+      ) {
+        responseKind = "REQUEST_VALIDATION";
+        detail = validationMessage(domainDetail);
+      } else {
+        responseKind = "OTHER_JSON";
       }
     } catch {
-      // sin cuerpo JSON: mantener el mensaje genérico
+      // The body may have been interrupted after headers.  Keep this distinct
+      // from a recognized validation response so mutations remain recoverable.
     }
-    throw new ApiError(res.status, detail, code);
+    throw new ApiError(res.status, detail, code, responseKind);
   }
   // 204 No Content (p. ej. change-password): no hay cuerpo que parsear.
   if (res.status === 204) {

@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { ApiError, apiFetch } from "../lib/api";
+import { classifyHistoricalOperationResult } from "../lib/historicalAttendanceOperation";
 
 const user = {
   id: "test-admin",
@@ -461,4 +463,131 @@ test("B08/U08: aprobación individual muestra y envía la valoración vigente co
   await page.getByRole("button", { name: "Aprobar" }).click();
   await expect(page.getByText("Adicional aprobado.")).toBeVisible();
   expect(approved?.expected_snapshot).toEqual({ status: "PENDING", amount: "55.00", valuation_inputs: { salary_id: "salary-current" } });
+});
+
+test("T422-01: un 422 Pydantic reconocido libera su clave, conserva el borrador y permite guardar corregido", async ({ page }) => {
+  const attempts: Array<Record<string, unknown>> = [];
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "v".repeat(64), rows: (body?.rows ?? []).map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    if (path.endsWith("/manual-days/batch")) {
+      attempts.push(request.postDataJSON() as Record<string, unknown>);
+      if (attempts.length === 1) return route.fulfill({ status: 422, json: { detail: [{ loc: ["body", "rows", 0, "reason"], msg: "El motivo no es válido", type: "value_error" }] } });
+      return route.fulfill({ json: { created: ["corrected"] } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  const row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Solicitud inválida: El motivo no es válido")).toBeVisible();
+  await expect.poll(() => page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBeNull();
+  await expect(row.getByLabel("Horas")).toHaveValue("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
+  expect(attempts).toHaveLength(2);
+});
+
+test("T422-02/T422-04: HTML y JSON 422 no contractuales son inciertos y conservan el mismo contexto", async () => {
+  const originalFetch = globalThis.fetch;
+  const cases = [
+    { body: async () => { throw new SyntaxError("HTML"); }, kind: "UNREADABLE" as const },
+    { body: async () => ({ other: "unexpected" }), kind: "OTHER_JSON" as const },
+  ];
+  try {
+    for (const current of cases) {
+      globalThis.fetch = (async () => ({ ok: false, status: 422, json: current.body }) as Response) as typeof fetch;
+      await expect(apiFetch("/test-422")).rejects.toMatchObject({ status: 422, responseKind: current.kind });
+      try { await apiFetch("/test-422"); } catch (error) {
+        expect(classifyHistoricalOperationResult(error)).toBe("UNKNOWN_OR_IN_PROGRESS");
+      }
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("T422-03: un fallo de json() después de headers 422 queda UNREADABLE e incierto", async () => {
+  const originalFetch = globalThis.fetch;
+  let reads = 0;
+  try {
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 422,
+      json: async () => { reads += 1; throw new TypeError("body interrupted after headers"); },
+    }) as unknown as Response) as typeof fetch;
+    await expect(apiFetch("/interrupted-422")).rejects.toMatchObject({ status: 422, responseKind: "UNREADABLE" });
+    expect(reads).toBe(1);
+    try { await apiFetch("/interrupted-422"); } catch (error) {
+      expect(classifyHistoricalOperationResult(error)).toBe("UNKNOWN_OR_IN_PROGRESS");
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("T422-05: tras 422 ilegible, recarga y 404, el mismo DTO y clave recibe validación y permite corregir", async ({ page }) => {
+  const attempts: Array<Record<string, unknown>> = [];
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const request = route.request(); const path = new URL(request.url()).pathname;
+    const body = request.postDataJSON() as { rows?: Array<Record<string, unknown>> } | null;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees")) return route.fulfill({ json: employees });
+    if (path.endsWith("/manual-days") && request.method() === "GET") return route.fulfill({ json: [] });
+    if (path.endsWith("/manual-days/preview")) return route.fulfill({ json: { preview_token: "w".repeat(64), rows: (body?.rows ?? []).map((row) => ({ ...row, payment: { status: "NOT_APPLICABLE", amount: "0.00" } })) } });
+    if (path.includes("/manual-operations/")) return route.fulfill({ status: 404, json: { detail: { code: "OPERATION_NOT_CONFIRMED", message: "Sin recibo" } } });
+    if (path.endsWith("/manual-days/batch")) {
+      attempts.push(request.postDataJSON() as Record<string, unknown>);
+      if (attempts.length === 1) return route.fulfill({ status: 422, contentType: "text/html", body: "<h1>interrumpido</h1>" });
+      if (attempts.length === 2) return route.fulfill({ status: 422, json: { detail: [{ loc: ["body", "work_date"], msg: "La fecha ya no es válida", type: "value_error" }] } });
+      return route.fulfill({ json: { created: ["corrected-after-retry"] } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/attendance/history");
+  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  let row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("Resultado no confirmado: puede reintentar el mismo envío.")).toBeVisible();
+  const pendingBeforeReload = await page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id);
+  expect(pendingBeforeReload).not.toBeNull();
+  await page.reload();
+  await expect(page.getByText(/Hay una operación pendiente/)).toBeVisible();
+  await page.getByRole("button", { name: "Reintentar operación pendiente" }).click();
+  await expect(page.getByText("Solicitud inválida: La fecha ya no es válida")).toBeVisible();
+  expect(attempts[1]).toEqual(attempts[0]);
+  await expect.poll(() => page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBeNull();
+  await page.getByLabel("Fecha trabajada").fill("2026-09-11");
+  row = page.locator("tbody tr").first();
+  await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
+  await page.getByRole("button", { name: "Previsualizar" }).click();
+  await page.getByRole("button", { name: "Guardar horas" }).click();
+  await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
+  expect(attempts).toHaveLength(3);
+});
+
+test("T422-06: 409 empresarial conocido sigue siendo definitivo y 422 sin procedencia no", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: { code: "MANUAL_DAY_EXISTS", message: "Existe" } }),
+    }) as unknown as Response) as typeof fetch;
+    await expect(apiFetch("/known-domain-error")).rejects.toMatchObject({
+      code: "MANUAL_DAY_EXISTS",
+      responseKind: "DOMAIN_ERROR",
+    });
+  } finally { globalThis.fetch = originalFetch; }
+  expect(classifyHistoricalOperationResult(new ApiError(409, "Existe", "MANUAL_DAY_EXISTS", "DOMAIN_ERROR"))).toBe("REJECTED_BEFORE_WRITE");
+  expect(classifyHistoricalOperationResult(new ApiError(422, "Sin procedencia"))).toBe("UNKNOWN_OR_IN_PROGRESS");
+  expect(classifyHistoricalOperationResult(new ApiError(503, "Incierto", "OPERATION_RESULT_UNKNOWN", "DOMAIN_ERROR"))).toBe("UNKNOWN_OR_IN_PROGRESS");
 });

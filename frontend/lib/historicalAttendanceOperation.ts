@@ -21,7 +21,7 @@ export type HistoricalOperation = {
  * grow incompatible catch lists.
  *
  * ``REJECTED_BEFORE_WRITE`` is intentionally restricted to emitted manual
- * attendance contracts (plus parsed 422 validation).  An arbitrary 4xx/5xx
+ * attendance contracts (plus recognized parsed 422 validation). An arbitrary 4xx/5xx
  * is never evidence that a request did not commit.
  */
 export type HistoricalOperationResult =
@@ -76,7 +76,10 @@ export function classifyHistoricalOperationResult(
   if (!(error instanceof ApiError)) return "UNKNOWN_OR_IN_PROGRESS";
   if (error.status === 401 || error.status === 403) return "AUTHENTICATION_REQUIRED";
   if (unknownCodes.has(error.code ?? "")) return "UNKNOWN_OR_IN_PROGRESS";
-  if (error.status === 422 || rejectedBeforeWriteCodes.has(error.code ?? "")) {
+  if (rejectedBeforeWriteCodes.has(error.code ?? "")) {
+    return "REJECTED_BEFORE_WRITE";
+  }
+  if (error.status === 422 && error.responseKind === "REQUEST_VALIDATION") {
     return "REJECTED_BEFORE_WRITE";
   }
   return "UNKNOWN_OR_IN_PROGRESS";
