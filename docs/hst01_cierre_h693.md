@@ -110,4 +110,17 @@ exclusivamente documental después de congelar y verificar el candidato.
 3. **Recuperación:** compromiso de 120 en origen; 120 W / 0 N / 0 P / 120 R en otra fecha; crédito sólo en origen.
 4. **Mixto:** 480 W / 240 N / 120 P / 120 R; elegir compromiso y confirmar P; cotejar historial, saldo, diario y CSV.
 
+## Verificación final
+
+- Candidato de código y tests: `f8caf88b8a888fd3a836a827254e2a9063905c5a`.
+- Backend completo: **404 passed**, 18 advertencias de deprecación, 0 fallos y
+  0 omisiones obligatorias; incluye SQLite, PostgreSQL, Alembic y concurrencia.
+- Frontend: `npm ci` sin vulnerabilidades; lint, TypeScript y build aprobados.
+- Playwright UI: **22 passed**.
+- Playwright con FastAPI/PostgreSQL/MinIO reales locales: **22 passed**.
+- `git diff --check`: aprobado.
+- Evidencia local: `.local-verify/20260917T030312Z/` (gitignored).
+- Matriz A01–A12, B01–B09, C01–C16 y U01–U09: sin criterios obligatorios
+  pendientes en el candidato verificado.
+
 No se ejecutó carga real ni migración en Neon.
