@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
+import { ArrowLeft, Clock, Info } from "@/components/Icons";
 import {
   ApiError,
   authApi,
@@ -759,16 +760,19 @@ export default function HistoricalAttendancePage() {
       title="Cargar horas anteriores"
       subtitle="Registro administrativo: no genera marcaciones de kiosco ni fotografías."
     >
-      <div className="page-actions">
-        <Link className="btn btn-secondary" href="/admin/attendance">
+      <div className="historical-page">
+      <div className="page-actions historical-back-row">
+        <Link className="btn btn-ghost" href="/admin/attendance">
+          <ArrowLeft size={16} />
           Volver a asistencia
         </Link>
       </div>
-      <section className="panel">
-        <div className="form-row">
-          <label>
-            Fecha trabajada
+      <section className="panel historical-compose">
+        <div className="historical-compose-head">
+          <label className="historical-date-field">
+            <span className="label">Fecha trabajada</span>
             <input
+              className="input"
               type="date"
               value={workDate}
               onChange={(event) => {
@@ -780,24 +784,35 @@ export default function HistoricalAttendancePage() {
               }}
             />
           </label>
-          <p className="muted">
-            Debe ser anterior a hoy. Las horas son netas; los horarios son
-            opcionales y no crean una entrada/salida.
-          </p>
+          <div className="historical-guidance">
+            <Info size={18} />
+            <p>
+              Elige una fecha anterior a hoy y registra horas netas. Los
+              horarios conocidos son opcionales y no crean marcaciones de kiosco.
+            </p>
+          </div>
+          <label className="historical-toggle">
+            <input
+              type="checkbox"
+              checked={showTimes}
+              onChange={(event) => setShowTimes(event.target.checked)}
+            />
+            <Clock size={17} />
+            <span>Agregar horarios conocidos</span>
+          </label>
         </div>
         {message && (
           <div className="form-message"><p role="status">{message}</p>{operationUserId && readHistoricalOperation(operationUserId) && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void retryPendingOperation()}>Reintentar operación pendiente</button>}</div>
         )}
-        <label>
-          <input
-            type="checkbox"
-            checked={showTimes}
-            onChange={(event) => setShowTimes(event.target.checked)}
-          />{" "}
-          Horarios conocidos (opcionales)
-        </label>
-        <div className="table-wrap">
-          <table>
+        <div className="historical-roster-head">
+          <div>
+            <h2>Empleados del lote</h2>
+            <p>Incluye sólo a quienes correspondan y completa su tratamiento.</p>
+          </div>
+          <span>{drafts.filter((row) => row.selected).length} seleccionados</span>
+        </div>
+        <div className="table-wrap historical-entry-wrap">
+          <table className="historical-entry-table">
             <thead>
               <tr>
                 <th>Incluir</th>
@@ -821,24 +836,25 @@ export default function HistoricalAttendancePage() {
                       ? row.additional_minutes
                       : 0;
                 return (
-                  <tr key={row.employee_id}>
-                    <td>
-                      <input
-                        aria-label={`Incluir ${employees[index]?.first_name}`}
-                        type="checkbox"
-                        checked={row.selected}
-                        onChange={(event) =>
-                          update(index, { selected: event.target.checked })
-                        }
-                      />
+                  <tr key={row.employee_id} className={row.selected ? "is-selected" : ""}>
+                    <td data-label="Incluir">
+                      <label className="historical-checkbox-hit">
+                        <input
+                          aria-label={`Incluir ${employees[index]?.first_name}`}
+                          type="checkbox"
+                          checked={row.selected}
+                          onChange={(event) =>
+                            update(index, { selected: event.target.checked })
+                          }
+                        />
+                      </label>
                     </td>
-                    <td>
-                      {employees[index]?.first_name}{" "}
-                      {employees[index]?.last_name}
-                      <br />
+                    <td data-label="Empleado" className="historical-employee-name">
+                      <strong>{employees[index]?.first_name}{" "}{employees[index]?.last_name}</strong>
                       <small>{employees[index]?.employee_code}</small>
                     </td>
-                    <td>
+                    <td data-label="Horas netas">
+                      <div className="historical-duration-fields">
                       <input
                         aria-label="Horas"
                         inputMode="numeric"
@@ -863,9 +879,11 @@ export default function HistoricalAttendancePage() {
                         }
                         placeholder="min"
                       />
+                      </div>
                     </td>
-                    <td>
+                    <td data-label="Tratamiento">
                       <select
+                        className="select"
                         value={row.treatment}
                         onChange={(event) => {
                           const treatment = event.target
@@ -881,7 +899,8 @@ export default function HistoricalAttendancePage() {
                         <option value="MIXED">Dividir horas</option>
                       </select>
                     </td>
-                    <td>
+                    <td data-label="Distribución / recuperación">
+                      <div className="historical-detail-fields">
                       {row.treatment === "MIXED" ? (
                         <>
                           <input
@@ -929,6 +948,7 @@ export default function HistoricalAttendancePage() {
                           />
                           {row.recovery_minutes > 0 && (
                             <select
+                              className="select"
                               aria-label="Compromiso mixto"
                               onChange={(event) =>
                                 update(index, {
@@ -958,6 +978,7 @@ export default function HistoricalAttendancePage() {
                         </>
                       ) : row.treatment === "RECOVERY" ? (
                         <select
+                          className="select"
                           aria-label="Compromiso"
                           onChange={(event) =>
                             update(index, {
@@ -983,11 +1004,13 @@ export default function HistoricalAttendancePage() {
                       ) : (
                         "—"
                       )}
+                      </div>
                     </td>
-                    <td>
+                    <td data-label="Pago adicional">
                       {additional > 0 ? (
                         <div>
                           <select
+                            className="select"
                             aria-label="Método de pago adicional"
                             value={row.payment_method ?? ""}
                             onChange={(event) =>
@@ -1050,8 +1073,9 @@ export default function HistoricalAttendancePage() {
                         "—"
                       )}
                     </td>
-                    <td>
+                    <td data-label="Motivo">
                       <input
+                        className="input"
                         aria-label="Motivo"
                         value={row.reason}
                         onChange={(event) =>
@@ -1060,8 +1084,10 @@ export default function HistoricalAttendancePage() {
                       />
                     </td>
                     {showTimes && (
-                      <td>
+                      <td data-label="Entrada / salida">
+                        <div className="historical-time-fields">
                         <input
+                          className="input"
                           type="datetime-local"
                           aria-label="Entrada conocida"
                           onChange={(event) =>
@@ -1071,6 +1097,7 @@ export default function HistoricalAttendancePage() {
                           }
                         />
                         <input
+                          className="input"
                           type="datetime-local"
                           aria-label="Salida conocida"
                           onChange={(event) =>
@@ -1079,6 +1106,7 @@ export default function HistoricalAttendancePage() {
                             })
                           }
                         />
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -1087,9 +1115,9 @@ export default function HistoricalAttendancePage() {
             </tbody>
           </table>
         </div>
-        <div className="page-actions">
+        <div className="page-actions historical-submit-row">
           <button
-            className="btn btn-secondary"
+            className="btn btn-outline"
             disabled={busy}
             onClick={runPreview}
           >
@@ -1098,14 +1126,14 @@ export default function HistoricalAttendancePage() {
           {preview && (
             <>
               <button
-                className="btn btn-secondary"
+                className="btn btn-outline"
                 disabled={busy}
                 onClick={() => save(false)}
               >
                 Guardar horas
               </button>
               <button
-                className="btn"
+                className="btn btn-primary"
                 disabled={busy || !approvable}
                 onClick={() => save(true)}
               >
@@ -1115,10 +1143,10 @@ export default function HistoricalAttendancePage() {
           )}
         </div>
         {preview && (
-          <div className="panel">
+          <div className="panel historical-preview">
             <h2>Previsualización</h2>
             <div className="table-wrap">
-              <table>
+              <table className="table">
                 <thead>
                   <tr>
                     <th>Empleado</th>
@@ -1169,12 +1197,17 @@ export default function HistoricalAttendancePage() {
           </div>
         )}
       </section>
-      <section className="panel">
+      <section className="panel historical-recovery-panel">
+        <div className="historical-section-head">
+          <div>
         <h2>Compromiso histórico de recuperación</h2>
-        <p className="muted">
+        <p>
           Registre el permiso pendiente antes de aplicar horas de recuperación.
           Indique si el permiso ya fue reconocido en el saldo.
         </p>
+          </div>
+          <span className="badge badge-blue">Configuración previa</span>
+        </div>
         <div className="form-row">
           <label>
             Empleado
@@ -1236,15 +1269,16 @@ export default function HistoricalAttendancePage() {
           </label>
         </div>
         <button
-          className="btn btn-secondary"
+          className="btn btn-outline"
           disabled={busy}
           onClick={createCommitment}
         >
           Registrar compromiso histórico
         </button>
       </section>
-      <section className="panel">
+      <section className="panel historical-history-panel">
         <h2>Historial de cargas</h2>
+        <p className="historical-section-copy">Consulta, corrige o anula registros manteniendo su trazabilidad.</p>
         <div className="page-actions">
           <label>
             <input
@@ -1261,7 +1295,7 @@ export default function HistoricalAttendancePage() {
         </div>
         {history.length ? (<>
           <div className="table-wrap">
-            <table>
+            <table className="table historical-history-table">
               <thead>
                 <tr>
                   <th>Fecha / empleado</th>
@@ -1358,7 +1392,7 @@ export default function HistoricalAttendancePage() {
       </section>
       {edit && (
         <section
-          className="panel"
+          className="panel historical-edit-panel"
           role="dialog"
           aria-modal="true"
           aria-label="Editar carga histórica"
@@ -1633,14 +1667,14 @@ export default function HistoricalAttendancePage() {
           )}
           <div className="page-actions">
             <button
-              className="btn btn-secondary"
+              className="btn btn-outline"
               disabled={busy}
               onClick={() => void previewEdit()}
             >
               Previsualizar cambios
             </button>
             <button
-              className="btn"
+              className="btn btn-primary"
               disabled={busy}
               onClick={() => void saveEdit()}
             >
@@ -1659,6 +1693,7 @@ export default function HistoricalAttendancePage() {
           </div>
         </section>
       )}
+      </div>
     </AdminShell>
   );
 }

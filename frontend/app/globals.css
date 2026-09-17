@@ -2583,6 +2583,254 @@ textarea {
   }
 }
 
+/* Historical attendance — operational batch editor (HST-01). */
+.historical-page {
+  display: grid;
+  gap: 1.1rem;
+  padding-bottom: 1.5rem;
+}
+.historical-page .panel {
+  padding: clamp(1rem, 2vw, 1.35rem);
+  border: 1px solid var(--ink-border);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow-panel);
+}
+.historical-page h2 { margin: 0; color: var(--text); font-size: 1.08rem; letter-spacing: -0.025em; }
+.historical-page .page-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.65rem; }
+.historical-back-row { margin-bottom: -0.35rem; }
+.historical-back-row .btn { min-height: 2.45rem; padding-inline: 0.55rem 0.8rem; }
+.historical-page .form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.85rem;
+  align-items: end;
+}
+.historical-page .form-row > label,
+.historical-edit-panel > label {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
+  color: var(--brand-muted);
+  font-size: 0.72rem;
+  font-weight: 730;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+.historical-page input:not([type="checkbox"]),
+.historical-page select {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.58rem 0.72rem;
+  border: 1px solid var(--ink-border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.94);
+  font: inherit;
+  font-size: 0.86rem;
+  letter-spacing: 0;
+  text-transform: none;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+.historical-page select {
+  appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23154399' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+}
+.historical-page input:not([type="checkbox"]):hover,
+.historical-page select:hover { border-color: rgba(0, 102, 204, 0.42); }
+.historical-page input:not([type="checkbox"]):focus-visible,
+.historical-page select:focus-visible {
+  outline: 2px solid var(--brand-blue-bright);
+  outline-offset: 1px;
+  border-color: var(--brand-blue);
+}
+.historical-page input[readonly] { color: var(--brand-muted); background: rgba(229, 241, 249, 0.72); }
+.historical-page input[type="checkbox"] { width: 1.05rem; height: 1.05rem; accent-color: var(--brand-blue); }
+
+.historical-compose { display: grid; gap: 1rem; }
+.historical-compose-head {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.62fr) minmax(22rem, 1.65fr) auto;
+  gap: 1rem;
+  align-items: end;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(21, 67, 153, 0.11);
+}
+.historical-date-field { display: grid; gap: 0.38rem; }
+.historical-date-field .label { margin: 0; }
+.historical-guidance {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-control);
+  color: var(--brand-muted);
+  background: rgba(229, 245, 255, 0.68);
+}
+.historical-guidance svg { color: var(--brand-blue); }
+.historical-guidance p { margin: 0; font-size: 0.78rem; line-height: 1.42; }
+.historical-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(0, 102, 204, 0.16);
+  border-radius: var(--radius-control);
+  color: var(--brand-ink);
+  background: rgba(255, 255, 255, 0.62);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 680;
+  white-space: nowrap;
+}
+.historical-toggle:has(input:focus-visible) { outline: 2px solid var(--brand-blue-bright); outline-offset: 1px; }
+.historical-toggle svg { color: var(--brand-blue); }
+.historical-roster-head,
+.historical-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.historical-roster-head p,
+.historical-section-head p { margin: 0.28rem 0 0; color: var(--brand-muted); font-size: 0.78rem; line-height: 1.45; }
+.historical-roster-head > span {
+  flex: none;
+  padding: 0.32rem 0.62rem;
+  border-radius: 999px;
+  color: var(--brand-blue);
+  background: rgba(0, 102, 204, 0.09);
+  font-size: 0.7rem;
+  font-weight: 740;
+}
+.historical-page .form-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(0, 102, 204, 0.15);
+  border-radius: var(--radius-control);
+  color: var(--brand-ink);
+  background: rgba(233, 247, 255, 0.8);
+}
+.historical-page .form-message p { margin: 0; }
+
+.historical-entry-wrap { overflow: visible; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+.historical-entry-table { display: block; width: 100%; border-collapse: separate; font-size: 0.86rem; }
+.historical-entry-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.historical-entry-table tbody { display: grid; gap: 0.7rem; }
+.historical-entry-table tr {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(13rem, 1.35fr) minmax(9rem, 0.72fr) minmax(12rem, 0.9fr);
+  grid-template-areas:
+    "include employee duration treatment"
+    ". distribution payment reason"
+    ". times times times";
+  gap: 0.65rem 0.8rem;
+  align-items: start;
+  padding: 0.85rem;
+  border: 1px solid rgba(21, 67, 153, 0.11);
+  border-radius: 0.78rem;
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+.historical-entry-table tr:hover { border-color: rgba(0, 102, 204, 0.24); background: rgba(255, 255, 255, 0.88); }
+.historical-entry-table tr.is-selected { border-color: rgba(0, 102, 204, 0.46); background: rgba(244, 251, 255, 0.95); box-shadow: 0 13px 30px -28px rgba(0, 79, 170, 0.72), inset 0 0 0 1px rgba(0, 102, 204, 0.08); }
+.historical-entry-table td { display: grid; gap: 0.35rem; min-width: 0; padding: 0; border: 0; color: var(--text); vertical-align: top; }
+.historical-entry-table td::before { content: attr(data-label); color: var(--brand-muted); font-size: 0.64rem; font-weight: 760; letter-spacing: 0.07em; text-transform: uppercase; }
+.historical-entry-table td:nth-child(1) { grid-area: include; place-items: center; align-self: stretch; }
+.historical-entry-table td:nth-child(1)::before { content: none; }
+.historical-checkbox-hit { display: grid; place-items: center; width: 2.75rem; height: 2.75rem; margin-top: 1.1rem; border-radius: var(--radius-control); cursor: pointer; }
+.historical-checkbox-hit:hover { background: rgba(0, 102, 204, 0.07); }
+.historical-checkbox-hit:has(input:focus-visible) { outline: 2px solid var(--brand-blue-bright); outline-offset: 1px; }
+.historical-entry-table td:nth-child(1) input { width: 1.15rem; height: 1.15rem; }
+.historical-entry-table td:nth-child(2) { grid-area: employee; align-content: center; min-height: 3.9rem; }
+.historical-entry-table td:nth-child(3) { grid-area: duration; }
+.historical-entry-table td:nth-child(4) { grid-area: treatment; }
+.historical-entry-table td:nth-child(5) { grid-area: distribution; }
+.historical-entry-table td:nth-child(6) { grid-area: payment; }
+.historical-entry-table td:nth-child(7) { grid-area: reason; }
+.historical-entry-table td:nth-child(8) { grid-area: times; }
+.historical-entry-table td:nth-child(n+5) { padding-top: 0.65rem; border-top: 1px solid rgba(21, 67, 153, 0.08); }
+.historical-employee-name strong { color: var(--brand-ink); font-size: 0.9rem; line-height: 1.28; }
+.historical-employee-name small { color: var(--brand-muted); font-size: 0.68rem; font-weight: 690; letter-spacing: 0.05em; }
+.historical-duration-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
+.historical-detail-fields,
+.historical-entry-table td:nth-child(6) > div,
+.historical-time-fields { display: grid; gap: 0.45rem; }
+.historical-time-fields { grid-template-columns: repeat(2, minmax(12rem, 1fr)); }
+.historical-entry-table tr:not(.is-selected) td:nth-child(n+5) { opacity: 0.55; }
+.historical-submit-row { justify-content: flex-end; padding-top: 0.2rem; }
+.historical-submit-row .btn-primary { min-width: 13rem; }
+
+.historical-preview { display: grid; gap: 0.8rem; background: rgba(244, 252, 248, 0.84) !important; }
+.historical-recovery-panel,
+.historical-history-panel { display: grid; gap: 1rem; }
+.historical-recovery-panel { background: rgba(255, 255, 255, 0.67) !important; }
+.historical-recovery-panel .form-row { grid-template-columns: minmax(13rem, 1.5fr) repeat(2, minmax(9rem, 0.65fr)) minmax(12rem, 1fr); }
+.historical-recovery-panel .form-row > label:last-child { grid-column: 1 / -1; display: flex; align-items: center; min-height: 2.75rem; text-transform: none; letter-spacing: 0; }
+.historical-history-panel .historical-section-head { align-items: center; }
+.historical-history-panel .historical-section-head label { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; font-size: 0.76rem; font-weight: 680; }
+.historical-history-table td:last-child { min-width: 10rem; }
+.historical-history-table td:last-child .btn { margin: 0 0.25rem 0.25rem 0; }
+.historical-edit-panel { display: grid; gap: 1rem; border-color: rgba(0, 102, 204, 0.28) !important; background: rgba(250, 253, 255, 0.98) !important; }
+.historical-edit-panel > .page-actions { justify-content: flex-end; }
+
+@media (max-width: 1180px) {
+  .historical-compose-head { grid-template-columns: minmax(12rem, 0.8fr) minmax(18rem, 1.4fr); }
+  .historical-toggle { grid-column: 1 / -1; justify-self: start; }
+  .historical-entry-table tr {
+    grid-template-columns: 2.6rem minmax(13rem, 1fr) minmax(10rem, 0.8fr);
+    grid-template-areas:
+      "include employee duration"
+      ". treatment reason"
+      ". distribution payment"
+      ". times times";
+  }
+  .historical-entry-table td:nth-child(4) { padding-top: 0.65rem; border-top: 1px solid rgba(21, 67, 153, 0.08); }
+  .historical-recovery-panel .form-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .historical-page { gap: 0.85rem; }
+  .historical-page .panel { padding: 0.85rem; }
+  .historical-compose-head { grid-template-columns: 1fr; gap: 0.75rem; }
+  .historical-toggle { grid-column: auto; justify-self: stretch; white-space: normal; }
+  .historical-roster-head,
+  .historical-section-head { display: grid; }
+  .historical-roster-head > span,
+  .historical-section-head > .badge { justify-self: start; }
+  .historical-entry-table tr {
+    grid-template-columns: 2.35rem minmax(0, 1fr);
+    grid-template-areas:
+      "include employee"
+      ". duration"
+      ". treatment"
+      ". reason"
+      ". distribution"
+      ". payment"
+      ". times";
+    padding: 0.75rem;
+  }
+  .historical-checkbox-hit { margin-top: 0.9rem; }
+  .historical-entry-table td:nth-child(n+3) { padding-top: 0.65rem; border-top: 1px solid rgba(21, 67, 153, 0.08); }
+  .historical-time-fields { grid-template-columns: 1fr; }
+  .historical-submit-row { align-items: stretch !important; }
+  .historical-submit-row .btn { flex: 1 1 100%; min-width: 0; }
+  .historical-recovery-panel .form-row { grid-template-columns: 1fr; }
+  .historical-history-panel .historical-section-head { align-items: start; }
+  .historical-history-panel .historical-section-head .page-actions { justify-content: flex-start; }
+}
+
 @media (max-width: 360px) {
   .stat-grid {
     grid-template-columns: 1fr;
