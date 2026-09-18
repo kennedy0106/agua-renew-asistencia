@@ -628,24 +628,17 @@ export default function EmployeeDetailPage() {
                 if (!showForm && schedule) {
                   setForm({ ...defaultForm(), effective_from: dayAfter(schedule.effective_from) });
                 }
-                setShowForm((v) => !v);
+                setShowForm(true);
               }}
             >
-              {showForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Plus size={14} /> Nueva jornada
-                </>
-              )}
+              <><Plus size={14} /> Nueva jornada</>
             </button>
           )}
         </div>
 
-        {canManage && showForm && (
-          <form onSubmit={handleSaveSchedule} className="card schedule-form" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={() => !saving && setShowForm(false)} className="employee-profile-dialog employee-profile-dialog--wide">
+          <form onSubmit={handleSaveSchedule} className="schedule-form">
+            <div className="app-dialog-heading"><div><h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2><p className="card-sub">El cambio preserva el historial de la jornada anterior.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowForm(false)} disabled={saving}>Cerrar</button></div>
             <section className="schedule-form-section">
               <div>
                 <label className="label">Vigente desde</label>
@@ -700,13 +693,13 @@ export default function EmployeeDetailPage() {
               </div>
               </div>
             </section>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
+            <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowForm(false)} disabled={saving}>Cancelar</button><button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
               <Check size={15} />
               {saving && <Spinner />}
               {saving ? "Guardando jornada…" : "Guardar jornada"}
-            </button>
+            </button></div>
           </form>
-        )}
+        </AppDialog>}
 
         {schedule ? (
           <div className="table-wrap">
@@ -774,23 +767,16 @@ export default function EmployeeDetailPage() {
                     custom_additional_hours_rate: salary.custom_additional_hours_rate,
                   });
                 }
-                setShowSalaryForm((v) => !v);
+                setShowSalaryForm(true);
               }}
             >
-              {showSalaryForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Coins size={14} /> Configurar sueldo
-                </>
-              )}
+              <><Coins size={14} /> Configurar sueldo</>
             </button>
           </div>
 
-          {showSalaryForm && (
-            <form onSubmit={handleSaveSalary} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={() => !savingSalary && setShowSalaryForm(false)} className="employee-profile-dialog">
+            <form onSubmit={handleSaveSalary} className="schedule-form">
+              <div className="app-dialog-heading"><div><h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2><p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowSalaryForm(false)} disabled={savingSalary}>Cerrar</button></div>
               <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
                 <div>
                   <label className="label">Vigente desde</label>
@@ -873,18 +859,17 @@ export default function EmployeeDetailPage() {
                   </>
                 )}
               </div>
-              <button
+              <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowSalaryForm(false)} disabled={savingSalary}>Cancelar</button><button
                 type="submit"
                 className="btn btn-primary"
-                style={{ marginTop: "0.8rem" }}
                 disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
               >
                 <Check size={15} />
                 {savingSalary && <Spinner />}
                 {savingSalary ? "Guardando sueldo…" : "Guardar sueldo"}
-              </button>
+              </button></div>
             </form>
-          )}
+          </AppDialog>}
 
           {salary ? (
             <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", marginBottom: 0 }}>
@@ -931,16 +916,8 @@ export default function EmployeeDetailPage() {
             <p className="card-sub">Saldo = trabajado − esperado + ajustes (sin horas extra). Las HE aprobadas se muestran aparte.</p>
           </div>
           {canManage && (
-            <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm((v) => !v)}>
-              {showAdjForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Plus size={14} /> Nuevo ajuste
-                </>
-              )}
+            <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm(true)}>
+              <Plus size={14} /> Nuevo ajuste
             </button>
           )}
         </div>
@@ -1058,8 +1035,9 @@ export default function EmployeeDetailPage() {
         </AppDialog>
       )}
 
-        {canManage && showAdjForm && (
-          <form onSubmit={handleCreateAdjustment} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={() => !savingAdj && setShowAdjForm(false)} className="employee-profile-dialog">
+          <form onSubmit={handleCreateAdjustment} className="schedule-form">
+            <div className="app-dialog-heading"><div><h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2><p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowAdjForm(false)} disabled={savingAdj}>Cerrar</button></div>
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
                 <label className="label">Fecha</label>
@@ -1104,13 +1082,13 @@ export default function EmployeeDetailPage() {
                 />
               </div>
             </div>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={savingAdj || adjForm.reason.trim().length < 3}>
+            <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowAdjForm(false)} disabled={savingAdj}>Cancelar</button><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3}>
               <Plus size={15} />
               {savingAdj && <Spinner />}
               {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
-            </button>
+            </button></div>
           </form>
-        )}
+        </AppDialog>}
 
         {adjustments.length === 0 ? (
           <p className="muted" style={{ fontSize: "0.85rem" }}>Sin ajustes registrados.</p>

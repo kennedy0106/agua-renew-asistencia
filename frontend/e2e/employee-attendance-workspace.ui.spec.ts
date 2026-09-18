@@ -81,7 +81,10 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
   expect(initialReads.get("/api/v1/employees/employee-1/payroll-accrual")).toBe(1);
 
   await page.getByRole("gridcell").filter({ hasText: /^2Sin registro/ }).click();
+  await expect(page.getByRole("button", { name: "Registrar 1 fecha" })).toBeVisible();
   await page.getByRole("gridcell").filter({ hasText: /^3Sin registro/ }).click();
+  await page.getByRole("button", { name: "Registrar 2 fechas" }).click();
+  await expect(page.getByRole("dialog", { name: "Registrar en las fechas seleccionadas" })).toBeVisible();
   await page.getByLabel("Tratamiento").click();
   await page.getByRole("option", { name: "Adicional pagado" }).click();
   await page.getByLabel("Actividad realizada en las horas adicionales").fill("Mantenimiento y cierre de ruta");
@@ -95,6 +98,29 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
   expect(calls[0].body.work_dates).toEqual(["2026-09-02", "2026-09-03"]);
   expect(calls[1].body.idempotency_key).toBe(calls[0].body.idempotency_key);
   expect(calls[1].body.preview_token).toBe("p".repeat(64));
+});
+
+test("las acciones secundarias del perfil se abren en diálogos y Escape las cierra", async ({ page }) => {
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
+    if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
+    if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
+    if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
+    if (path.includes("/overtime/")) return route.fulfill({ json: [] });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/admin/employees/employee-1");
+  for (const [button, dialog] of [["Nueva jornada", "Nueva jornada laboral"], ["Configurar sueldo", "Configurar sueldo"], ["Nuevo ajuste", "Nuevo ajuste"], ["Gestionar descansos y feriados", "Descansos y feriados"]] as const) {
+    await page.getByRole("button", { name: button }).click();
+    await expect(page.getByRole("dialog", { name: dialog })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: dialog })).toBeHidden();
+  }
 });
 
 test("agenda no genera desborde horizontal en móvil", async ({ page }) => {
