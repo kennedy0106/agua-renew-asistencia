@@ -24,6 +24,21 @@ import {
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
+function currentLimaMonth(): { from: string; to: string } {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const [year, month] = today.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    from: `${year}-${String(month).padStart(2, "0")}-01`,
+    to: `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
+
 function formatClock(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString("es-PE", { timeZone: "America/Lima", hour: "2-digit", minute: "2-digit" });
@@ -92,6 +107,7 @@ function EvidenceImage({ label, src, loading }: { label: string; src: string | n
 }
 
 export default function AdminAttendancePage() {
+  const [initialRange] = useState(currentLimaMonth);
   const user = useAdminUser();
   const [records, setRecords] = useState<AttendanceListItem[]>([]);
   const [daily, setDaily] = useState<AttendanceDailyItem[]>([]);
@@ -101,8 +117,8 @@ export default function AdminAttendancePage() {
   const [error, setError] = useState<string | null>(null);
 
   const [employeeFilter, setEmployeeFilter] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(initialRange.from);
+  const [dateTo, setDateTo] = useState(initialRange.to);
   const [statusFilter, setStatusFilter] = useState("");
 
   const [correcting, setCorrecting] = useState<AttendanceListItem | null>(null);
@@ -474,7 +490,8 @@ export default function AdminAttendancePage() {
                 Consultar intento
               </button>
               <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
-                {reviewingAttempt ? "Guardando…" : "Revisar y liberar kiosco"}
+                {reviewingAttempt && <Spinner />}
+                {reviewingAttempt ? "Guardando revisión…" : "Revisar y liberar kiosco"}
               </button>
             </div>
           </form>
@@ -559,7 +576,8 @@ export default function AdminAttendancePage() {
               <button type="button" className="btn btn-ghost" onClick={closeCorrectionDialog} disabled={savingCorrection}>Cancelar</button>
               <button type="submit" className="btn btn-amber" disabled={savingCorrection || corrReason.trim().length < 3}>
                 <Pencil size={15} />
-                {savingCorrection ? "Guardando…" : "Guardar corrección"}
+                {savingCorrection && <Spinner />}
+                {savingCorrection ? "Guardando corrección…" : "Guardar corrección"}
               </button>
             </div>
           </form>
@@ -636,7 +654,7 @@ export default function AdminAttendancePage() {
           <div className="app-dialog-actions">
             <button type="button" className="btn btn-ghost" onClick={closeBreakDialog} disabled={savingBreak}>Cancelar</button>
             {adjustingBreak.break_source === "OVERRIDE" && <button type="button" className="btn btn-outline" disabled={savingBreak || breakReason.trim().length < 3} onClick={() => void resetBreakToAutomatic()}>Volver al cálculo automático</button>}
-            <button type="submit" className="btn btn-primary" disabled={savingBreak || breakReason.trim().length < 3}>{savingBreak ? "Guardando…" : "Guardar refrigerio"}</button>
+            <button type="submit" className="btn btn-primary" disabled={savingBreak || breakReason.trim().length < 3} aria-busy={savingBreak}>{savingBreak && <Spinner />}{savingBreak ? "Guardando refrigerio…" : "Guardar refrigerio"}</button>
           </div>
           </form>
         </AppDialog>

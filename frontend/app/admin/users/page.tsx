@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Check, Key, Plus, Refresh, X } from "@/components/Icons";
-import { TableSkeleton } from "@/components/Loading";
+import { InlineLoading, Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AdminUser, ApiError, employeesApi, Employee, SystemRole, systemRolesApi, usersApi } from "@/lib/api";
@@ -31,6 +31,7 @@ export default function AdminUsersPage() {
   const credentialDialogRef = useRef<HTMLElement>(null);
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const [rowAction, setRowAction] = useState<string | null>(null);
 
   const isAdmin = user?.role === "ADMIN";
   const pagination = useTablePagination(users, users.length);
@@ -104,19 +105,28 @@ export default function AdminUsersPage() {
   }
 
   async function handleToggleActive(target: AdminUser) {
+    if (rowAction) return;
+    setRowAction(`active:${target.id}`);
     setError(null);
     try { await usersApi.update(target.id, { active: !target.active }); await reload(); }
     catch (err) { setError(err instanceof ApiError ? err.message : "No se pudo actualizar el estado"); }
+    finally { setRowAction(null); }
   }
   async function handleRoleChange(target: AdminUser, roleId: string) {
+    if (rowAction) return;
+    setRowAction(`role:${target.id}`);
     setError(null);
     try { await usersApi.update(target.id, { system_role_id: roleId }); await reload(); }
     catch (err) { setError(err instanceof ApiError ? err.message : "No se pudo cambiar el rol"); }
+    finally { setRowAction(null); }
   }
   async function handleEmployeeLink(target: AdminUser, employeeId: string) {
+    if (rowAction) return;
+    setRowAction(`employee:${target.id}`);
     setError(null);
     try { await usersApi.update(target.id, { employee_id: employeeId || null }); await reload(); }
     catch (err) { setError(err instanceof ApiError ? err.message : "No se pudo vincular el empleado"); }
+    finally { setRowAction(null); }
   }
   async function handleResetPassword(userId: string) {
     if (resetPassword.length < 8) return;
@@ -136,7 +146,7 @@ export default function AdminUsersPage() {
       {isAdmin && (
         <section className="users-commandbar" aria-label="Resumen y acciones de usuarios">
           <div className="users-commandbar-copy">
-            <p className="users-commandbar-summary">{loading ? "Cargando accesos…" : `${users.length} usuarios · ${activeUsers} activos · ${linkedUsers} vinculados`}</p>
+            <p className="users-commandbar-summary">{loading ? <InlineLoading label="Cargando accesos…" /> : `${users.length} usuarios · ${activeUsers} activos · ${linkedUsers} vinculados`}</p>
             {!loading && pendingCredentials > 0 && <p className="users-commandbar-note">{pendingCredentials} con cambio de clave pendiente</p>}
           </div>
           <button ref={newUserButtonRef} type="button" className={showForm ? "btn btn-outline" : "btn btn-primary"} aria-expanded={showForm} aria-controls="users-create-form" onClick={() => setShowForm((value) => !value)}>
@@ -152,7 +162,7 @@ export default function AdminUsersPage() {
             <label className="users-field"><span className="label">Usuario</span><input type="text" className="input" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required minLength={3} autoComplete="username" /></label>
             <div className="users-field"><span className="label">Rol</span><Select value={form.system_role_id} onValueChange={(value) => setForm({ ...form, system_role_id: value })}><SelectTrigger aria-label="Rol"><SelectValue placeholder="Seleccionar rol" /></SelectTrigger><SelectContent>{roles.map((role) => <SelectItem key={role.id} value={role.id}>{role.name}</SelectItem>)}</SelectContent></Select></div>
             <div className="users-field users-field-wide"><span className="label">Empleado vinculado <em>(opcional)</em></span><Select value={form.employee_id || "__none"} onValueChange={(value) => setForm({ ...form, employee_id: value === "__none" ? "" : value })}><SelectTrigger aria-label="Empleado vinculado"><SelectValue placeholder="— Sin vincular —" /></SelectTrigger><SelectContent><SelectItem value="__none">— Sin vincular —</SelectItem>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.first_name} {employee.last_name} ({employee.dni})</SelectItem>)}</SelectContent></Select></div>
-            <div className="users-create-actions"><button type="submit" className="btn btn-primary" disabled={busy}><Plus size={15} /> {busy ? "Creando…" : "Crear usuario"}</button></div>
+            <div className="users-create-actions"><button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy}>{busy ? <Spinner /> : <Plus size={15} />} {busy ? "Creando usuario…" : "Crear usuario"}</button></div>
           </div>
         </form>
       )}
@@ -166,12 +176,13 @@ export default function AdminUsersPage() {
             {pagination.pageItems.map((item) => (
               <tr key={item.id} className={item.active ? undefined : "users-row-inactive"}>
                 <td data-label="Usuario"><div className="users-identity"><strong>{item.username}</strong>{item.id === user?.id && <span className="badge badge-blue">Tú</span>}</div></td>
-                <td data-label="Rol">{isAdmin ? <Select value={item.system_role_id} onValueChange={(value) => handleRoleChange(item, value)}><SelectTrigger className="users-row-select" aria-label={`Rol de ${item.username}`}><SelectValue /></SelectTrigger><SelectContent>{roles.map((role) => <SelectItem key={role.id} value={role.id}>{role.name}</SelectItem>)}</SelectContent></Select> : roleName(item.system_role_id)}</td>
-                <td data-label="Empleado vinculado">{isAdmin ? <Select value={item.employee_id ?? "__none"} onValueChange={(value) => handleEmployeeLink(item, value === "__none" ? "" : value)}><SelectTrigger className="users-row-select" aria-label={`Empleado vinculado a ${item.username}`}><SelectValue placeholder="— Sin vincular —" /></SelectTrigger><SelectContent><SelectItem value="__none">— Sin vincular —</SelectItem>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.first_name} {employee.last_name}</SelectItem>)}</SelectContent></Select> : (item.employee_name ?? "—")}</td>
+                <td data-label="Rol">{isAdmin ? <Select value={item.system_role_id} disabled={rowAction !== null} onValueChange={(value) => handleRoleChange(item, value)}><SelectTrigger className="users-row-select" aria-label={`Rol de ${item.username}`}><SelectValue /></SelectTrigger><SelectContent>{roles.map((role) => <SelectItem key={role.id} value={role.id}>{role.name}</SelectItem>)}</SelectContent></Select> : roleName(item.system_role_id)}</td>
+                <td data-label="Empleado vinculado">{isAdmin ? <Select value={item.employee_id ?? "__none"} disabled={rowAction !== null} onValueChange={(value) => handleEmployeeLink(item, value === "__none" ? "" : value)}><SelectTrigger className="users-row-select" aria-label={`Empleado vinculado a ${item.username}`}><SelectValue placeholder="— Sin vincular —" /></SelectTrigger><SelectContent><SelectItem value="__none">— Sin vincular —</SelectItem>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.first_name} {employee.last_name}</SelectItem>)}</SelectContent></Select> : (item.employee_name ?? "—")}</td>
                 <td data-label="Estado"><div className="users-statuses"><span className={`badge ${item.active ? "badge-green" : "badge-neutral"}`}>{item.active ? "Activo" : "Inactivo"}</span>{item.must_change_password && <span className="badge badge-amber">Clave temporal</span>}</div></td>
                 <td data-label="Último acceso" className="users-last-login">{formatLastLogin(item.last_login_at)}</td>
                 <td data-label="Acciones" className="users-actions-cell"><div className="users-row-actions">
-                  {item.id !== user?.id && <button type="button" className={`btn btn-sm ${item.active ? "btn-danger" : "btn-green"}`} onClick={() => handleToggleActive(item)}>{item.active ? "Desactivar" : "Activar"}</button>}
+                  {(rowAction === `role:${item.id}` || rowAction === `employee:${item.id}`) && <InlineLoading label="Guardando cambios…" />}
+                  {item.id !== user?.id && <button type="button" className={`btn btn-sm ${item.active ? "btn-danger" : "btn-green"}`} disabled={rowAction !== null} aria-busy={rowAction === `active:${item.id}`} onClick={() => handleToggleActive(item)}>{rowAction === `active:${item.id}` && <Spinner />}{rowAction === `active:${item.id}` ? "Actualizando…" : item.active ? "Desactivar" : "Activar"}</button>}
                   {resettingId === item.id ? <div className="users-reset-inline"><input type="password" className="input users-reset-input" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} placeholder="Nueva clave (mín. 8)" minLength={8} autoComplete="new-password" /><button type="button" className="btn btn-amber btn-sm" onClick={() => handleResetPassword(item.id)} disabled={resetPassword.length < 8 || busy}>Guardar</button><button type="button" className="btn btn-ghost btn-sm" onClick={() => { setResettingId(null); setResetPassword(""); }} aria-label={`Cancelar cambio de clave de ${item.username}`}><X size={13} /></button></div> : <button type="button" className="btn btn-amber btn-sm" onClick={() => { setResettingId(item.id); setResetPassword(""); }}><Refresh size={13} /> Reset clave</button>}
                 </div></td>
               </tr>

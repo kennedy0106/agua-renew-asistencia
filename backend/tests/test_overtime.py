@@ -121,9 +121,13 @@ def _create_and_approve_overtime(client, employee_id: str, minutes: int, day: st
         },
     )
     assert response.status_code == 201, response.text
-    adj_id = response.json()["id"]
-    client.patch(f"/api/v1/adjustments/{adj_id}/approve")
-    return adj_id
+    adjustment = response.json()
+    approved = client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"], "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"overtime-approve-{adjustment['id']}",
+    })
+    assert approved.status_code == 200, approved.text
+    return adjustment["id"]
 
 
 # --- Detección ---

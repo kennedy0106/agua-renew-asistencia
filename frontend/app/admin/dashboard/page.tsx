@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
-import { StatSkeleton } from "@/components/Loading";
+import { Spinner, StatSkeleton } from "@/components/Loading";
 import { Alert, Chart, Check, ChevronRight, ClipboardCheck, Clock, Refresh, Users } from "@/components/Icons";
 import { ApiError, attendanceAdminApi, AttendanceListItem, AttendanceSummary, Employee, employeesApi } from "@/lib/api";
 
@@ -67,7 +67,7 @@ export default function AdminDashboardPage() {
       <section className="dashboard-statusbar" aria-label="Estado de actualización">
         <div><strong>Jornada de hoy</strong><span>{updatedAt ? `Actualizado a las ${formatClock(updatedAt.toISOString())}` : "Esperando datos del servidor"}</span></div>
         <button type="button" className="btn btn-outline dashboard-refresh" onClick={() => void load(true)} disabled={refreshing}>
-          <Refresh size={16} />{refreshing ? "Actualizando…" : "Actualizar"}
+          {refreshing ? <Spinner /> : <Refresh size={16} />}{refreshing ? "Actualizando resumen…" : "Actualizar"}
         </button>
       </section>
 

@@ -40,7 +40,7 @@ export default function AdminPayrollPage() {
   const [readiness, setReadiness] = useState<PayrollReadiness | null>(null);
 
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", start_date: "", end_date: "" });
+  const [form, setForm] = useState({ name: "", start_date: "", end_date: "", period_kind: "MONTHLY" as "MONTHLY" | "FIRST_HALF" | "SECOND_HALF", payroll_month: "" });
 
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState("");
@@ -98,9 +98,14 @@ export default function AdminPayrollPage() {
     setActionKey("create");
     setError(null);
     try {
-      await payrollApi.createPeriod(form);
+      const [year, month] = form.payroll_month.split("-").map(Number);
+      await payrollApi.createPeriod(
+        form.period_kind === "MONTHLY"
+          ? { name: form.name, start_date: form.start_date, end_date: form.end_date, period_kind: form.period_kind }
+          : { name: form.name || undefined, year, month, period_kind: form.period_kind },
+      );
       setShowForm(false);
-      setForm({ name: "", start_date: "", end_date: "" });
+      setForm({ name: "", start_date: "", end_date: "", period_kind: "MONTHLY", payroll_month: "" });
       setPeriods(await payrollApi.periods());
       success("Periodo de pago creado.");
     } catch (err) {
@@ -270,8 +275,23 @@ export default function AdminPayrollPage() {
           <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
             <div>
               <label className="label">Nombre</label>
-              <input type="text" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required placeholder="Agosto 2026" />
+              <input type="text" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required={form.period_kind === "MONTHLY"} placeholder="Agosto 2026" />
             </div>
+            <div>
+              <label className="label">Tipo de liquidación</label>
+              <select className="input" value={form.period_kind} onChange={(e) => setForm({ ...form, period_kind: e.target.value as typeof form.period_kind })}>
+                <option value="MONTHLY">Mes completo</option>
+                <option value="FIRST_HALF">Primera quincena</option>
+                <option value="SECOND_HALF">Segunda quincena</option>
+              </select>
+            </div>
+            {form.period_kind !== "MONTHLY" && (
+              <div>
+                <label className="label">Mes de liquidación</label>
+                <input type="month" className="input" value={form.payroll_month} onChange={(e) => setForm({ ...form, payroll_month: e.target.value })} required />
+              </div>
+            )}
+            {form.period_kind === "MONTHLY" && <>
             <div>
               <label className="label">Desde</label>
               <DateField value={form.start_date} onChange={(v) => setForm({ ...form, start_date: v })} required placeholder="Seleccionar" />
@@ -280,10 +300,12 @@ export default function AdminPayrollPage() {
               <label className="label">Hasta</label>
               <DateField value={form.end_date} onChange={(v) => setForm({ ...form, end_date: v })} required placeholder="Seleccionar" />
             </div>
+            </>}
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 {actionKey === "create" ? <Spinner /> : <Plus size={15} />}
-                {actionKey === "create" ? "Creando…" : "Crear periodo"}
+                {actionKey === "create" && <Spinner />}
+                {actionKey === "create" ? "Creando periodo…" : "Crear periodo"}
               </button>
             </div>
           </div>
@@ -329,6 +351,7 @@ export default function AdminPayrollPage() {
               {period.status !== "CLOSED" && (
                 <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
                   {actionKey === `calculate:${period.id}` && <Spinner />}
+                  {actionKey === `calculate:${period.id}` && <Spinner />}
                   {actionKey === `calculate:${period.id}` ? "Calculando…" : period.status === "OPEN" ? "Calcular" : "Recalcular"}
                 </button>
               )}
@@ -346,6 +369,7 @@ export default function AdminPayrollPage() {
               )}
               {period.status === "CLOSED" && (
                 <button className="btn btn-outline btn-sm" onClick={(event) => { rectificationTriggerRef.current = event.currentTarget; setRectifyingId(period.id); setRectificationReason(""); setRectificationError(null); }} disabled={busy}>
+                  {actionKey === `rectify:${period.id}` && <Spinner />}
                   {actionKey === `rectify:${period.id}` && <Spinner />}
                   {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
                 </button>
@@ -365,7 +389,7 @@ export default function AdminPayrollPage() {
             {rectificationError && <p className="alert alert-error" role="alert">{rectificationError}</p>}
             <div className="app-dialog-actions">
               <button className="btn btn-outline" type="button" onClick={closeRectification} disabled={busy}>Cancelar</button>
-              <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3}>{busy ? "Creando…" : "Crear rectificación"}</button>
+              <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3} aria-busy={busy}>{busy && <Spinner />}{busy ? "Creando rectificación…" : "Crear rectificación"}</button>
             </div>
           </form>
         </AppDialog>
@@ -447,7 +471,8 @@ export default function AdminPayrollPage() {
                           <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} placeholder="motivo" />
                           <button className="btn btn-primary btn-sm" onClick={() => handleSaveAdjustment(record.id)} disabled={busy || adjustNotes.trim().length < 3}>
                             {actionKey === `adjust:${record.id}` && <Spinner />}
-                            {actionKey === `adjust:${record.id}` ? "Guardando…" : "Guardar"}
+                            {actionKey === `adjust:${record.id}` && <Spinner />}
+                            {actionKey === `adjust:${record.id}` ? "Guardando ajuste…" : "Guardar"}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setAdjustingId(null)} aria-label="Cancelar">
                             <X size={13} />

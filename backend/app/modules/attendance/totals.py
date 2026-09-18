@@ -36,6 +36,7 @@ def recovery_credit_components(db: Session, commitment: RecoveryCommitment) -> d
             HourAdjustment.employee_id == employee_id,
             HourAdjustment.adjustment_date == commitment.permission_date,
             HourAdjustment.status == ADJUSTMENT_APPROVED,
+            HourAdjustment.voided_at.is_(None),
             HourAdjustment.minutes > 0,
             HourAdjustment.adjustment_type != "OVERTIME",
         )

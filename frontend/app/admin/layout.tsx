@@ -16,13 +16,15 @@ import {
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const isLogin = pathname === "/admin/login";
   const [user, setUser] = useState<UserOut | null>(null);
   const [ready, setReady] = useState(false);
+  const mustChangePassword = user?.must_change_password;
 
   useEffect(() => {
     // Login no consulta una sesión previa. La pantalla de cambio sí puede
     // resolver /me porque es el único destino permitido con clave temporal.
-    if (pathname === "/admin/login") {
+    if (isLogin) {
       clearAdminSessionHint();
       setUser(null);
       setReady(true);
@@ -42,11 +44,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       .then((u) => {
         setUser(u);
         writeAdminSessionHint(u);
-        if (u.must_change_password && pathname !== "/admin/change-password") {
-          router.replace("/admin/change-password");
-        } else if (!u.must_change_password && pathname === "/admin/change-password") {
-          router.replace("/admin/dashboard");
-        }
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
@@ -56,9 +53,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         setUser(null);
       })
       .finally(() => setReady(true));
-  }, [pathname, router]);
+  }, [isLogin, router]);
 
-  const awaitingSession = pathname !== "/admin/login" && (!ready || user === null);
+  useEffect(() => {
+    if (!ready || mustChangePassword === undefined || isLogin) return;
+    if (mustChangePassword && pathname !== "/admin/change-password") {
+      router.replace("/admin/change-password");
+    } else if (!mustChangePassword && pathname === "/admin/change-password") {
+      router.replace("/admin/dashboard");
+    }
+  }, [isLogin, mustChangePassword, pathname, ready, router]);
+
+  const awaitingSession = !isLogin && (!ready || user === null);
   const passwordChangeRequired = ready && user?.must_change_password && pathname !== "/admin/change-password";
   const passwordChangeNoLongerRequired = ready && user && !user.must_change_password && pathname === "/admin/change-password";
   const blockPrivateContent = awaitingSession || passwordChangeRequired || passwordChangeNoLongerRequired;

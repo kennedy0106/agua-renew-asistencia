@@ -255,7 +255,8 @@ export default function AdminEmployeesPage() {
                 />
                 <button type="button" className="btn btn-outline employee-dni-lookup" onClick={handleDniLookup} disabled={!/^\d{8}$/.test(form.dni) || lookingUpDni}>
                   {lookingUpDni ? <Spinner /> : <Search size={15} />}
-                  {lookingUpDni ? "Consultando…" : "Consultar DNI"}
+                  {lookingUpDni && <Spinner />}
+                  {lookingUpDni ? "Consultando DNI…" : "Consultar DNI"}
                 </button>
               </div>
               <p id="dni-lookup-feedback" className="field-help" aria-live="polite">
@@ -301,7 +302,8 @@ export default function AdminEmployeesPage() {
           <div className="employee-create-actions">
             <button type="submit" className="btn btn-primary" disabled={creating}>
               <Plus size={15} />
-              {creating ? "Creando…" : "Crear empleado"}
+              {creating && <Spinner />}
+              {creating ? "Creando empleado…" : "Crear empleado"}
             </button>
           </div>
         </form>

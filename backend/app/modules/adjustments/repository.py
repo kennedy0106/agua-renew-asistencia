@@ -18,13 +18,58 @@ class AdjustmentRepository:
             select(HourAdjustment).options(joinedload(HourAdjustment.approved_by_user)).where(HourAdjustment.id == adjustment_id)
         )
 
-    def list_for_employee(self, employee_id: uuid.UUID) -> list[HourAdjustment]:
+    def list_for_employee(self, employee_id: uuid.UUID, *, include_voided: bool = False) -> list[HourAdjustment]:
+        query = (
+            select(HourAdjustment)
+            .options(joinedload(HourAdjustment.approved_by_user))
+            .where(HourAdjustment.employee_id == employee_id)
+        )
+        if not include_voided:
+            query = query.where(HourAdjustment.voided_at.is_(None))
         return list(
             self.db.scalars(
-                select(HourAdjustment)
-                .options(joinedload(HourAdjustment.approved_by_user))
-                .where(HourAdjustment.employee_id == employee_id)
-                .order_by(HourAdjustment.adjustment_date.desc(), HourAdjustment.created_at.desc())
+                query.order_by(HourAdjustment.adjustment_date.desc(), HourAdjustment.version.desc(), HourAdjustment.created_at.desc())
+            )
+        )
+
+    def list_in_range(
+        self,
+        employee_id: uuid.UUID,
+        date_from: date,
+        date_to: date,
+        *,
+        status: str | None = None,
+        adjustment_type: str | None = None,
+        exclude_approved_special_days: bool = False,
+    ) -> list[HourAdjustment]:
+        """Ajustes activos del rango, sin cargar el historial completo."""
+        query = (
+            select(HourAdjustment)
+            .options(joinedload(HourAdjustment.approved_by_user))
+            .where(
+                HourAdjustment.employee_id == employee_id,
+                HourAdjustment.voided_at.is_(None),
+                HourAdjustment.adjustment_date >= date_from,
+                HourAdjustment.adjustment_date <= date_to,
+            )
+        )
+        if status is not None:
+            query = query.where(HourAdjustment.status == status)
+        if adjustment_type is not None:
+            query = query.where(HourAdjustment.adjustment_type == adjustment_type)
+        if exclude_approved_special_days:
+            from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
+            special_dates = select(SpecialDayValuation.work_date).where(
+                SpecialDayValuation.employee_id == employee_id,
+                SpecialDayValuation.work_date >= date_from,
+                SpecialDayValuation.work_date <= date_to,
+                SpecialDayValuation.status == VALUATION_APPROVED,
+                SpecialDayValuation.voided_at.is_(None),
+            )
+            query = query.where(HourAdjustment.adjustment_date.not_in(special_dates))
+        return list(
+            self.db.scalars(
+                query.order_by(HourAdjustment.adjustment_date.desc(), HourAdjustment.version.desc(), HourAdjustment.created_at.desc())
             )
         )
 
@@ -58,6 +103,7 @@ class AdjustmentRepository:
                 HourAdjustment.adjustment_date == adjustment_date,
                 HourAdjustment.adjustment_type == "OVERTIME",
                 HourAdjustment.status.in_(("PENDING", "APPROVED")),
+                HourAdjustment.voided_at.is_(None),
             )
         )
 
@@ -80,6 +126,7 @@ class AdjustmentRepository:
         query = select(func.coalesce(func.sum(HourAdjustment.minutes), 0)).where(
             HourAdjustment.employee_id == employee_id,
             HourAdjustment.status == "APPROVED",
+            HourAdjustment.voided_at.is_(None),
             HourAdjustment.adjustment_date >= date_from,
             HourAdjustment.adjustment_date <= date_to,
         )

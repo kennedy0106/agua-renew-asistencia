@@ -52,10 +52,14 @@ export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const headers = new Headers(options.headers);
+  if (options.body != null && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     credentials: "include", // la cookie de sesión viaja en cada request
-    headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
+    headers,
   });
 
   if (!res.ok) {
@@ -763,6 +767,13 @@ export type HourAdjustment = {
   approved_at: string | null;
   created_at: string;
   updated_at: string;
+  version?: number;
+  supersedes_id?: string | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  void_reason?: string | null;
+  approval_invalidated?: boolean;
+  approval_snapshot?: Record<string, unknown> | null;
 };
 
 export type Balance = {
@@ -777,8 +788,8 @@ export type Balance = {
 };
 
 export const adjustmentsApi = {
-  list: (employeeId: string) =>
-    apiFetch<HourAdjustment[]>(`/api/v1/employees/${employeeId}/adjustments`),
+  list: (employeeId: string, includeVoided = false) =>
+    apiFetch<HourAdjustment[]>(`/api/v1/employees/${employeeId}/adjustments${toQueryString({ include_voided: includeVoided })}`),
   create: (
     employeeId: string,
     payload: {
@@ -792,14 +803,15 @@ export const adjustmentsApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  approve: (id: string) =>
+  approve: (id: string, expectedVersion: number, expectedSnapshot: Record<string, unknown>, idempotencyKey: string) =>
     apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/approve`, {
       method: "PATCH",
+      body: JSON.stringify({ expected_version: expectedVersion, expected_snapshot: expectedSnapshot, idempotency_key: idempotencyKey }),
     }),
-  reject: (id: string, reason: string) =>
+  reject: (id: string, reason: string, expectedVersion: number, idempotencyKey: string) =>
     apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/reject`, {
       method: "PATCH",
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ reason, expected_version: expectedVersion, idempotency_key: idempotencyKey }),
     }),
   balance: (employeeId: string, dateFrom?: string, dateTo?: string) =>
     apiFetch<Balance>(
@@ -809,6 +821,186 @@ export const adjustmentsApi = {
       })}`,
     ),
 };
+
+export type EmployeeAgendaAdjustment = Pick<
+  HourAdjustment,
+  "id" | "adjustment_date" | "minutes" | "adjustment_type" | "status" | "reason"
+> & {
+  version: number;
+  voided_at: string | null;
+  approval_invalidated: boolean;
+};
+
+export type EmployeeAgendaDay = {
+  work_date: string;
+  expected_minutes: number;
+  statuses: Array<
+    | "COMPLETE" | "OPEN" | "NO_RECORD" | "REST" | "FUTURE" | "OUTSIDE_EMPLOYMENT" | "MANUAL"
+    | "PERMISSION" | "RECOVERY" | "OVERTIME_PENDING" | "OVERTIME_APPROVED"
+    | "WEEKLY_REST" | "HOLIDAY" | "SPECIAL_DAY_PENDING" | "SPECIAL_DAY_APPROVED"
+  >;
+  scheduled_minutes?: number;
+  reference_daily_minutes?: number;
+  holiday?: { name: string; day_kind: string; source: string } | null;
+  attendance: Array<{
+    id: string;
+    status: string;
+    check_in_at: string;
+    check_out_at: string | null;
+    worked_minutes: number | null;
+  }>;
+  manual_day: (ManualAttendanceDay & { work_date: string }) | null;
+  adjustments: EmployeeAgendaAdjustment[];
+  recovery_commitments: Array<{
+    id: string;
+    permission_date: string;
+    agreed_minutes: number;
+    covered_before: boolean;
+    status: string;
+    applied_minutes: number;
+  }>;
+  special_day_valuations?: Array<{ id: string; source_kind: string; status: string; amount: string | number; version: number }>;
+};
+
+export type EmployeeAttendanceAgenda = {
+  employee_id: string;
+  date_from: string;
+  date_to: string;
+  days: EmployeeAgendaDay[];
+};
+
+export type PayrollAccrual = {
+  employee_id: string;
+  date_from: string;
+  date_to: string;
+  cutoff_date: string;
+  base_amount: string | number;
+  approved_additional_amount: string | number;
+  pending_additional_amount: string | number;
+  manual_adjustment_amount: string | number;
+  estimated_total: string | number;
+  official_total_snapshot: string | number | null;
+  closed_period: { id: string; version: number; status: string } | null;
+  daily: Array<{
+    work_date: string;
+    base_amount: string | number;
+    recognized_base_amount: string | number;
+    approved_additional_amount: string | number;
+    pending_additional_amount: string | number;
+    recognized_total_amount: string | number;
+    status: string;
+  }>;
+};
+
+export type ManualMultiTemplate = Omit<ManualAttendanceRow, "employee_id">;
+export type ManualMultiPreview = {
+  preview_token: string;
+  expires_at: string;
+  items: Array<{
+    work_date: string;
+    status: "READY" | "CONFLICT";
+    error_code?: string | null;
+    message?: string | null;
+    effective_row: ManualAttendanceRow;
+    payment_preview?: { status: string; amount: string | null; [key: string]: unknown } | null;
+  }>;
+};
+
+export const employeeAttendanceApi = {
+  agenda: (employeeId: string, dateFrom: string, dateTo: string) =>
+    apiFetch<EmployeeAttendanceAgenda>(
+      `/api/v1/employees/${employeeId}/attendance-agenda${toQueryString({ date_from: dateFrom, date_to: dateTo })}`,
+      { cache: "no-store" },
+    ),
+  accrual: (
+    employeeId: string,
+    params: {
+      period: "FIRST_HALF" | "SECOND_HALF" | "MONTH" | "CUSTOM";
+      anchor_date: string;
+      date_from?: string;
+      date_to?: string;
+    },
+  ) => apiFetch<PayrollAccrual>(
+    `/api/v1/employees/${employeeId}/payroll-accrual${toQueryString(params)}`,
+    { cache: "no-store" },
+  ),
+  previewMulti: (payload: {
+    employee_id: string;
+    work_dates: string[];
+    template: ManualMultiTemplate;
+    overrides?: Array<Partial<ManualMultiTemplate> & { work_date: string }>;
+    idempotency_key: string;
+    approve_additional?: boolean;
+  }) => apiFetch<ManualMultiPreview>("/api/v1/attendance/manual-days/multi/preview", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  createMulti: (payload: {
+    employee_id: string;
+    work_dates: string[];
+    template: ManualMultiTemplate;
+    overrides?: Array<Partial<ManualMultiTemplate> & { work_date: string }>;
+    idempotency_key: string;
+    approve_additional?: boolean;
+    preview_token: string;
+  }) => apiFetch<{
+    operation_id: string;
+    idempotency_key: string;
+    status: "CONFIRMED";
+    items: Array<{ work_date: string; manual_day_id: string; version: number }>;
+  }>("/api/v1/attendance/manual-days/multi", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  updateAdjustment: (
+    id: string,
+    payload: {
+      adjustment_date: string;
+      minutes: number;
+      adjustment_type: HourAdjustment["adjustment_type"];
+      reason: string;
+      expected_version: number;
+      idempotency_key: string;
+    },
+  ) => apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }),
+  voidAdjustment: (
+    id: string,
+    payload: { expected_version: number; reason: string; idempotency_key: string },
+  ) => apiFetch<HourAdjustment>(`/api/v1/adjustments/${id}/void`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+};
+
+export type WorkCalendarDay = {
+  employee_id: string;
+  work_date: string;
+  scheduled_minutes: number;
+  attendance_obligation_minutes: number;
+  reference_daily_minutes: number | null;
+  weekly_rest: boolean;
+  holiday: { id: string; name: string; scope: string; day_kind: string; source: string; version: number } | null;
+  holiday_unverified: boolean;
+};
+
+export const workCalendarApi = {
+  days: (employeeId: string, dateFrom: string, dateTo: string) => apiFetch<WorkCalendarDay[]>(
+    `/api/v1/work-calendar/employees/${employeeId}/days${toQueryString({ date_from: dateFrom, date_to: dateTo })}`,
+    { cache: "no-store" },
+  ),
+  setWeeklyRestRule: (payload: { employee_id: string; weekly_rest_weekday: number; reference_daily_minutes: number; source: string; reason: string; effective_from: string }) => apiFetch<{ id: string; version: number }>("/api/v1/work-calendar/weekly-rest-rules", { method: "POST", body: JSON.stringify(payload) }),
+  proposeSubstitution: (payload: { employee_id: string; original_date: string; origin_kind: "WEEKLY_REST" | "HOLIDAY"; substitute_start: string; substitute_end: string; reference: string; reason: string; idempotency_key: string }) => apiFetch<RestSubstitution>("/api/v1/work-calendar/rest-substitutions", { method: "POST", body: JSON.stringify(payload) }),
+  substitutionAction: (id: string, action: "approve" | "verify" | "cancel", payload: { expected_version: number; reason: string; idempotency_key: string; evidence?: Record<string, string> }) => apiFetch<RestSubstitution>(`/api/v1/work-calendar/rest-substitutions/${id}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
+  previewValuation: (payload: { employee_id: string; work_date: string; source_kind?: "WEEKLY_REST" | "HOLIDAY" | "MAY_DAY_COINCIDENCE" }) => apiFetch<SpecialDayValuation>("/api/v1/work-calendar/valuations/preview", { method: "POST", body: JSON.stringify(payload) }),
+  approveValuation: (id: string, payload: { expected_version: number; preview_token: string; idempotency_key: string; reason: string }) => apiFetch<SpecialDayValuation>(`/api/v1/work-calendar/valuations/${id}/approve`, { method: "POST", body: JSON.stringify(payload) }),
+  reconcileValuation: (id: string, payload: { expected_version: number; reference: string; idempotency_key: string }) => apiFetch<SpecialDayValuation>(`/api/v1/work-calendar/valuations/${id}/reconcile`, { method: "POST", body: JSON.stringify(payload) }),
+};
+
+export type RestSubstitution = { id: string; employee_id: string; original_date: string; origin_kind: "WEEKLY_REST" | "HOLIDAY"; substitute_start: string; substitute_end: string; reference: string; reason: string; status: "PROPOSED" | "APPROVED" | "ENJOYED" | "CANCELLED" | "INVALIDATED"; version: number; evidence?: Record<string, string> | null };
+export type SpecialDayValuation = { id: string; employee_id: string; work_date: string; source_kind: string; status: "PENDING" | "APPROVED" | "REVIEW_REQUIRED" | "VOIDED"; worked_minutes: number; reference_daily_minutes: number; amount: string; version: number; preview_token: string | null; components: Array<{ component_kind: string; minutes: number; amount: string }> };
 
 // --- Horas extra (Fase 10) ---
 
@@ -890,6 +1082,8 @@ export type PayrollPeriod = {
   name: string;
   start_date: string;
   end_date: string;
+  payroll_month_id: string | null;
+  period_kind: "MONTHLY" | "FIRST_HALF" | "SECOND_HALF";
   status: "OPEN" | "CALCULATED" | "CLOSED";
   root_period_id: string;
   version: number;
@@ -925,9 +1119,12 @@ export type PayrollRecord = {
 export const payrollApi = {
   periods: () => apiFetch<PayrollPeriod[]>("/api/v1/payroll/periods"),
   createPeriod: (payload: {
-    name: string;
-    start_date: string;
-    end_date: string;
+    name?: string;
+    start_date?: string;
+    end_date?: string;
+    year?: number;
+    month?: number;
+    period_kind?: "MONTHLY" | "FIRST_HALF" | "SECOND_HALF";
   }) =>
     apiFetch<PayrollPeriod>("/api/v1/payroll/periods", {
       method: "POST",

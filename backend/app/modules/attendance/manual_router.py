@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.core.permissions import require_admin_or_boss
 from app.db.session import get_db
-from app.modules.attendance.manual_schemas import CommitmentIn, ManualBatchIn, ManualUpdateIn, PaymentApproveIn, VoidIn
+from app.modules.attendance.manual_schemas import CommitmentIn, ManualBatchIn, ManualMultiBatchIn, ManualUpdateIn, PaymentApproveIn, VoidIn
 from app.modules.attendance.manual_service import ManualAttendanceService
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["manual-attendance"])
@@ -21,6 +21,16 @@ def preview_manual_days(payload: ManualBatchIn, db: Session = Depends(get_db), _
 @router.post("/manual-days/batch")
 def create_manual_days(payload: ManualBatchIn, db: Session = Depends(get_db), user=Depends(_manage)):
     return ManualAttendanceService(db).batch(payload, user.id)
+
+
+@router.post("/manual-days/multi/preview")
+def preview_manual_days_multi(payload: ManualMultiBatchIn, db: Session = Depends(get_db), _: object = Depends(_manage)):
+    return ManualAttendanceService(db).preview_multi(payload)
+
+
+@router.post("/manual-days/multi")
+def create_manual_days_multi(payload: ManualMultiBatchIn, db: Session = Depends(get_db), user=Depends(_manage)):
+    return ManualAttendanceService(db).batch_multi(payload, user.id)
 
 @router.post("/manual-days/{manual_day_id}/payment/approve")
 def approve_manual_payment(manual_day_id: uuid.UUID, payload: PaymentApproveIn, db: Session = Depends(get_db), user=Depends(_manage)):

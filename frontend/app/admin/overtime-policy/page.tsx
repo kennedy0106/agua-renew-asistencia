@@ -5,7 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import DateField from "@/components/DateField";
 import { Alert, Check, Plus, X } from "@/components/Icons";
 import { ApiError, OvertimePolicy, overtimePolicyApi } from "@/lib/api";
-import { TableSkeleton } from "@/components/Loading";
+import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 
 function dayAfter(isoDate: string): string {
@@ -166,8 +166,8 @@ export default function OvertimePolicyPage() {
                 />
               </div>
             </div>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || form.reason.trim().length < 3}>
-              <Check size={15} />
+            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || form.reason.trim().length < 3} aria-busy={saving}>
+              {saving ? <Spinner /> : <Check size={15} />}
               {saving ? "Guardando…" : "Guardar política"}
             </button>
           </form>

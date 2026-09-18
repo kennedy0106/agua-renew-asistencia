@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Briefcase, Pencil, Plus } from "@/components/Icons";
-import { TableSkeleton } from "@/components/Loading";
+import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 
@@ -23,6 +23,7 @@ export default function AdminRolesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [actionKey, setActionKey] = useState<string | null>(null);
 
   const canManage = user?.role === ROLES_MANAGE;
 
@@ -59,13 +60,15 @@ export default function AdminRolesPage() {
   }
 
   async function handleToggleActive(role: JobRole) {
+    if (actionKey) return;
+    setActionKey(`toggle:${role.id}`);
     setError(null);
     try {
       const updated = await jobRolesApi.update(role.id, { active: !role.active });
       setRoles((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo actualizar el cargo");
-    }
+    } finally { setActionKey(null); }
   }
 
   function startEdit(role: JobRole) {
@@ -75,6 +78,8 @@ export default function AdminRolesPage() {
   }
 
   async function handleSaveEdit(roleId: string) {
+    if (actionKey) return;
+    setActionKey(`save:${roleId}`);
     setError(null);
     try {
       const updated = await jobRolesApi.update(roleId, {
@@ -85,7 +90,7 @@ export default function AdminRolesPage() {
       setEditingId(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo guardar el cargo");
-    }
+    } finally { setActionKey(null); }
   }
 
   return (
@@ -112,8 +117,8 @@ export default function AdminRolesPage() {
               <input type="text" className="input" value={newDescription} onChange={(e) => setNewDescription(e.target.value)} placeholder="Opcional" />
             </div>
             <div style={{ display: "flex", alignItems: "flex-end" }}>
-              <button type="submit" className="btn btn-primary" disabled={creating}>
-                <Plus size={15} />
+              <button type="submit" className="btn btn-primary" disabled={creating} aria-busy={creating}>
+                {creating ? <Spinner /> : <Plus size={15} />}
                 {creating ? "Creando…" : "Crear"}
               </button>
             </div>
@@ -169,8 +174,8 @@ export default function AdminRolesPage() {
                     <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
                       {editingId === role.id ? (
                         <>
-                          <button className="btn btn-green btn-sm" onClick={() => handleSaveEdit(role.id)}>
-                            Guardar
+                          <button className="btn btn-green btn-sm" onClick={() => handleSaveEdit(role.id)} disabled={actionKey !== null} aria-busy={actionKey === `save:${role.id}`}>
+                            {actionKey === `save:${role.id}` && <Spinner />} {actionKey === `save:${role.id}` ? "Guardando…" : "Guardar"}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setEditingId(null)}>
                             Cancelar
@@ -185,8 +190,10 @@ export default function AdminRolesPage() {
                           <button
                             className={`btn btn-sm ${role.active ? "btn-danger" : "btn-green"}`}
                             onClick={() => handleToggleActive(role)}
+                            disabled={actionKey !== null}
+                            aria-busy={actionKey === `toggle:${role.id}`}
                           >
-                            {role.active ? "Desactivar" : "Activar"}
+                            {actionKey === `toggle:${role.id}` && <Spinner />}{actionKey === `toggle:${role.id}` ? "Actualizando…" : role.active ? "Desactivar" : "Activar"}
                           </button>
                         </>
                       )}

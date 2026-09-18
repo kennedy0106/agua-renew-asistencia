@@ -5,6 +5,7 @@ import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
+import { AsyncButton } from "@/components/AsyncButton";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { ApiError, devicesApi, AttendanceDevice, AttendanceDeviceCreated } from "@/lib/api";
 
@@ -15,6 +16,7 @@ export default function AdminDevicesPage() {
   const [error, setError] = useState<string | null>(null);
   const [issued, setIssued] = useState<AttendanceDeviceCreated | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionKey, setActionKey] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -41,6 +43,9 @@ export default function AdminDevicesPage() {
 
   async function createDevice(event: React.FormEvent) {
     event.preventDefault();
+    if (actionKey) return;
+    setActionKey("create");
+    setError(null);
     try {
       const created = await devicesApi.create(name.trim());
       setIssued(created);
@@ -48,7 +53,23 @@ export default function AdminDevicesPage() {
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el terminal");
-    }
+    } finally { setActionKey(null); }
+  }
+
+  async function rotateDevice(id: string) {
+    if (actionKey) return;
+    setActionKey(`rotate:${id}`); setError(null);
+    try { setIssued(await devicesApi.rotate(id)); await load(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : "No se pudo generar el nuevo código"); }
+    finally { setActionKey(null); }
+  }
+
+  async function revokeDevice(id: string) {
+    if (actionKey) return;
+    setActionKey(`revoke:${id}`); setError(null);
+    try { await devicesApi.revoke(id); await load(); }
+    catch (err) { setError(err instanceof ApiError ? err.message : "No se pudo revocar el terminal"); }
+    finally { setActionKey(null); }
   }
 
   return (
@@ -61,9 +82,7 @@ export default function AdminDevicesPage() {
       <form className="card card-pad" onSubmit={createDevice} style={{ marginBottom: "1rem", display: "grid", gap: "0.6rem", maxWidth: 420 }}>
         <label className="label">Nombre del equipo</label>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
-        <button className="btn btn-primary" type="submit">
-          Registrar terminal
-        </button>
+        <AsyncButton type="submit" busy={actionKey === "create"} busyLabel="Registrando terminal…">Registrar terminal</AsyncButton>
       </form>
       {issued && (
         <p className="alert" role="status">
@@ -91,26 +110,26 @@ export default function AdminDevicesPage() {
                 <td style={{ textAlign: "right" }}>
                   {device.active && (
                     <>
-                      <button
+                      <AsyncButton
                         className="btn btn-ghost btn-sm"
                         type="button"
-                        onClick={async () => {
-                          setIssued(await devicesApi.rotate(device.id));
-                          await load();
-                        }}
+                        busy={actionKey === `rotate:${device.id}`}
+                        busyLabel="Generando…"
+                        disabled={actionKey !== null}
+                        onClick={() => void rotateDevice(device.id)}
                       >
                         Nuevo código
-                      </button>
-                      <button
+                      </AsyncButton>
+                      <AsyncButton
                         className="btn btn-ghost btn-sm"
                         type="button"
-                        onClick={async () => {
-                          await devicesApi.revoke(device.id);
-                          await load();
-                        }}
+                        busy={actionKey === `revoke:${device.id}`}
+                        busyLabel="Revocando…"
+                        disabled={actionKey !== null}
+                        onClick={() => void revokeDevice(device.id)}
                       >
                         Revocar
-                      </button>
+                      </AsyncButton>
                     </>
                   )}
                 </td>

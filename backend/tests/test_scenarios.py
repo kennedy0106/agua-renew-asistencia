@@ -91,7 +91,7 @@ def _full_day(client, employee_id: str, start_hour: int, start_min: int, end_hou
     return _set_exact_times(client, check_in["id"], start_hour, start_min, end_hour, end_min)
 
 
-def _add_adjustment(client, employee_id: str, minutes: int, adjustment_type: str, day: str) -> str:
+def _add_adjustment(client, employee_id: str, minutes: int, adjustment_type: str, day: str) -> dict:
     response = client.post(
         f"/api/v1/employees/{employee_id}/adjustments",
         json={
@@ -102,7 +102,23 @@ def _add_adjustment(client, employee_id: str, minutes: int, adjustment_type: str
         },
     )
     assert response.status_code == 201, response.text
-    return response.json()["id"]
+    return response.json()
+
+
+def _approve_adjustment(client, adjustment: dict):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"], "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"scenario-approve-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+
+
+def _reject_adjustment(client, adjustment: dict):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/reject", json={
+        "reason": "No corresponde", "expected_version": adjustment["version"],
+        "idempotency_key": f"scenario-reject-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
 
 
 def _balance(client, employee_id: str, date_from: str, date_to: str) -> dict:
@@ -184,7 +200,7 @@ def test_escenario_d_permiso_y_recuperacion(client, db_session):
 
     # Hoy (día laborable): pidió permiso sin marcar. Jefe aprueba PERMISO +480.
     permiso = _add_adjustment(client, emp, 480, "PERMISO", today.isoformat())
-    client.patch(f"/api/v1/adjustments/{permiso}/approve")
+    _approve_adjustment(client, permiso)
     balance_permiso = _balance(client, emp, today.isoformat(), today.isoformat())
     assert balance_permiso["worked_minutes"] == 0
     assert balance_permiso["expected_minutes"] == 480
@@ -193,7 +209,7 @@ def test_escenario_d_permiso_y_recuperacion(client, db_session):
     # El domingo (no laborable) recupera: el jefe registra RECUPERACION +480 aprobada.
     sunday = today + timedelta(days=(6 - today.weekday()))
     recuperacion = _add_adjustment(client, emp, 480, "RECUPERACION", sunday.isoformat())
-    client.patch(f"/api/v1/adjustments/{recuperacion}/approve")
+    _approve_adjustment(client, recuperacion)
     balance_rec = _balance(client, emp, sunday.isoformat(), sunday.isoformat())
     assert balance_rec["expected_minutes"] == 0  # domingo no laborable
     assert balance_rec["balance_minutes"] == 480  # horas recuperadas para el saldo
@@ -226,8 +242,8 @@ def test_escenario_f_aprueba_parte_como_hora_extra(client, db_session):
 
     approved = _add_adjustment(client, emp, 60, "OVERTIME", "2026-08-25")
     rejected = _add_adjustment(client, emp, 60, "OVERTIME", "2026-08-26")
-    client.patch(f"/api/v1/adjustments/{approved}/approve")
-    client.patch(f"/api/v1/adjustments/{rejected}/reject", json={"reason": "No corresponde"})
+    _approve_adjustment(client, approved)
+    _reject_adjustment(client, rejected)
 
     period = client.post(
         "/api/v1/payroll/periods",

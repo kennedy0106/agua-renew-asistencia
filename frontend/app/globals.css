@@ -1459,6 +1459,46 @@ textarea {
   color: var(--muted);
 }
 
+.monthfield { position: relative; display: inline-block; min-width: 0; }
+.monthfield-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  min-width: 15rem;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, #0066cc 16%, white);
+  border-radius: var(--radius-control);
+  background: var(--field-fill);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.monthfield-trigger:hover:not(:disabled) { border-color: color-mix(in srgb, #0066cc 28%, white); background: #fff; }
+.monthfield-trigger:focus-visible { outline: 2px solid var(--brand-blue-bright); outline-offset: 1px; }
+.monthfield-trigger:disabled { cursor: not-allowed; opacity: 0.72; }
+.monthfield-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: min(18.25rem, calc(100vw - 1rem));
+  padding: 0.8rem;
+  border: 1px solid color-mix(in srgb, #0066cc 14%, white);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 36px -24px rgba(0, 102, 204, 0.5);
+  animation: datefield-open 200ms var(--ease-water);
+}
+.monthfield-head { display: flex; align-items: center; justify-content: space-between; gap: 0.65rem; margin-bottom: 0.7rem; color: var(--brand-ink); }
+.monthfield-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.35rem; }
+.monthfield-month { min-height: 2.45rem; padding: 0.35rem; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: var(--brand-ink); font: inherit; font-size: 0.82rem; cursor: pointer; }
+.monthfield-month:hover, .monthfield-month:focus-visible { border-color: rgba(0, 102, 204, 0.3); background: rgba(221, 241, 255, 0.9); outline: none; }
+.monthfield-month.is-selected { background: var(--brand-blue); color: #fff; font-weight: 720; }
+
 .datefield-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -2583,6 +2623,136 @@ textarea {
   }
 }
 
+/* Agenda operativa del perfil: calendario, acumulado y carga multidía. */
+.detail-skeleton { display: grid; gap: 1rem; }
+.detail-skeleton__identity { display: flex; align-items: center; gap: 0.85rem; min-height: 5rem; padding: 1rem; border-radius: var(--radius-panel); background: rgba(255,255,255,0.58); }
+.detail-skeleton__identity > div { display: grid; gap: 0.55rem; }
+.detail-skeleton__section { display: grid; gap: 0.85rem; min-height: 7rem; padding: 1rem; border-radius: var(--radius-panel); background: rgba(255,255,255,0.58); }
+.detail-skeleton__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+
+.employee-attendance-workspace { display: grid; gap: 1rem; min-width: 0; margin-bottom: 1.1rem; padding: clamp(1rem, 2vw, 1.35rem); border: 1px solid rgba(21,67,153,0.1); border-radius: var(--radius-panel); background: rgba(255,255,255,0.7); box-shadow: 0 22px 42px -36px rgba(0,72,147,0.76), inset 0 1px 0 rgba(255,255,255,0.92); }
+.employee-workspace-head, .employee-accrual-panel, .employee-period-controls, .employee-agenda-layout, .employee-calendar-panel, .employee-day-detail, .employee-batch-panel { min-width: 0; }
+.employee-workspace-head, .employee-batch-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.employee-workspace-head h2 { font-size: clamp(1.2rem, 2vw, 1.55rem); letter-spacing: -0.03em; color: var(--brand-ink); }
+.employee-workspace-head p, .employee-batch-head p { max-width: 72ch; margin-top: 0.3rem; color: var(--brand-muted); font-size: 0.82rem; }
+.employee-accrual-panel { display: grid; gap: 0.9rem; padding: 1rem; border-radius: 0.85rem; background: linear-gradient(135deg, rgba(230,247,255,0.88), rgba(255,255,255,0.78)); }
+.employee-period-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 0.7rem; }
+.employee-period-controls label { display: grid; gap: 0.35rem; min-width: min(11rem, 100%); max-width: 100%; }
+.employee-accrual-grid { display: grid; grid-template-columns: repeat(5, minmax(8rem, 1fr)); gap: 0.65rem; }
+.employee-accrual-grid > div { display: grid; align-content: center; min-height: 5.35rem; padding: 0.8rem; border-radius: 0.7rem; background: rgba(255,255,255,0.76); }
+.employee-accrual-grid span { color: var(--brand-muted); font-size: 0.69rem; font-weight: 720; letter-spacing: 0.035em; text-transform: uppercase; }
+.employee-accrual-grid strong { margin-top: 0.5rem; color: var(--brand-ink); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.employee-accrual-grid .employee-accrual-total { background: var(--brand-ink); }
+.employee-accrual-grid .employee-accrual-total span { color: #dcecff; }
+.employee-accrual-grid .employee-accrual-total strong { color: #fff; }
+.employee-accrual-loading .detail-skeleton__identity { display: none; }
+.employee-accrual-loading .detail-skeleton__grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.employee-agenda-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(17rem, 0.75fr); gap: 1rem; align-items: start; }
+.employee-calendar-panel, .employee-day-detail, .employee-batch-panel, .employee-inline-editor { border-radius: 0.85rem; background: rgba(246,251,255,0.78); }
+.employee-calendar-panel { padding: 1rem; }
+.employee-calendar-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 0.8rem; }
+.employee-calendar-toolbar label { display: grid; gap: 0.35rem; }
+.employee-calendar-toolbar > span { color: var(--brand-muted); font-size: 0.75rem; font-weight: 690; }
+.employee-calendar-help { margin: 0.55rem 0 0.85rem; color: var(--brand-muted); font-size: 0.72rem; }
+.employee-calendar-weekdays, .employee-calendar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.35rem; }
+.employee-calendar-weekdays { margin-bottom: 0.35rem; }
+.employee-calendar-weekdays span { padding: 0.35rem; color: var(--brand-muted); font-size: 0.65rem; font-weight: 760; text-align: center; text-transform: uppercase; }
+.employee-calendar-day { position: relative; display: grid; align-content: start; gap: 0.3rem; min-height: 6.4rem; padding: 0.65rem; overflow: hidden; color: var(--brand-ink); text-align: left; border: 1px solid rgba(21,67,153,0.1); border-radius: 0.62rem; background: rgba(255,255,255,0.76); cursor: pointer; transition: border-color 160ms var(--ease-water), background-color 160ms var(--ease-water), box-shadow 160ms var(--ease-water); }
+.employee-calendar-day:hover { border-color: rgba(0,102,204,0.34); background: #fff; }
+.employee-calendar-day:focus-visible { outline: 3px solid rgba(0,102,204,0.25); outline-offset: 2px; }
+.employee-calendar-day.is-selected { border-color: var(--brand-blue); background: rgba(221,241,255,0.94); box-shadow: 0 10px 22px -18px rgba(0,72,147,0.9); }
+.employee-calendar-day.is-focused::after { content: ""; position: absolute; inset: 0.25rem; border: 1px solid rgba(0,200,83,0.5); border-radius: 0.45rem; pointer-events: none; }
+.employee-calendar-day.is-empty { visibility: hidden; }
+.employee-calendar-day strong { font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+.employee-calendar-day > span { max-width: 12ch; color: var(--brand-muted); font-size: 0.66rem; line-height: 1.2; }
+.employee-calendar-day small { position: absolute; top: 0.55rem; right: 0.55rem; color: var(--brand-muted); font-size: 0.62rem; }
+.calendar-state { width: 0.5rem; height: 0.5rem; margin-top: auto; border-radius: 50%; background: #8aa0bb; }
+.calendar-state--complete, .calendar-state--manual, .calendar-state--overtime_approved { background: var(--present); }
+.calendar-state--open, .calendar-state--overtime_pending { background: #d38a00; }
+.calendar-state--permission, .calendar-state--recovery { background: var(--brand-blue); }
+.calendar-state--no_record { background: var(--incident); }
+.calendar-state--rest { background: #8aa0bb; }
+
+.employee-day-detail { position: sticky; top: 1rem; display: grid; gap: 0.8rem; padding: 1rem; }
+.employee-day-detail h3, .employee-batch-panel h3, .employee-inline-editor h3 { color: var(--brand-ink); font-size: 1rem; letter-spacing: -0.02em; }
+.employee-day-statuses, .button-row { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.employee-day-facts { display: grid; gap: 0.45rem; }
+.employee-day-facts > div { display: flex; justify-content: space-between; gap: 1rem; padding-bottom: 0.4rem; border-bottom: 1px solid rgba(21,67,153,0.08); }
+.employee-day-facts dt { color: var(--brand-muted); font-size: 0.72rem; }
+.employee-day-facts dd { color: var(--brand-ink); font-size: 0.75rem; font-weight: 720; font-variant-numeric: tabular-nums; }
+.employee-day-entry, .employee-day-record { padding: 0.65rem; border-radius: 0.55rem; background: rgba(255,255,255,0.78); color: var(--brand-muted); font-size: 0.74rem; }
+.employee-day-record { display: grid; gap: 0.45rem; }
+.employee-day-record strong { color: var(--brand-ink); }
+
+.employee-batch-panel { display: grid; gap: 1rem; padding: 1rem; }
+.employee-batch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+.employee-batch-grid > label { display: grid; align-content: start; gap: 0.35rem; }
+.employee-batch-wide { grid-column: span 2; }
+.employee-duration-input { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+.employee-known-times, .employee-mixed-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.6rem; grid-column: 1 / -1; padding: 0.8rem; border: 1px solid rgba(21,67,153,0.1); border-radius: 0.65rem; }
+.employee-known-times { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.employee-known-times legend, .employee-mixed-fields legend { padding: 0 0.35rem; color: var(--brand-muted); font-size: 0.7rem; font-weight: 720; }
+.employee-known-times label, .employee-mixed-fields label { display: grid; gap: 0.35rem; color: var(--brand-muted); font-size: 0.7rem; font-weight: 680; }
+.employee-batch-dates { display: grid; gap: 0.3rem; max-height: 24rem; overflow: auto; padding-right: 0.25rem; }
+.employee-batch-date { display: grid; grid-template-columns: 8rem 5.3rem 5.3rem minmax(12rem, 1fr); gap: 0.45rem; align-items: center; padding: 0.45rem; border-radius: 0.5rem; background: rgba(255,255,255,0.72); }
+.employee-batch-date strong { color: var(--brand-ink); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.employee-batch-date--head { color: var(--brand-muted); font-size: 0.65rem; font-weight: 760; text-transform: uppercase; background: transparent; }
+.employee-batch-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.55rem; }
+.employee-batch-preview { display: grid; gap: 0.35rem; padding-top: 0.9rem; border-top: 1px solid rgba(21,67,153,0.1); }
+.employee-batch-preview h4 { margin-bottom: 0.3rem; color: var(--brand-ink); font-size: 0.82rem; }
+.employee-preview-row { display: grid; grid-template-columns: 8rem minmax(0, 1fr) auto; gap: 0.7rem; align-items: center; min-height: 2.8rem; padding: 0.5rem 0.65rem; border-radius: 0.5rem; color: var(--brand-muted); font-size: 0.75rem; background: rgba(255,255,255,0.75); }
+.employee-preview-row strong { color: var(--brand-ink); font-variant-numeric: tabular-nums; }
+.employee-preview-row.is-conflict { color: var(--incident); background: rgba(255,235,232,0.86); }
+
+.employee-inline-editor { display: grid; gap: 0.8rem; padding: 1rem; border: 1px solid rgba(0,102,204,0.2); }
+.employee-inline-editor.is-danger { border-color: rgba(180,35,24,0.22); background: rgba(255,244,242,0.88); }
+.employee-inline-editor > p { color: var(--brand-muted); font-size: 0.78rem; }
+.employee-inline-editor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.65rem; }
+.employee-inline-editor-grid label, .employee-inline-editor > label { display: grid; gap: 0.35rem; }
+.employee-inline-editor textarea.input { min-height: 5.5rem; resize: vertical; }
+
+@media (max-width: 1120px) {
+  .employee-accrual-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .employee-agenda-layout { grid-template-columns: 1fr; }
+  .employee-day-detail { position: static; }
+}
+@media (max-width: 760px) {
+  .detail-skeleton__grid, .employee-accrual-loading .detail-skeleton__grid { grid-template-columns: 1fr; }
+  .employee-accrual-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .employee-batch-grid, .employee-inline-editor-grid { grid-template-columns: 1fr; }
+  .employee-batch-wide { grid-column: auto; }
+  .employee-calendar-day { min-height: 4.7rem; padding: 0.45rem; }
+  .employee-calendar-day > span { font-size: 0.58rem; }
+  .employee-calendar-day small { display: none; }
+  .employee-batch-date, .employee-batch-date--head { grid-template-columns: 6.3rem 4.5rem 4.5rem minmax(10rem, 1fr); min-width: 31rem; }
+  .employee-batch-dates { overflow-x: auto; }
+}
+@media (max-width: 480px) {
+  .employee-attendance-workspace { width: 100%; max-width: 100%; padding: min(1rem, 4vw); overflow-x: clip; overflow-wrap: anywhere; }
+  .employee-workspace-head, .employee-batch-head, .employee-calendar-toolbar { align-items: stretch; flex-direction: column; }
+  .employee-period-controls, .employee-period-controls label, .employee-period-controls .select { width: 100%; }
+  .employee-calendar-toolbar label, .employee-calendar-toolbar .input, .employee-calendar-toolbar .monthfield, .employee-calendar-toolbar .monthfield-trigger { width: 100%; min-width: 0; max-width: 100%; }
+  .employee-accrual-panel, .employee-calendar-panel, .employee-day-detail, .employee-batch-panel, .employee-batch-grid, .employee-batch-head { width: 100%; max-width: 100%; }
+  .employee-accrual-panel, .employee-calendar-panel, .employee-day-detail, .employee-batch-panel { padding: min(1rem, 4vw); }
+  .employee-attendance-workspace :where(.input, .select, button) { min-width: 0; max-width: 100%; }
+  .employee-accrual-grid { grid-template-columns: 1fr; }
+  .employee-calendar-panel { padding: 0.7rem; }
+  .employee-calendar-weekdays, .employee-calendar { gap: 0.2rem; }
+  .employee-calendar-day { min-height: 3.6rem; padding: 0.35rem; }
+  .employee-calendar-day > span, .calendar-state { display: none; }
+  .employee-known-times, .employee-mixed-fields { grid-template-columns: 1fr; }
+  .employee-batch-actions .btn { width: 100%; }
+}
+@media (max-width: 919px) {
+  .topbar-drop { display: none; }
+  .topbar-copy, .topbar-copy > div, .employee-profile-identity, .employee-profile-identity-copy { min-width: 0; }
+  .topbar-title, .topbar-sub, .employee-profile-identity-copy h1, .employee-profile-identity-copy p { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .employee-calendar-day { transition: none; }
+}
+
 /* Historical attendance — operational batch editor (HST-01). */
 .historical-page {
   display: grid;
@@ -2855,6 +3025,7 @@ body::after {
   inset: 0;
   z-index: -1;
   overflow: hidden;
+  contain: strict;
   pointer-events: none;
 }
 
@@ -2867,8 +3038,8 @@ body::after {
 }
 
 .water-orb--blue {
-  width: 28rem;
-  height: 28rem;
+  width: min(28rem, 96vw);
+  height: min(28rem, 96vw);
   top: -8rem;
   right: 4%;
   background: rgba(0, 123, 255, 0.18);
@@ -2876,8 +3047,8 @@ body::after {
 }
 
 .water-orb--green {
-  width: 25rem;
-  height: 25rem;
+  width: min(25rem, 70vw);
+  height: min(25rem, 70vw);
   bottom: -9rem;
   left: 8%;
   background: rgba(0, 200, 83, 0.12);
@@ -2885,8 +3056,8 @@ body::after {
 }
 
 .water-orb--cyan {
-  width: 22rem;
-  height: 22rem;
+  width: min(22rem, 52vw);
+  height: min(22rem, 52vw);
   top: 42%;
   left: 48%;
   background: rgba(103, 195, 243, 0.28);

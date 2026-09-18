@@ -59,6 +59,24 @@ def _set_salary(client, employee_id: str, **overrides):
     assert response.status_code == 201, response.text
 
 
+def _approve(client, adjustment: dict):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"], "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"payroll-approve-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+    return response
+
+
+def _reject(client, adjustment: dict, reason: str = "No corresponde"):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/reject", json={
+        "reason": reason, "expected_version": adjustment["version"],
+        "idempotency_key": f"payroll-reject-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+    return response
+
+
 def _add_approved_overtime(client, employee_id: str, minutes: int = 60) -> str:
     response = client.post(
         f"/api/v1/employees/{employee_id}/adjustments",
@@ -70,9 +88,9 @@ def _add_approved_overtime(client, employee_id: str, minutes: int = 60) -> str:
         },
     )
     assert response.status_code == 201, response.text
-    adj_id = response.json()["id"]
-    client.patch(f"/api/v1/adjustments/{adj_id}/approve")
-    return adj_id
+    adjustment = response.json()
+    _approve(client, adjustment)
+    return adjustment["id"]
 
 
 def _create_period(client, name: str = "Agosto 2026", start: str = "2026-08-01", end: str = "2026-08-31") -> dict:
@@ -237,7 +255,7 @@ def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
     assert any(issue["code"] == "PENDING_ADJUSTMENT" for issue in readiness["blockers"])
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
-    client.patch(f"/api/v1/adjustments/{pending['id']}/reject", json={"reason": "No corresponde"})
+    _reject(client, pending)
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 200
     rectified = client.post(
         f"/api/v1/payroll/periods/{period['id']}/rectifications",
@@ -411,7 +429,7 @@ def test_reporte_diario_distribuye_snapshot_y_resume_por_empleado(client, db_ses
             "reason": "Recuperación aprobada sin valor monetario automático",
         },
     ).json()
-    assert client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve").status_code == 200
+    _approve(client, adjustment)
     period = _create_period(client)
     record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
     assert client.patch(
@@ -465,7 +483,7 @@ def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monk
             "reason": "Jornada cubierta por ajuste aprobado",
         },
     ).json()
-    assert client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve").status_code == 200
+    _approve(client, adjustment)
     overtime_adjustment = client.post(
         f"/api/v1/employees/{emp}/adjustments",
         json={
@@ -475,7 +493,7 @@ def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monk
             "reason": "HE cerrada y aprobada",
         },
     ).json()
-    assert client.patch(f"/api/v1/adjustments/{overtime_adjustment['id']}/approve").status_code == 200
+    _approve(client, overtime_adjustment)
     period = _create_period(client)
     record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
     monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 15))

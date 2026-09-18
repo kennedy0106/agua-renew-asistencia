@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,6 +41,34 @@ class WorkScheduleRepository:
                 select(WorkSchedule)
                 .where(WorkSchedule.employee_id == employee_id)
                 .order_by(WorkSchedule.effective_from.desc())
+            )
+        )
+
+    def list_overlapping(
+        self,
+        employee_ids: Iterable[uuid.UUID],
+        date_from: date,
+        date_to: date,
+    ) -> list[WorkSchedule]:
+        """Jornadas que pueden aplicar a cualquiera de las fechas pedidas.
+
+        Las lecturas de panel suelen contener muchas filas y antes resolvían
+        una jornada por fila.  Esta consulta conserva la misma regla de
+        vigencia, pero trae el historial relevante en una sola ida a BD.
+        """
+        identifiers = list(set(employee_ids))
+        if not identifiers:
+            return []
+        return list(
+            self.db.scalars(
+                select(WorkSchedule)
+                .where(
+                    WorkSchedule.employee_id.in_(identifiers),
+                    WorkSchedule.effective_from <= date_to,
+                    (WorkSchedule.effective_to.is_(None))
+                    | (WorkSchedule.effective_to >= date_from),
+                )
+                .order_by(WorkSchedule.employee_id, WorkSchedule.effective_from)
             )
         )
 

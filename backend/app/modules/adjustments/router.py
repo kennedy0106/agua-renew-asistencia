@@ -11,14 +11,17 @@
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
 from app.modules.adjustments.schemas import (
     AdjustmentCreate,
+    AdjustmentApprove,
     AdjustmentOut,
+    AdjustmentUpdate,
+    AdjustmentVoid,
     BalanceOut,
     RejectRequest,
 )
@@ -30,7 +33,11 @@ router = APIRouter(prefix="/api/v1", tags=["adjustments"])
 can_manage_adjustments = require_any_role("ADMIN", "BOSS")
 
 
-def _to_out(adjustment) -> AdjustmentOut:
+def _to_out(adjustment, service: AdjustmentService) -> AdjustmentOut:
+    # A replay is intentionally a frozen JSON receipt rather than the current
+    # mutable row (a later approve/void must not rewrite an earlier answer).
+    if isinstance(adjustment, dict):
+        return AdjustmentOut.model_validate(adjustment)
     return AdjustmentOut(
         id=adjustment.id,
         employee_id=adjustment.employee_id,
@@ -44,6 +51,16 @@ def _to_out(adjustment) -> AdjustmentOut:
             adjustment.approved_by_user.username if adjustment.approved_by_user else None
         ),
         approved_at=adjustment.approved_at,
+        version=adjustment.version,
+        supersedes_id=adjustment.supersedes_id,
+        voided_at=adjustment.voided_at,
+        voided_by=adjustment.voided_by,
+        void_reason=adjustment.void_reason,
+        approval_snapshot=(
+            service.approval_snapshot(adjustment)
+            if adjustment.status == "PENDING" and adjustment.voided_at is None
+            else adjustment.approval_snapshot_data
+        ),
         created_at=adjustment.created_at,
         updated_at=adjustment.updated_at,
     )
@@ -63,16 +80,19 @@ def create_adjustment(
         adjustment_type=payload.adjustment_type,
         reason=payload.reason,
     )
-    return _to_out(adjustment)
+    return _to_out(adjustment, AdjustmentService(db))
 
 
 @router.get("/employees/{employee_id}/adjustments", response_model=list[AdjustmentOut])
 def list_adjustments(
     employee_id: uuid.UUID,
+    include_voided: bool = False,
     db: Session = Depends(get_db),
     _: object = Depends(get_current_operational_user),
 ) -> list[AdjustmentOut]:
-    return [_to_out(a) for a in AdjustmentService(db).list_for_employee(employee_id)]
+    service = AdjustmentService(db)
+    rows = service.list_for_employee_including_voided(employee_id) if include_voided else service.list_for_employee(employee_id)
+    return [_to_out(a, service) for a in rows]
 
 
 @router.get("/employees/{employee_id}/balance", response_model=BalanceOut)
@@ -94,10 +114,18 @@ def get_balance(
 @router.patch("/adjustments/{adjustment_id}/approve", response_model=AdjustmentOut)
 def approve_adjustment(
     adjustment_id: uuid.UUID,
+    payload: AdjustmentApprove | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(can_manage_adjustments),
 ) -> AdjustmentOut:
-    return _to_out(AdjustmentService(db).approve(adjustment_id, user.id))
+    service = AdjustmentService(db)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "PREVIEW_REQUIRED", "message": "La aprobación exige versión, contenido e importe previsualizados"})
+    return _to_out(service.approve_versioned(
+        adjustment_id, expected_version=payload.expected_version,
+        expected_snapshot=payload.expected_snapshot, idempotency_key=payload.idempotency_key,
+        actor_id=user.id,
+    ), service)
 
 
 @router.patch("/adjustments/{adjustment_id}/reject", response_model=AdjustmentOut)
@@ -107,4 +135,40 @@ def reject_adjustment(
     db: Session = Depends(get_db),
     user: User = Depends(can_manage_adjustments),
 ) -> AdjustmentOut:
-    return _to_out(AdjustmentService(db).reject(adjustment_id, user.id, payload.reason))
+    if payload.expected_version is None or payload.idempotency_key is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"code": "VERSION_AND_KEY_REQUIRED", "message": "El rechazo exige versión e identificador de operación"})
+    service = AdjustmentService(db)
+    return _to_out(service.reject_versioned(
+        adjustment_id, expected_version=payload.expected_version, reason=payload.reason,
+        idempotency_key=payload.idempotency_key, actor_id=user.id,
+    ), service)
+
+
+@router.patch("/adjustments/{adjustment_id}", response_model=AdjustmentOut)
+def update_adjustment(
+    adjustment_id: uuid.UUID,
+    payload: AdjustmentUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(can_manage_adjustments),
+) -> AdjustmentOut:
+    service = AdjustmentService(db)
+    return _to_out(service.update_versioned(
+        adjustment_id, adjustment_date=payload.adjustment_date, minutes=payload.minutes,
+        adjustment_type=payload.adjustment_type, reason=payload.reason,
+        expected_version=payload.expected_version, idempotency_key=payload.idempotency_key,
+        actor_id=user.id,
+    ), service)
+
+
+@router.post("/adjustments/{adjustment_id}/void", response_model=AdjustmentOut)
+def void_adjustment(
+    adjustment_id: uuid.UUID,
+    payload: AdjustmentVoid,
+    db: Session = Depends(get_db),
+    user: User = Depends(can_manage_adjustments),
+) -> AdjustmentOut:
+    service = AdjustmentService(db)
+    return _to_out(service.void_versioned(
+        adjustment_id, expected_version=payload.expected_version, reason=payload.reason,
+        idempotency_key=payload.idempotency_key, actor_id=user.id,
+    ), service)

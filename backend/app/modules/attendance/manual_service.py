@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.timezone import lima_tz
 from app.modules.attendance.manual_models import ManualAttendanceDay, ManualAttendanceIdempotency, ManualRecoveryApplication, RecoveryCommitment
 from app.modules.attendance.models import AttendanceRecord
-from app.modules.attendance.manual_schemas import CommitmentIn, ManualBatchIn, ManualDayIn, RecoveryAllocationIn
+from app.modules.attendance.manual_schemas import CommitmentIn, ManualBatchIn, ManualDayIn, ManualMultiBatchIn, RecoveryAllocationIn
 from app.modules.attendance.manual_operations import commit_with_receipt_recovery, lock_operation, payload_hash, replay_or_conflict, store_receipt
 from app.modules.adjustments.models import ADJUSTMENT_APPROVED, ADJUSTMENT_PENDING, HourAdjustment
 from app.modules.audit.repository import AuditRepository
@@ -190,6 +190,7 @@ class ManualAttendanceService:
                 HourAdjustment.adjustment_date == work_date,
                 HourAdjustment.adjustment_type == "OVERTIME",
                 HourAdjustment.status.in_((ADJUSTMENT_PENDING, ADJUSTMENT_APPROVED)),
+                HourAdjustment.voided_at.is_(None),
             ))
             if legacy:
                 self._error("OVERTIME_RECONCILIATION_REQUIRED", "Existe un sobretiempo legado vigente para esta fecha; reconcilie antes de cargar P", status.HTTP_409_CONFLICT)
@@ -414,6 +415,315 @@ class ManualAttendanceService:
         except Exception:
             self.db.rollback(); raise
         return result
+
+    def _multi_rows(self, payload: ManualMultiBatchIn) -> list[tuple[date, ManualDayIn]]:
+        """Materializa la plantilla y excepciones sin duplicar las reglas N/P/R."""
+        overrides = {item.work_date: item for item in payload.overrides}
+        result: list[tuple[date, ManualDayIn]] = []
+        template = payload.template.model_dump(mode="python")
+        for work_date in sorted(payload.work_dates):
+            data = dict(template)
+            override = overrides.get(work_date)
+            if override is not None:
+                data.update(override.model_dump(mode="python", exclude={"work_date"}, exclude_unset=True))
+            result.append((work_date, ManualDayIn(employee_id=payload.employee_id, **data)))
+        return result
+
+    def _multi_sources(
+        self, employee_id: uuid.UUID, work_dates: list[date], *, for_update: bool = False,
+    ) -> tuple[dict[date, ManualAttendanceDay], set[date]]:
+        """Resolve the one source which owns every selected day.
+
+        A kiosk day remains kiosk-owned: its additional is represented by a
+        linked OVERTIME adjustment, not a second attendance day.  An HST day
+        is corrected through a new version.  An empty day receives a new HST
+        row.  The employee lock acquired by callers serializes this lookup
+        with kiosk writers and attendance corrections.
+        """
+        manual_query = select(ManualAttendanceDay).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date.in_(work_dates),
+            ManualAttendanceDay.voided_at.is_(None),
+        )
+        if for_update:
+            manual_query = manual_query.with_for_update()
+        manual = {item.work_date: item for item in self.db.scalars(manual_query)}
+        kiosk_dates = set(self.db.scalars(select(AttendanceRecord.work_date).where(
+            AttendanceRecord.employee_id == employee_id,
+            AttendanceRecord.work_date.in_(work_dates),
+        )))
+        return manual, kiosk_dates
+
+    def _validate_linked_kiosk_additional(self, work_date: date, row: ManualDayIn) -> None:
+        """Validate a P-only row attached to a kiosk day without double work."""
+        self._assert_date(self._employee(row.employee_id), work_date)
+        if (
+            row.additional_minutes <= 0 or row.normal_minutes != 0
+            or row.recovery_minutes != 0 or row.worked_minutes_net != row.additional_minutes
+        ):
+            self._error(
+                "KIOSK_ADDITIONAL_ONLY",
+                "Sobre una jornada de kiosco solo se registra P; no se vuelve a cargar W/N/R",
+            )
+        if row.known_check_in_at or row.known_check_out_at or row.known_break_minutes:
+            self._error("KIOSK_INTERVAL_IMMUTABLE", "La jornada de kiosco conserva sus propios horarios")
+        if self.db.scalar(select(HourAdjustment.id).where(
+            HourAdjustment.employee_id == row.employee_id,
+            HourAdjustment.adjustment_date == work_date,
+            HourAdjustment.adjustment_type == "OVERTIME",
+            HourAdjustment.status.in_((ADJUSTMENT_PENDING, ADJUSTMENT_APPROVED)),
+            HourAdjustment.voided_at.is_(None),
+        )) is not None:
+            self._error("OVERTIME_RECONCILIATION_REQUIRED", "Ya existe un adicional vigente para la jornada de kiosco", status.HTTP_409_CONFLICT)
+
+    @staticmethod
+    def _multi_preview_token(payload: ManualMultiBatchIn, rows: list[dict]) -> str:
+        canonical = {
+            "employee_id": str(payload.employee_id),
+            "work_dates": [item.isoformat() for item in sorted(payload.work_dates)],
+            "template": payload.template.model_dump(mode="json"),
+            "overrides": [item.model_dump(mode="json") for item in sorted(payload.overrides, key=lambda item: item.work_date)],
+            "rows": rows,
+        }
+        return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+    def preview_multi(self, payload: ManualMultiBatchIn) -> dict:
+        """Previsualiza un empleado en varias fechas sin guardar ni aprobar."""
+        employee = self._employee(payload.employee_id)
+        rows = self._multi_rows(payload)
+        self._lock_employees([payload.employee_id])
+        manual_by_day, kiosk_dates = self._multi_sources(
+            payload.employee_id, [item[0] for item in rows], for_update=True,
+        )
+        all_commitment_ids = [
+            allocation.commitment_id for _, row in rows for allocation in row.recovery_allocations
+        ]
+        all_commitment_ids.extend(
+            commitment_id
+            for current in manual_by_day.values()
+            for commitment_id in self._commitment_ids_for_day(current.id)
+        )
+        commitments = self._lock_commitments(all_commitment_ids)
+        items: list[dict] = []
+        for work_date, row in rows:
+            try:
+                current = manual_by_day.get(work_date)
+                source = "EMPTY"
+                if work_date in kiosk_dates:
+                    source = "KIOSK"
+                    self._validate_linked_kiosk_additional(work_date, row)
+                    self._assert_not_closed(work_date)
+                else:
+                    if current is not None:
+                        source = "HST"
+                    self._validate_row(
+                        work_date, row, exclude_manual_day_id=(current.id if current else None),
+                        locked_commitments=commitments, validate_periods=True,
+                    )
+                items.append({
+                    "work_date": work_date,
+                    "status": "READY", "source": source,
+                    "operation": (
+                        "LINKED_OVERTIME" if source == "KIOSK"
+                        else "REPLACE_HST" if source == "HST" else "CREATE_HST"
+                    ),
+                    "row": {
+                        "worked_minutes_net": row.worked_minutes_net,
+                        "normal_minutes": row.normal_minutes,
+                        "additional_minutes": row.additional_minutes,
+                        "recovery_minutes": row.recovery_minutes,
+                    },
+                    "payment": self.estimate_payment(payload.employee_id, work_date, row.additional_minutes, row),
+                })
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                items.append({
+                    "work_date": work_date, "status": "CONFLICT",
+                    "error_code": detail.get("code", "VALIDATION_ERROR"),
+                    "message": detail.get("message", str(exc.detail)),
+                })
+        # A single R commitment cannot be oversubscribed by separate selected
+        # dates.  The row validator sees persisted applications only, so the
+        # batch preview also validates the aggregate requested allocation.
+        requested: dict[uuid.UUID, int] = {}
+        for _, row in rows:
+            for allocation in row.recovery_allocations:
+                requested[allocation.commitment_id] = requested.get(allocation.commitment_id, 0) + allocation.minutes
+        for commitment_id, minutes in requested.items():
+            commitment = commitments.get(commitment_id)
+            if commitment is None:
+                continue
+            used_query = select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(
+                ManualRecoveryApplication.commitment_id == commitment_id,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+            replacing_ids = [item.id for item in manual_by_day.values()]
+            if replacing_ids:
+                used_query = used_query.where(ManualAttendanceDay.id.not_in(replacing_ids))
+            used = self.db.scalar(used_query) or 0
+            if int(used) + minutes > commitment.agreed_minutes:
+                for item in items:
+                    if item["status"] == "READY":
+                        item["status"] = "CONFLICT"
+                        item["error_code"] = "RECOVERY_EXCEEDS_PENDING"
+                        item["message"] = "Las recuperaciones seleccionadas superan el pendiente del compromiso"
+        return {
+            "employee_id": str(payload.employee_id),
+            "items": items,
+            "preview_token": self._multi_preview_token(payload, items),
+        }
+
+    def batch_multi(self, payload: ManualMultiBatchIn, actor_id: uuid.UUID) -> dict:
+        """Guarda hasta 50 fechas como una operación atómica y recuperable."""
+        digest, replay = self._operation_replay(
+            key=payload.idempotency_key, payload=payload, actor_id=actor_id,
+            operation_type="BATCH", target_id=None,
+        )
+        if replay is not None:
+            return replay
+        self._lock_employees([payload.employee_id])
+        rows = self._multi_rows(payload)
+        manual_by_day, kiosk_dates = self._multi_sources(
+            payload.employee_id, [item[0] for item in rows], for_update=True,
+        )
+        commitment_ids = [allocation.commitment_id for _, row in rows for allocation in row.recovery_allocations]
+        # Replacing an HST row can remove/change R.  Its permission origin is
+        # just as affected as a newly selected commitment and must pass the
+        # same closed-period/rectification guard.
+        commitment_ids.extend(
+            commitment_id
+            for current in manual_by_day.values()
+            for commitment_id in self._commitment_ids_for_day(current.id)
+        )
+        commitments = self._lock_commitments(commitment_ids)
+        affected_dates = [work_date for work_date, _ in rows] + [item.permission_date for item in commitments.values()]
+        self._assert_not_closed(*affected_dates)
+        preview = self.preview_multi(payload)
+        if any(item["status"] != "READY" for item in preview["items"]):
+            self._error("MULTI_BATCH_CONFLICT", "Corrija las fechas marcadas antes de guardar", status.HTTP_409_CONFLICT)
+        if payload.approve_additional and payload.preview_token != preview["preview_token"]:
+            self._error("STALE_PREVIEW", "La valoración o el contenido cambió; vuelva a previsualizar", status.HTTP_409_CONFLICT)
+        created: list[ManualAttendanceDay] = []
+        linked_adjustments: list[HourAdjustment] = []
+        try:
+            for (work_date, row), verified in zip(rows, preview["items"], strict=True):
+                estimate = verified["payment"]
+                source = verified["source"]
+                if source == "KIOSK":
+                    # Link P to the kiosk-owned day.  It contributes to
+                    # overtime/payroll only, never creates a second W/N/R
+                    # attendance row.
+                    adjustment = HourAdjustment(
+                        employee_id=payload.employee_id, adjustment_date=work_date,
+                        minutes=row.additional_minutes, adjustment_type="OVERTIME",
+                        reason=(row.payment_concept or row.reason).strip(),
+                        status=ADJUSTMENT_PENDING,
+                    )
+                    self.db.add(adjustment)
+                    self.db.flush()
+                    if payload.approve_additional:
+                        if estimate.get("amount") is None:
+                            self._error("PAYMENT_REVIEW_REQUIRED", "No hay valoración completa para aprobar", status.HTTP_409_CONFLICT)
+                        adjustment.approval_snapshot_data = {
+                            "id": str(adjustment.id), "version": adjustment.version,
+                            "adjustment_date": work_date.isoformat(), "minutes": adjustment.minutes,
+                            "adjustment_type": adjustment.adjustment_type, "reason": adjustment.reason,
+                            "status": ADJUSTMENT_PENDING, "valuation": estimate,
+                        }
+                        adjustment.status = ADJUSTMENT_APPROVED
+                        adjustment.approved_by = actor_id
+                        adjustment.approved_at = datetime.now(lima_tz())
+                    AuditRepository(self.db).create(
+                        entity_type="adjustment", entity_id=adjustment.id,
+                        action="multi_linked_kiosk_overtime", old_values=None,
+                        new_values={"work_date": work_date.isoformat(), "minutes": adjustment.minutes,
+                                    "status": adjustment.status, "attendance_source": "KIOSK"},
+                        reason=adjustment.reason, performed_by=actor_id, commit=False,
+                    )
+                    linked_adjustments.append(adjustment)
+                    continue
+                payment_status = estimate["status"]
+                approved_by = approved_at = None
+                if payload.approve_additional and row.additional_minutes:
+                    if payment_status != "PENDING" or estimate.get("amount") is None:
+                        self._error("PAYMENT_REVIEW_REQUIRED", "No hay valoración completa para aprobar", status.HTTP_409_CONFLICT)
+                    payment_status = "APPROVED"
+                    approved_by = actor_id
+                    approved_at = datetime.now(lima_tz())
+                current = manual_by_day.get(work_date)
+                next_version = (self.db.scalar(select(func.max(ManualAttendanceDay.version)).where(
+                    ManualAttendanceDay.employee_id == payload.employee_id,
+                    ManualAttendanceDay.work_date == work_date,
+                )) or 0) + 1
+                # The active-day uniqueness constraint requires retiring the
+                # current HST version before inserting its replacement.  Both
+                # writes remain in this transaction, so an error restores it.
+                if current is not None:
+                    current.voided_at = datetime.now(lima_tz())
+                    current.voided_by_user_id = actor_id
+                    current.void_reason = row.reason.strip()
+                    self.db.flush()
+                item = ManualAttendanceDay(
+                    employee_id=payload.employee_id, work_date=work_date,
+                    worked_minutes_net=row.worked_minutes_net, normal_minutes=row.normal_minutes,
+                    additional_minutes=row.additional_minutes, recovery_minutes=row.recovery_minutes,
+                    day_context=row.day_context, source_reference=row.source_reference,
+                    known_check_in_at=row.known_check_in_at, known_check_out_at=row.known_check_out_at,
+                    known_break_minutes=row.known_break_minutes, reason=row.reason.strip(),
+                    payment_status=payment_status, payment_method=row.payment_method,
+                    payment_concept=row.payment_concept,
+                    approved_additional_amount=(Decimal(str(estimate["amount"])) if payment_status == "APPROVED" and estimate.get("amount") else None),
+                    payment_snapshot={**estimate, "status": payment_status}, approved_by_user_id=approved_by,
+                    approved_at=approved_at, version=next_version, created_by_user_id=actor_id,
+                )
+                self.db.add(item)
+                self.db.flush()
+                if current is not None:
+                    item.supersedes_id = current.id
+                for allocation in row.recovery_allocations:
+                    self.db.add(ManualRecoveryApplication(manual_day_id=item.id, commitment_id=allocation.commitment_id, minutes=allocation.minutes))
+                AuditRepository(self.db).create(
+                    entity_type="manual_attendance_day", entity_id=item.id,
+                    action="multi_versioned_update" if current is not None else "multi_created",
+                    old_values=(json.loads(json.dumps(self.serialize(current), default=str)) if current is not None else None),
+                    new_values={"work_date": work_date.isoformat(), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes},
+                    reason=row.reason.strip(), performed_by=actor_id, commit=False,
+                )
+                created.append(item)
+            self.db.flush()
+            self._invalidate_calculated_periods(*affected_dates)
+            result = {
+                "created": [str(item.id) for item in created],
+                "items": [
+                    *[{"work_date": item.work_date, "manual_day_id": str(item.id), "version": item.version,
+                       "operation": "REPLACE_HST" if item.supersedes_id else "CREATE_HST"} for item in created],
+                    *[{"work_date": item.adjustment_date, "adjustment_id": str(item.id), "version": item.version,
+                       "operation": "LINKED_OVERTIME", "status": item.status} for item in linked_adjustments],
+                ],
+            }
+            store_receipt(self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id,
+                          operation_type="BATCH", target_manual_day_id=None, result=result)
+            return commit_with_receipt_recovery(
+                self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id,
+                operation_type="BATCH", target_manual_day_id=None, result=result,
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE and detail.get("code") == "OPERATION_RESULT_UNKNOWN":
+                # commit_with_receipt_recovery ya resolvió (o declaró) el único
+                # resultado incierto; no lo sustituya una segunda limpieza.
+                raise
+            try:
+                self.db.rollback()
+            except (OperationalError, InterfaceError):
+                pass
+            raise
+        except IntegrityError as exc:
+            self.db.rollback()
+            self._error("MULTI_BATCH_CONFLICT", "Otra operación modificó una de las fechas; vuelva a consultar", status.HTTP_409_CONFLICT)
+        except Exception:
+            self.db.rollback()
+            raise
 
     def list(self, employee_id: uuid.UUID | None, date_from: date | None, date_to: date | None, *, offset: int = 0, limit: int = 50, include_voided: bool = False) -> list[dict]:
         query = select(ManualAttendanceDay).order_by(ManualAttendanceDay.work_date.desc(), ManualAttendanceDay.version.desc())

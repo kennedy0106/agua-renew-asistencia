@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
 import { Alert, Coins, Download, Receipt, Refresh } from "@/components/Icons";
-import { Skeleton, StatSkeleton, TableSkeleton } from "@/components/Loading";
+import { Skeleton, Spinner, StatSkeleton, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatOperationalDate } from "@/lib/dates";
@@ -189,7 +189,7 @@ export default function AdminSalariesPage() {
           <div className="toolbar-status" role="status" aria-live="polite">
             <span>
               {dailyReportLoading
-                ? "Actualizando desglose…"
+                ? <><Spinner /> Actualizando desglose…</>
                 : dailyReportUpdatedAt
                   ? `Actualizado ${dailyReportUpdatedAt.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })}`
                   : "Desglose sin actualizar"}

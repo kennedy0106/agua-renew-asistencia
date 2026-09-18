@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
 from app.core.object_store import (
@@ -1123,13 +1123,50 @@ class AttendanceService:
     def _break_details(self, employee_id: uuid.UUID, work_date: date, gross: int) -> tuple[int, str, int | None, bool]:
         """Devuelve descuento efectivo y su procedencia sin perder el pedido real."""
         override = self._break_override(employee_id, work_date)
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        return self._break_details_from_values(override, schedule, gross)
+
+    @staticmethod
+    def _break_details_from_values(
+        override: AttendanceBreakOverride | None, schedule, gross: int
+    ) -> tuple[int, str, int | None, bool]:
+        """Aplica la regla de refrigerio sobre datos ya cargados.
+
+        ``list_daily`` la usa para no consultar override y jornada por cada
+        empleado/día. Las mutaciones siguen pasando por ``_break_details``.
+        """
         if override is not None:
             effective = min(override.requested_break_minutes, gross)
             return effective, "OVERRIDE", override.requested_break_minutes, effective != override.requested_break_minutes
-        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
         if schedule and gross >= schedule.break_applies_after_minutes:
             return min(schedule.break_minutes, gross), "SCHEDULE", None, False
         return 0, "NONE", None, False
+
+    def _break_overrides_for_days(
+        self, employee_days: dict[uuid.UUID, set[date]]
+    ) -> dict[tuple[uuid.UUID, date], AttendanceBreakOverride]:
+        """Carga de una vez los overrides que pueden pertenecer al resumen."""
+        employee_ids = list(employee_days)
+        all_days = [day for days in employee_days.values() for day in days]
+        if not employee_ids or not all_days:
+            return {}
+        overrides = self.db.scalars(
+            select(AttendanceBreakOverride).where(
+                AttendanceBreakOverride.employee_id.in_(employee_ids),
+                AttendanceBreakOverride.work_date >= min(all_days),
+                AttendanceBreakOverride.work_date <= max(all_days),
+            )
+        )
+        requested = {
+            (employee_id, day)
+            for employee_id, days in employee_days.items()
+            for day in days
+        }
+        return {
+            (item.employee_id, item.work_date): item
+            for item in overrides
+            if (item.employee_id, item.work_date) in requested
+        }
 
     @staticmethod
     def _gross_for_records(records: list[AttendanceRecord]) -> int:
@@ -1250,10 +1287,15 @@ class AttendanceService:
         records = self.repo.list_records(
             employee_id=employee_id, date_from=date_from, date_to=date_to, status=status_filter
         )
-        schedules = ScheduleService(self.db)
+        employee_days: dict[uuid.UUID, set[date]] = {}
+        for record in records:
+            employee_days.setdefault(record.employee_id, set()).add(record.work_date)
+        expected_by_day = ScheduleService(self.db).expected_minutes_for_days(
+            employee_days
+        )
         result = []
         for record in records:
-            expected = schedules.expected_minutes(record.employee_id, record.work_date)
+            expected = expected_by_day[(record.employee_id, record.work_date)]
             result.append(
                 {
                     "id": record.id,
@@ -1303,7 +1345,34 @@ class AttendanceService:
         groups: dict[tuple[uuid.UUID, date], list[AttendanceRecord]] = {}
         for record in records:
             groups.setdefault((record.employee_id, record.work_date), []).append(record)
+        manual_query = (
+            select(ManualAttendanceDay)
+            .options(joinedload(ManualAttendanceDay.employee))
+            .where(ManualAttendanceDay.voided_at.is_(None))
+        )
+        if employee_id is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.employee_id == employee_id)
+        if date_from is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date >= date_from)
+        if date_to is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date <= date_to)
+        manual_rows = list(self.db.scalars(manual_query))
+
+        employee_days: dict[uuid.UUID, set[date]] = {}
+        for group_employee_id, work_date in groups:
+            employee_days.setdefault(group_employee_id, set()).add(work_date)
+        for item in manual_rows:
+            employee_days.setdefault(item.employee_id, set()).add(item.work_date)
         schedules = ScheduleService(self.db)
+        schedules_by_day = schedules.schedules_for_days(employee_days)
+        expected_by_day = {
+            (item_employee_id, item_day): (
+                getattr(schedule, ("monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes", "friday_minutes", "saturday_minutes", "sunday_minutes")[item_day.weekday()])
+                if schedule else 0
+            )
+            for (item_employee_id, item_day), schedule in schedules_by_day.items()
+        }
+        overrides_by_day = self._break_overrides_for_days(employee_days)
         result: list[dict] = []
         for (group_employee_id, work_date), sessions in groups.items():
             complete = sorted(
@@ -1326,13 +1395,14 @@ class AttendanceService:
             has_open = any(item.check_out_at is None for item in sessions)
             if has_open:
                 incidents.add("OPEN_ATTENDANCE")
-            break_minutes, break_source, override_requested_minutes, override_limited = self._break_details(
-                group_employee_id, work_date, gross
+            break_minutes, break_source, override_requested_minutes, override_limited = self._break_details_from_values(
+                overrides_by_day.get((group_employee_id, work_date)),
+                schedules_by_day[(group_employee_id, work_date)], gross
             )
             # El neto se deriva del total efectivo y conserva coherencia incluso
             # si una fila antigua fue creada antes del recálculo diario.
             worked = gross - break_minutes
-            expected = schedules.expected_minutes(group_employee_id, work_date)
+            expected = expected_by_day[(group_employee_id, work_date)]
             employee = sessions[0].employee
             result.append(
                 {
@@ -1360,16 +1430,9 @@ class AttendanceService:
             )
         # Las cargas históricas son presencia real declarada, pero nunca se
         # someten por segunda vez al descuento de refrigerio de sesiones.
-        manual_query = select(ManualAttendanceDay).where(ManualAttendanceDay.voided_at.is_(None))
-        if employee_id is not None:
-            manual_query = manual_query.where(ManualAttendanceDay.employee_id == employee_id)
-        if date_from is not None:
-            manual_query = manual_query.where(ManualAttendanceDay.work_date >= date_from)
-        if date_to is not None:
-            manual_query = manual_query.where(ManualAttendanceDay.work_date <= date_to)
-        for item in self.db.scalars(manual_query):
+        for item in manual_rows:
             employee = item.employee
-            expected = schedules.expected_minutes(item.employee_id, item.work_date)
+            expected = expected_by_day[(item.employee_id, item.work_date)]
             result.append({"employee_id": item.employee_id, "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None, "work_date": item.work_date, "session_count": 0, "gross_minutes": item.worked_minutes_net, "break_minutes": 0, "break_source": "NONE", "override_requested_minutes": None, "override_limited": False, "worked_minutes": item.worked_minutes_net, "ordinary_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "expected_minutes": expected, "difference_minutes": item.normal_minutes - expected, "has_open_entry": False, "incident_codes": ["HISTORICAL_MANUAL"]})
         return sorted(result, key=lambda item: (item["work_date"], str(item["employee_id"])), reverse=True)
 

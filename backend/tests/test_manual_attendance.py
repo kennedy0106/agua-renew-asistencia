@@ -24,6 +24,15 @@ def _preview_token(client, payload):
     assert response.status_code == 200, response.text
     return response.json()["preview_token"]
 
+
+def _approve_adjustment(client, adjustment: dict):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"], "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"manual-approve-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+    return response
+
 def test_manual_day_persists_exact_net_without_kiosk_session(client, db_session):
     _login(client); employee = _employee(client, db_session)
     response = client.post("/api/v1/attendance/manual-days/batch", json=_batch(employee))
@@ -544,7 +553,7 @@ def test_recovery_credit_excludes_approved_legacy_coverage_at_origin(client, db_
     assert client.post("/api/v1/attendance/manual-days/batch", json=origin).status_code == 200
     adjustment = client.post(f"/api/v1/employees/{employee}/adjustments", json={"adjustment_date":"2026-09-01", "minutes":120, "adjustment_type":"OTRO", "reason":"Cobertura legado del permiso"})
     assert adjustment.status_code == 201, adjustment.text
-    assert client.patch(f"/api/v1/adjustments/{adjustment.json()['id']}/approve").status_code == 200
+    _approve_adjustment(client, adjustment.json())
     commitment = client.post("/api/v1/attendance/recovery-commitments", json={"employee_id":employee, "permission_date":"2026-09-01", "agreed_minutes":120, "covered_before":False, "reference":"Permiso con cobertura legado"})
     assert commitment.status_code == 200, commitment.text
     recovery = _batch(employee, worked_minutes_net=120, normal_minutes=0, recovery_minutes=120, recovery_allocations=[{"commitment_id":commitment.json()["id"], "minutes":120}])
@@ -569,7 +578,7 @@ def test_recovery_credit_does_not_treat_approved_overtime_as_origin_coverage(cli
     assert client.post("/api/v1/attendance/manual-days/batch", json=origin).status_code == 200
     overtime = client.post(f"/api/v1/employees/{employee}/adjustments", json={"adjustment_date":"2026-09-01", "minutes":120, "adjustment_type":"OVERTIME", "reason":"Adicional legado separado"})
     assert overtime.status_code == 201, overtime.text
-    assert client.patch(f"/api/v1/adjustments/{overtime.json()['id']}/approve").status_code == 200
+    _approve_adjustment(client, overtime.json())
     commitment = client.post("/api/v1/attendance/recovery-commitments", json={"employee_id":employee, "permission_date":"2026-09-01", "agreed_minutes":120, "covered_before":False, "reference":"Permiso no cubierto por adicional"})
     assert commitment.status_code == 200, commitment.text
     recovery = _batch(employee, worked_minutes_net=120, normal_minutes=0, recovery_minutes=120, recovery_allocations=[{"commitment_id":commitment.json()["id"], "minutes":120}])

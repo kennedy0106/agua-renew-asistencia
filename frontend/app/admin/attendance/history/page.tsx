@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
+import { AsyncButton } from "@/components/AsyncButton";
+import { InlineLoading } from "@/components/Loading";
 import { ArrowLeft, Clock, Info } from "@/components/Icons";
 import {
   ApiError,
@@ -802,7 +804,7 @@ export default function HistoricalAttendancePage() {
           </label>
         </div>
         {message && (
-          <div className="form-message"><p role="status">{message}</p>{operationUserId && readHistoricalOperation(operationUserId) && <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void retryPendingOperation()}>Reintentar operación pendiente</button>}</div>
+          <div className="form-message"><p role="status">{message}</p>{busy && <InlineLoading label="Procesando operación…" />}{operationUserId && readHistoricalOperation(operationUserId) && <AsyncButton type="button" className="btn btn-ghost btn-sm" busy={busy} busyLabel="Comprobando el mismo envío…" onClick={() => void retryPendingOperation()}>Reintentar operación pendiente</AsyncButton>}</div>
         )}
         <div className="historical-roster-head">
           <div>
@@ -1116,29 +1118,11 @@ export default function HistoricalAttendancePage() {
           </table>
         </div>
         <div className="page-actions historical-submit-row">
-          <button
-            className="btn btn-outline"
-            disabled={busy}
-            onClick={runPreview}
-          >
-            Previsualizar
-          </button>
+          <AsyncButton type="button" className="btn btn-outline" busy={busy && !preview} busyLabel="Previsualizando…" onClick={runPreview}>Previsualizar</AsyncButton>
           {preview && (
             <>
-              <button
-                className="btn btn-outline"
-                disabled={busy}
-                onClick={() => save(false)}
-              >
-                Guardar horas
-              </button>
-              <button
-                className="btn btn-primary"
-                disabled={busy || !approvable}
-                onClick={() => save(true)}
-              >
-                Guardar y aprobar adicionales
-              </button>
+              <AsyncButton type="button" className="btn btn-outline" busy={busy} busyLabel="Guardando horas…" onClick={() => save(false)}>Guardar horas</AsyncButton>
+              <AsyncButton type="button" busy={busy} busyLabel="Guardando y aprobando…" disabled={!approvable} onClick={() => save(true)}>Guardar y aprobar adicionales</AsyncButton>
             </>
           )}
         </div>

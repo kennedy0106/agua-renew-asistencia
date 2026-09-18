@@ -17,6 +17,7 @@ from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
 from app.modules.attendance.manual_router import router as manual_attendance_router
+from app.modules.attendance.agenda_router import router as attendance_agenda_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.devices.router import router as devices_router
@@ -30,6 +31,7 @@ from app.modules.salary.router import router as salary_router
 from app.modules.schedules.router import router as schedules_router
 from app.modules.system_roles.router import router as system_roles_router
 from app.modules.users.router import router as users_router
+from app.modules.work_calendar.router import router as work_calendar_router
 
 settings = get_settings()
 
@@ -94,6 +96,7 @@ app.include_router(schedules_router)
 app.include_router(salary_router)
 app.include_router(attendance_router)
 app.include_router(manual_attendance_router)
+app.include_router(attendance_agenda_router)
 app.include_router(devices_router)
 app.include_router(audit_router)
 app.include_router(adjustments_router)
@@ -103,3 +106,4 @@ app.include_router(payroll_router)
 app.include_router(users_router)
 app.include_router(system_roles_router)
 app.include_router(exports_router)
+app.include_router(work_calendar_router)

@@ -85,7 +85,9 @@ class AttendanceRepository:
         date_to: date | None = None,
         status: str | None = None,
     ) -> list[AttendanceRecord]:
-        query = select(AttendanceRecord).options(joinedload(AttendanceRecord.employee))
+        query = select(AttendanceRecord).options(
+            joinedload(AttendanceRecord.employee).joinedload(Employee.job_role)
+        )
         if employee_id is not None:
             query = query.where(AttendanceRecord.employee_id == employee_id)
         if date_from is not None:

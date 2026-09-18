@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import AppDialog from "@/components/AppDialog";
+import EmployeeAttendanceWorkspace, { type EmployeeAttendanceWorkspaceHandle } from "@/components/EmployeeAttendanceWorkspace";
+import { DetailSkeleton, Skeleton, Spinner } from "@/components/Loading";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminSession } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -151,6 +153,9 @@ export default function EmployeeDetailPage() {
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [savingAdj, setSavingAdj] = useState(false);
+  const adjustmentOperationKeys = useRef<Record<string, string>>({});
+  const [adjustmentAction, setAdjustmentAction] = useState<string | null>(null);
+  const workspaceRef = useRef<EmployeeAttendanceWorkspaceHandle>(null);
 
   const [detectedDays, setDetectedDays] = useState<OvertimeDetectItem[] | null>(null);
   const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
@@ -216,13 +221,17 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  async function loadAdjustmentsAndBalance() {
+  const loadAdjustmentsAndBalance = useCallback(async () => {
     const [bal, adj] = await Promise.all([
       adjustmentsApi.balance(employeeId),
       adjustmentsApi.list(employeeId),
     ]);
     setBalance(bal);
     setAdjustments(adj);
+  }, [employeeId]);
+
+  async function refreshAdjustmentSurfaces() {
+    await Promise.all([loadAdjustmentsAndBalance(), loadOvertime()]);
   }
 
   const load = useCallback(async () => {
@@ -258,7 +267,7 @@ export default function EmployeeDetailPage() {
         withTimeout(adjustmentsApi.list(employeeId)).then(setAdjustments),
       ];
 
-      if (user && MANAGE_ROLES.includes(user.role)) {
+      if (canManage) {
         tasks.push(
           withTimeout(salaryApi.get(employeeId))
             .then((s) => setSalary(s))
@@ -281,7 +290,7 @@ export default function EmployeeDetailPage() {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
       setLoading(false);
     }
-  }, [employeeId, loadOvertime, user]);
+  }, [canManage, employeeId, loadOvertime]);
 
   useEffect(() => {
     if (!ready) return;
@@ -432,34 +441,54 @@ export default function EmployeeDetailPage() {
   }
 
   async function handleApproveAdjustment(id: string) {
+    if (adjustmentAction) return;
     setError(null);
+    const adjustment = adjustments.find((item) => item.id === id);
+    if (!adjustment?.version || !adjustment.approval_snapshot) {
+      setError("Actualice el historial antes de aprobar; falta la previsualización vigente del ajuste.");
+      return;
+    }
+    const key = adjustmentOperationKeys.current[id] ?? crypto.randomUUID();
+    adjustmentOperationKeys.current[id] = key;
+    setAdjustmentAction(`approve:${id}`);
     try {
-      await adjustmentsApi.approve(id);
+      await adjustmentsApi.approve(id, adjustment.version, adjustment.approval_snapshot, key);
+      delete adjustmentOperationKeys.current[id];
       await loadAdjustmentsAndBalance();
       success("Ajuste aprobado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo aprobar el ajuste");
-    }
+    } finally { setAdjustmentAction(null); }
   }
 
   async function handleRejectAdjustment(id: string) {
+    if (adjustmentAction) return;
     if (rejectReason.trim().length < 3) return;
     setError(null);
+    const adjustment = adjustments.find((item) => item.id === id);
+    if (!adjustment?.version) {
+      setError("Actualice el historial antes de rechazar; falta la versión vigente del ajuste.");
+      return;
+    }
+    const key = adjustmentOperationKeys.current[id] ?? crypto.randomUUID();
+    adjustmentOperationKeys.current[id] = key;
+    setAdjustmentAction(`reject:${id}`);
     try {
-      await adjustmentsApi.reject(id, rejectReason.trim());
+      await adjustmentsApi.reject(id, rejectReason.trim(), adjustment.version, key);
+      delete adjustmentOperationKeys.current[id];
       setRejectingId(null);
       setRejectReason("");
       await loadAdjustmentsAndBalance();
       success("Ajuste rechazado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rechazar el ajuste");
-    }
+    } finally { setAdjustmentAction(null); }
   }
 
   if (!ready || loading) {
     return (
       <AdminShell title="Detalle de empleado">
-        <p className="muted">Cargando…</p>
+        <DetailSkeleton sections={4} />
       </AdminShell>
     );
   }
@@ -491,11 +520,11 @@ export default function EmployeeDetailPage() {
 
       <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.8rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.9rem" }}>
+          <div className="employee-profile-identity" style={{ display: "flex", alignItems: "center", gap: "0.9rem" }}>
             <div className="avatar" style={{ width: 48, height: 48, fontSize: "1.15rem" }}>
               {employee.first_name.charAt(0).toUpperCase()}
             </div>
-            <div>
+            <div className="employee-profile-identity-copy">
               <h1 style={{ fontSize: "1.25rem" }}>
                 {employee.first_name} {employee.last_name}
               </h1>
@@ -541,7 +570,7 @@ export default function EmployeeDetailPage() {
                 style={{ display: "block" }}
               />
             ) : (
-              <span className="muted" style={{ fontSize: "0.72rem" }}>Cargando…</span>
+              <Skeleton width={108} height={108} />
             )}
           </div>
           <div style={{ display: "grid", gap: "0.35rem" }}>
@@ -556,6 +585,7 @@ export default function EmployeeDetailPage() {
                 disabled={downloadingQr}
               >
                 <Download size={14} />
+                {downloadingQr && <Spinner />}
                 {downloadingQr ? "Descargando…" : "PNG 5 × 5 cm"}
               </button>
               <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("svg")} disabled={downloadingQr}>SVG</button>
@@ -568,7 +598,8 @@ export default function EmployeeDetailPage() {
                 disabled={rotatingQr}
                 style={{ width: "fit-content" }}
               >
-                {rotatingQr ? "Rotando…" : "Rotar QR"}
+                {rotatingQr && <Spinner />}
+                {rotatingQr ? "Rotando QR…" : "Rotar QR"}
               </button>
             )}
           </div>
@@ -580,6 +611,8 @@ export default function EmployeeDetailPage() {
           </p>
         )}
       </div>
+
+      {canManage && <EmployeeAttendanceWorkspace ref={workspaceRef} employeeId={employeeId} onAdjustmentMutated={refreshAdjustmentSurfaces} />}
 
       {/* Jornada laboral */}
       <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
@@ -669,7 +702,8 @@ export default function EmployeeDetailPage() {
             </section>
             <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
               <Check size={15} />
-              {saving ? "Guardando…" : "Guardar jornada"}
+              {saving && <Spinner />}
+              {saving ? "Guardando jornada…" : "Guardar jornada"}
             </button>
           </form>
         )}
@@ -846,7 +880,8 @@ export default function EmployeeDetailPage() {
                 disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
               >
                 <Check size={15} />
-                {savingSalary ? "Guardando…" : "Guardar sueldo"}
+                {savingSalary && <Spinner />}
+                {savingSalary ? "Guardando sueldo…" : "Guardar sueldo"}
               </button>
             </form>
           )}
@@ -962,7 +997,8 @@ export default function EmployeeDetailPage() {
                 disabled={detecting}
               >
                 <Zap size={14} />
-                {detecting ? "Consultando…" : "Detectar sobretiempo del mes"}
+                {detecting && <Spinner />}
+                {detecting ? "Consultando sobretiempo…" : "Detectar sobretiempo del mes"}
               </button>
             </div>
 
@@ -1017,7 +1053,7 @@ export default function EmployeeDetailPage() {
           <p className="card-sub">El QR actual dejará de identificar a este empleado. Usa esta acción solo si se perdió o comprometió la credencial.</p>
           <div className="app-dialog-actions">
             <button className="btn btn-outline" type="button" onClick={() => setConfirmQrRotation(false)} disabled={rotatingQr}>Cancelar</button>
-            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr}>{rotatingQr ? "Rotando…" : "Rotar QR"}</button>
+            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr} aria-busy={rotatingQr}>{rotatingQr && <Spinner />}{rotatingQr ? "Rotando QR…" : "Rotar QR"}</button>
           </div>
         </AppDialog>
       )}
@@ -1070,7 +1106,8 @@ export default function EmployeeDetailPage() {
             </div>
             <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={savingAdj || adjForm.reason.trim().length < 3}>
               <Plus size={15} />
-              {savingAdj ? "Guardando…" : "Crear ajuste (pendiente)"}
+              {savingAdj && <Spinner />}
+              {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
             </button>
           </form>
         )}
@@ -1102,11 +1139,17 @@ export default function EmployeeDetailPage() {
                     ) : (
                       <span className="badge badge-amber">Pendiente</span>
                     )}
+                    {canManage && !adj.voided_at && (
+                      <span className="button-row">
+                        <button className="btn btn-outline btn-sm" type="button" onClick={() => workspaceRef.current?.editAdjustment(adj)} disabled={adjustmentAction !== null}>Editar</button>
+                        <button className="btn btn-danger btn-sm" type="button" onClick={() => workspaceRef.current?.voidAdjustment(adj)} disabled={adjustmentAction !== null}>Eliminar</button>
+                      </span>
+                    )}
                     {canManage && adj.status === "PENDING" && (
                       <>
-                        <button className="btn btn-green btn-sm" onClick={() => handleApproveAdjustment(adj.id)}>
-                          <Check size={13} />
-                          Aprobar
+                        <button className="btn btn-green btn-sm" onClick={() => handleApproveAdjustment(adj.id)} disabled={adjustmentAction !== null} aria-busy={adjustmentAction === `approve:${adj.id}`}>
+                          {adjustmentAction === `approve:${adj.id}` ? <Spinner /> : <Check size={13} />}
+                          {adjustmentAction === `approve:${adj.id}` ? "Aprobando…" : "Aprobar"}
                         </button>
                         {rejectingId === adj.id ? (
                           <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
@@ -1118,8 +1161,8 @@ export default function EmployeeDetailPage() {
                               onChange={(e) => setRejectReason(e.target.value)}
                               placeholder="Motivo del rechazo…"
                             />
-                            <button className="btn btn-danger btn-sm" onClick={() => handleRejectAdjustment(adj.id)} disabled={rejectReason.trim().length < 3}>
-                              Confirmar
+                            <button className="btn btn-danger btn-sm" onClick={() => handleRejectAdjustment(adj.id)} disabled={rejectReason.trim().length < 3 || adjustmentAction !== null} aria-busy={adjustmentAction === `reject:${adj.id}`}>
+                              {adjustmentAction === `reject:${adj.id}` && <Spinner />}{adjustmentAction === `reject:${adj.id}` ? "Rechazando…" : "Confirmar"}
                             </button>
                             <button
                               className="btn btn-ghost btn-sm"

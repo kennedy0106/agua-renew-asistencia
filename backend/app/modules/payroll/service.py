@@ -20,6 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.adjustments.models import HourAdjustment
@@ -38,12 +39,20 @@ from app.modules.payroll.models import (
     PERIOD_OPEN,
     RECORD_EXCLUDED,
     RECORD_PREVIEW,
+    PAYROLL_MONTH_MONTHLY_LEGACY,
+    PAYROLL_MONTH_SEMIMONTHLY,
+    PERIOD_FIRST_HALF,
+    PERIOD_MONTHLY,
+    PERIOD_SECOND_HALF,
     PayrollPeriod,
     PayrollRecord,
 )
 from app.modules.payroll.repository import PayrollRepository
 from app.modules.salary.service import SalaryService
 from app.modules.schedules.service import ScheduleService
+from app.modules.work_calendar.models import (
+    SpecialDayValuation, VALUATION_APPROVED, VALUATION_PENDING, VALUATION_REVIEW_REQUIRED,
+)
 from app.core.timezone import lima_tz
 
 _CENTS = Decimal("0.01")
@@ -61,24 +70,83 @@ class PayrollService:
 
     # --- Periodos ---
 
-    def create_period(self, *, name: str, start_date: date, end_date: date) -> PayrollPeriod:
+    def create_period(
+        self, *, name: str | None, start_date: date | None, end_date: date | None,
+        year: int | None = None, month: int | None = None, period_kind: str = PERIOD_MONTHLY,
+    ) -> PayrollPeriod:
+        if period_kind not in (PERIOD_MONTHLY, PERIOD_FIRST_HALF, PERIOD_SECOND_HALF):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Tipo de periodo inválido")
+        if year is not None or month is not None:
+            if year is None or month is None:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Año y mes deben indicarse juntos")
+            last_day = monthrange(year, month)[1]
+            canonical_start, canonical_end = (
+                (date(year, month, 1), date(year, month, last_day)) if period_kind == PERIOD_MONTHLY
+                else (date(year, month, 1), date(year, month, 15)) if period_kind == PERIOD_FIRST_HALF
+                else (date(year, month, 16), date(year, month, last_day))
+            )
+            if (start_date and start_date != canonical_start) or (end_date and end_date != canonical_end):
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Las fechas no corresponden al tipo de periodo")
+            start_date, end_date = canonical_start, canonical_end
+        if start_date is None or end_date is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Indique fechas o año y mes")
         if start_date > end_date:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="start_date no puede ser posterior a end_date",
             )
+        # Preserve the public conflict contract for a range that already
+        # overlaps an existing period, even if the proposed range also spans
+        # months.  Semimonthly creation repeats this check after its monthly
+        # lock to close the concurrent-create race.
         if self.repo.find_overlap(start_date, end_date) is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Ya existe un periodo que se solapa con esas fechas",
             )
+        if start_date.month != end_date.month or start_date.year != end_date.year:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El periodo debe pertenecer a un solo mes")
         last_day = monthrange(start_date.year, start_date.month)[1]
-        if start_date.day != 1 or end_date != date(start_date.year, start_date.month, last_day):
+        if period_kind == PERIOD_MONTHLY and (start_date.day != 1 or end_date != date(start_date.year, start_date.month, last_day)):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="El periodo debe cubrir un mes calendario completo",
             )
-        period = self.repo.create_period(name=name.strip(), start_date=start_date, end_date=end_date)
+        if period_kind != PERIOD_MONTHLY:
+            # A full legacy period and semimonthly periods cannot coexist.
+            legacy = self.db.scalar(select(PayrollPeriod.id).where(
+                PayrollPeriod.start_date == date(start_date.year, start_date.month, 1),
+                PayrollPeriod.end_date == date(start_date.year, start_date.month, last_day),
+                PayrollPeriod.period_kind == PERIOD_MONTHLY,
+            ))
+            if legacy:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El mes ya tiene una liquidación mensual")
+            parent = self.repo.get_month(start_date.year, start_date.month, for_update=True)
+            if parent is None:
+                # The unique monthly root is the concurrency gate for Q1/Q2.
+                # A competing request may win the insert; reload and lock it
+                # instead of leaking a PostgreSQL IntegrityError to the caller.
+                try:
+                    with self.db.begin_nested():
+                        parent = self.repo.create_month(year=start_date.year, month=start_date.month, mode=PAYROLL_MONTH_SEMIMONTHLY)
+                except IntegrityError:
+                    parent = self.repo.get_month(start_date.year, start_date.month, for_update=True)
+                    if parent is None:
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No se pudo obtener el mes de liquidación; reintente")
+            elif parent.mode != PAYROLL_MONTH_SEMIMONTHLY:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El mes está configurado para liquidación mensual")
+            payroll_month_id = parent.id
+        else:
+            payroll_month_id = None
+        # For semimonthly periods this runs after locking the monthly parent,
+        # making two concurrent Q1 (or Q2) creations deterministic.
+        if self.repo.find_overlap(start_date, end_date) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe un periodo que se solapa con esas fechas",
+            )
+        default_name = f"{'Primera' if period_kind == PERIOD_FIRST_HALF else 'Segunda' if period_kind == PERIOD_SECOND_HALF else 'Mensual'} quincena {start_date.strftime('%m/%Y')}" if period_kind != PERIOD_MONTHLY else f"{start_date.strftime('%m/%Y')}"
+        period = self.repo.create_period(name=(name or default_name).strip(), start_date=start_date, end_date=end_date, payroll_month_id=payroll_month_id, period_kind=period_kind)
         self.db.commit()
         self.db.refresh(period)
         return period
@@ -127,11 +195,12 @@ class PayrollService:
                 record.expected_minutes = snapshot["expected_minutes"]
                 record.overtime_minutes = snapshot["overtime_minutes"]
                 record.overtime_amount = snapshot["overtime_amount"]
+                record.special_day_amount = snapshot["special_day_amount"]
                 record.adjustment_minutes = snapshot["adjustment_minutes"]
                 record.adjustment_amount = Decimal("0.00")
                 record.base_salary = snapshot["base_salary"]
                 record.missing_salary_days = snapshot["missing_salary_days"]
-                record.total = (record.base_salary + record.overtime_amount + record.manual_adjustment).quantize(
+                record.total = (record.base_salary + record.overtime_amount + record.special_day_amount + record.manual_adjustment).quantize(
                     _CENTS, rounding=ROUND_HALF_UP
                 )
                 record.status = RECORD_PREVIEW
@@ -159,7 +228,7 @@ class PayrollService:
         overtime = OvertimeService(self.db)
         snapshots: list[dict] = []
         for employee in self._employees_for_period(period):
-            base, reference_salary, missing_salary_days = self._prorated_base(employee, period, salaries)
+            base, reference_salary, missing_salary_days = self._base_for_period(employee, period, salaries)
             if reference_salary is None:
                 continue
             valued_overtime = overtime.value(employee.id, period.start_date, period.end_date)
@@ -168,6 +237,7 @@ class PayrollService:
             manual_additional = self._approved_manual_additional(employee.id, period)
             manual_distribution = self._manual_distribution(employee.id, period)
             incoming_recovery_inputs = self._incoming_recovery_inputs(employee.id, period)
+            special_days = self._approved_special_days(employee.id, period)
             # OvertimeService ya incorpora el importe aprobado de P; aquí solo
             # conservamos su identidad/distribución en el fingerprint.
             snapshots.append(
@@ -178,6 +248,8 @@ class PayrollService:
                     "expected_minutes": self._sum_expected_minutes(schedules, employee, period),
                     "overtime_minutes": overtime_minutes,
                     "overtime_amount": overtime_amount,
+                    "special_day_amount": special_days["amount"],
+                    "special_days": special_days["fingerprint"],
                     "manual_additional": manual_additional["fingerprint"],
                     "manual_distribution": manual_distribution,
                     "incoming_recovery_inputs": incoming_recovery_inputs,
@@ -263,6 +335,20 @@ class PayrollService:
             ],
         }
 
+    def _approved_special_days(self, employee_id: uuid.UUID, period: PayrollPeriod) -> dict:
+        rows = list(self.db.scalars(select(SpecialDayValuation).where(
+            SpecialDayValuation.employee_id == employee_id,
+            SpecialDayValuation.work_date >= period.start_date,
+            SpecialDayValuation.work_date <= period.end_date,
+            SpecialDayValuation.status == VALUATION_APPROVED,
+            SpecialDayValuation.voided_at.is_(None),
+        )))
+        return {"amount": sum((row.amount for row in rows), Decimal("0.00")), "fingerprint": [
+            {"id": str(row.id), "work_date": row.work_date.isoformat(), "source_kind": row.source_kind,
+             "version": row.version, "amount": str(row.amount), "calculation": row.calculation}
+            for row in sorted(rows, key=lambda row: str(row.id))
+        ]}
+
     @staticmethod
     def _fingerprint(snapshots: list[dict]) -> str:
         payload = [
@@ -273,6 +359,8 @@ class PayrollService:
                 "expected_minutes": item["expected_minutes"],
                 "overtime_minutes": item["overtime_minutes"],
                 "overtime_amount": str(item["overtime_amount"]),
+                "special_day_amount": str(item.get("special_day_amount", "0.00")),
+                "special_days": item.get("special_days", []),
                 "manual_additional": item.get("manual_additional", []),
                 "manual_distribution": item.get("manual_distribution", []),
                 "incoming_recovery_inputs": item.get("incoming_recovery_inputs", []),
@@ -319,6 +407,28 @@ class PayrollService:
                 missing_salary_days += 1
             day += timedelta(days=1)
         return total.quantize(_CENTS, rounding=ROUND_HALF_UP), reference, missing_salary_days
+
+    def _base_for_period(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
+        if period.period_kind == PERIOD_MONTHLY:
+            return self._prorated_base(employee, period, salaries)
+        month_start = date(period.start_date.year, period.start_date.month, 1)
+        month_end = date(period.start_date.year, period.start_date.month, monthrange(period.start_date.year, period.start_date.month)[1])
+        # CAL-04 deliberately does not invent allocation for hires, exits or
+        # salary history changes. The monthly legacy calculation remains valid.
+        if (employee.hire_date and employee.hire_date > month_start) or (employee.termination_date and employee.termination_date < month_end):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="BASE_ALLOCATION_REVIEW_REQUIRED")
+        first = salaries.get_for_date(employee.id, month_start)
+        last = salaries.get_for_date(employee.id, month_end)
+        if first is None or last is None or first.id != last.id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="BASE_ALLOCATION_REVIEW_REQUIRED")
+        q1 = (first.monthly_salary / Decimal(2)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        base = q1 if period.period_kind == PERIOD_FIRST_HALF else first.monthly_salary - q1
+        return base.quantize(_CENTS, rounding=ROUND_HALF_UP), first, 0
+
+    @staticmethod
+    def allocate_semimonthly_base(monthly_salary: Decimal) -> tuple[Decimal, Decimal]:
+        first = (monthly_salary / Decimal(2)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        return first, (monthly_salary - first).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
     def _sum_worked_minutes(self, employee_id: uuid.UUID, period: PayrollPeriod) -> int:
         total = self.db.scalar(
@@ -385,6 +495,7 @@ class PayrollService:
         pending = self.db.scalars(
             select(HourAdjustment).where(
                 HourAdjustment.status == "PENDING",
+                HourAdjustment.voided_at.is_(None),
                 HourAdjustment.adjustment_date >= period.start_date,
                 HourAdjustment.adjustment_date <= period.end_date,
             )
@@ -394,6 +505,14 @@ class PayrollService:
         pending_manual = self.db.scalars(select(ManualAttendanceDay).where(ManualAttendanceDay.payment_status == "PENDING", ManualAttendanceDay.work_date >= period.start_date, ManualAttendanceDay.work_date <= period.end_date, ManualAttendanceDay.voided_at.is_(None)))
         for item in pending_manual:
             blockers.append({"code": "PENDING_HISTORICAL_ADDITIONAL", "message": "Hay adicional histórico pendiente de valoración o aprobación", "employee_id": str(item.employee_id)})
+        special_review = self.db.scalars(select(SpecialDayValuation).where(
+            SpecialDayValuation.work_date >= period.start_date, SpecialDayValuation.work_date <= period.end_date,
+            SpecialDayValuation.voided_at.is_(None),
+            SpecialDayValuation.status.in_((VALUATION_PENDING, VALUATION_REVIEW_REQUIRED)),
+        ))
+        for item in special_review:
+            code = "SPECIAL_DAY_OVERTIME_REVIEW_REQUIRED" if item.status == VALUATION_REVIEW_REQUIRED else "PENDING_SPECIAL_DAY_VALUATION"
+            blockers.append({"code": code, "message": "La valoración de descanso o feriado requiere revisión", "employee_id": str(item.employee_id)})
         overtime = OvertimeService(self.db)
         for employee in self._employees_for_period(period):
             valued = overtime.value(employee.id, period.start_date, period.end_date)
@@ -462,8 +581,51 @@ class PayrollService:
             "employee_count": len(records),
             "total_base": sum((r.base_salary for r in records), Decimal("0.00")),
             "total_overtime": sum((r.overtime_amount for r in records), Decimal("0.00")),
+            "total_special_day": sum((r.special_day_amount for r in records), Decimal("0.00")),
             "total_manual": sum((r.manual_adjustment for r in records), Decimal("0.00")),
             "total": sum((r.total for r in records), Decimal("0.00")),
+        }
+
+    def monthly_consolidation(self, year: int, month: int) -> dict:
+        """Read-only monthly view selecting exactly one current version per root.
+
+        It deliberately never creates a payroll month/period.  A rectification
+        replaces its root's older version instead of being counted as a second
+        payment.
+        """
+        if month < 1 or month > 12:
+            raise HTTPException(status_code=422, detail="Mes inválido")
+        last = monthrange(year, month)[1]
+        candidates = list(self.db.scalars(select(PayrollPeriod).where(
+            PayrollPeriod.start_date >= date(year, month, 1),
+            PayrollPeriod.end_date <= date(year, month, last),
+        ).order_by(PayrollPeriod.root_period_id, PayrollPeriod.version.desc())))
+        current: dict[uuid.UUID, PayrollPeriod] = {}
+        for period in candidates:
+            current.setdefault(period.root_period_id, period)
+        periods = sorted(current.values(), key=lambda item: (item.start_date, item.period_kind, item.id.hex))
+        employees: dict[uuid.UUID, dict] = {}
+        for period in periods:
+            for record in self.repo.list_records(period.id, payable_only=True):
+                item = employees.setdefault(record.employee_id, {
+                    "employee_id": record.employee_id,
+                    "employee_name": f"{record.employee.first_name} {record.employee.last_name}" if record.employee else None,
+                    "base_amount": Decimal("0.00"), "overtime_amount": Decimal("0.00"),
+                    "special_day_amount": Decimal("0.00"), "manual_adjustment": Decimal("0.00"),
+                    "total": Decimal("0.00"), "period_ids": [],
+                })
+                item["base_amount"] += record.base_salary
+                item["overtime_amount"] += record.overtime_amount
+                item["special_day_amount"] += record.special_day_amount
+                item["manual_adjustment"] += record.manual_adjustment
+                item["total"] += record.total
+                item["period_ids"].append(period.id)
+        rows = sorted(employees.values(), key=lambda item: str(item["employee_id"]))
+        return {
+            "year": year, "month": month, "periods": [{"id": item.id, "period_kind": item.period_kind,
+                "version": item.version, "status": item.status, "start_date": item.start_date, "end_date": item.end_date} for item in periods],
+            "employees": rows,
+            "total": sum((item["total"] for item in rows), Decimal("0.00")),
         }
 
     def daily_report(self, period_id: uuid.UUID) -> dict:
@@ -506,12 +668,23 @@ class PayrollService:
                 }
                 for item in overtime.value(employee.id, active_from, active_to)["breakdown"]
             }
+            special_by_day = {
+                row.work_date: row.amount
+                for row in self.db.scalars(select(SpecialDayValuation).where(
+                    SpecialDayValuation.employee_id == employee.id,
+                    SpecialDayValuation.work_date >= active_from,
+                    SpecialDayValuation.work_date <= active_to,
+                    SpecialDayValuation.status == VALUATION_APPROVED,
+                    SpecialDayValuation.voided_at.is_(None),
+                ))
+            }
 
             days: list[dict] = []
             day = active_from
             while day <= active_to:
                 expected_minutes = schedules.expected_minutes(employee.id, day)
                 overtime_item = overtime_by_day.get(day, {"minutes": 0, "amount": Decimal("0.00")})
+                special_amount = special_by_day.get(day, Decimal("0.00"))
                 # Recovery is recognized at the permission origin, not at the
                 # later recovery-work date; R remains separate from presence.
                 from app.modules.attendance.totals import recovery_credit_minutes
@@ -521,7 +694,7 @@ class PayrollService:
                 ordinary_minutes = int(attendance.get("ordinary_minutes", worked_minutes)) if attendance else 0
                 recovery_minutes = int(attendance.get("recovery_minutes", 0)) if attendance else 0
                 additional_minutes = int(attendance.get("additional_minutes", 0)) if attendance else 0
-                if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0:
+                if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0 or special_amount > 0:
                     days.append(
                         {
                             "work_date": day,
@@ -532,6 +705,7 @@ class PayrollService:
                             "expected_minutes": expected_minutes,
                             "overtime_minutes": overtime_item["minutes"],
                             "overtime_amount": overtime_item["amount"],
+                            "special_day_amount": special_amount,
                             "approved_adjustment_minutes": approved_minutes,
                             # Estos datos no cambian el snapshot de planilla. Solo
                             # permiten que la vista informativa sepa si la jornada
@@ -544,6 +718,7 @@ class PayrollService:
 
             self._allocate_base_amount(days, record.base_salary)
             self._allocate_overtime_amount(days, record.overtime_amount)
+            self._allocate_special_day_amount(days, record.special_day_amount)
             for item in days:
                 item["approved_adjustment_amount"] = Decimal("0.00")
                 self._set_recognized_amounts(item, today)
@@ -567,6 +742,8 @@ class PayrollService:
                     "recognized_base_amount": sum((item["recognized_base_amount"] for item in days), Decimal("0.00")),
                     "overtime_minutes": sum(item["overtime_minutes"] for item in days),
                     "recognized_overtime_amount": sum((item["recognized_overtime_amount"] for item in days), Decimal("0.00")),
+                    "special_day_amount": sum((item["special_day_amount"] for item in days), Decimal("0.00")),
+                    "recognized_special_day_amount": sum((item["recognized_special_day_amount"] for item in days), Decimal("0.00")),
                     "approved_adjustment_minutes": sum(item["approved_adjustment_minutes"] for item in days),
                     "approved_adjustment_amount": Decimal("0.00"),
                     "recognized_total_amount": recognized_total,
@@ -631,9 +808,10 @@ class PayrollService:
         else:
             recognized_base = Decimal("0.00")
         recognized_overtime = item["overtime_amount"] if can_recognize else Decimal("0.00")
-        recognized_total = (recognized_base + recognized_overtime).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        recognized_special = item.get("special_day_amount", Decimal("0.00")) if can_recognize else Decimal("0.00")
+        recognized_total = (recognized_base + recognized_overtime + recognized_special).quantize(_CENTS, rounding=ROUND_HALF_UP)
         review_difference = (
-            item["base_amount"] + item["overtime_amount"] - recognized_total
+            item["base_amount"] + item["overtime_amount"] + item.get("special_day_amount", Decimal("0.00")) - recognized_total
             if can_recognize
             else Decimal("0.00")
         ).quantize(_CENTS, rounding=ROUND_HALF_UP)
@@ -642,6 +820,7 @@ class PayrollService:
             status=status,
             recognized_base_amount=recognized_base,
             recognized_overtime_amount=recognized_overtime,
+            recognized_special_day_amount=recognized_special,
             recognized_total_amount=recognized_total,
             review_difference_amount=review_difference,
         )
@@ -675,6 +854,7 @@ class PayrollService:
             .where(
                 HourAdjustment.employee_id == employee_id,
                 HourAdjustment.status == "APPROVED",
+                HourAdjustment.voided_at.is_(None),
                 HourAdjustment.adjustment_type != "OVERTIME",
                 HourAdjustment.adjustment_date >= date_from,
                 HourAdjustment.adjustment_date <= date_to,
@@ -729,6 +909,21 @@ class PayrollService:
             item["overtime_amount"] = amount
             allocated += amount
         overtime_days[-1]["overtime_amount"] = (total_overtime - allocated).quantize(_CENTS, rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _allocate_special_day_amount(days: list[dict], total_special: Decimal) -> None:
+        special_days = [item for item in days if item.get("special_day_amount", Decimal("0.00")) > 0]
+        if not special_days:
+            return
+        weights = [item["special_day_amount"] for item in special_days]
+        total_weight = sum(weights, Decimal("0"))
+        allocated = Decimal("0.00")
+        for item in days:
+            item.setdefault("special_day_amount", Decimal("0.00"))
+        for item, weight in zip(special_days[:-1], weights[:-1], strict=True):
+            amount = (total_special * weight / total_weight).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            item["special_day_amount"] = amount; allocated += amount
+        special_days[-1]["special_day_amount"] = (total_special - allocated).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
     # --- Ajuste manual y cierre ---
 

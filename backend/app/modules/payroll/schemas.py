@@ -4,15 +4,20 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.text import require_visible_text
 
 
 class PayrollPeriodCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    start_date: date
-    end_date: date
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    start_date: date | None = None
+    end_date: date | None = None
+    year: int | None = Field(default=None, ge=2000, le=2100)
+    month: int | None = Field(default=None, ge=1, le=12)
+    period_kind: Literal["MONTHLY", "FIRST_HALF", "SECOND_HALF"] = "MONTHLY"
 
 
 class PayrollPeriodOut(BaseModel):
@@ -20,6 +25,8 @@ class PayrollPeriodOut(BaseModel):
     name: str
     start_date: date
     end_date: date
+    payroll_month_id: uuid.UUID | None = None
+    period_kind: str = "MONTHLY"
     status: str
     root_period_id: uuid.UUID
     version: int
@@ -39,6 +46,7 @@ class PayrollRecordOut(BaseModel):
     expected_minutes: int
     overtime_minutes: int
     overtime_amount: Decimal
+    special_day_amount: Decimal = Decimal("0.00")
     adjustment_minutes: int
     adjustment_amount: Decimal
     base_salary: Decimal
@@ -93,7 +101,36 @@ class PayrollSummaryOut(BaseModel):
     employee_count: int
     total_base: Decimal
     total_overtime: Decimal
+    total_special_day: Decimal = Decimal("0.00")
     total_manual: Decimal
+    total: Decimal
+
+
+class PayrollMonthConsolidationPeriodOut(BaseModel):
+    id: uuid.UUID
+    period_kind: str
+    version: int
+    status: str
+    start_date: date
+    end_date: date
+
+
+class PayrollMonthConsolidationEmployeeOut(BaseModel):
+    employee_id: uuid.UUID
+    employee_name: str | None = None
+    base_amount: Decimal
+    overtime_amount: Decimal
+    special_day_amount: Decimal
+    manual_adjustment: Decimal
+    total: Decimal
+    period_ids: list[uuid.UUID]
+
+
+class PayrollMonthConsolidationOut(BaseModel):
+    year: int
+    month: int
+    periods: list[PayrollMonthConsolidationPeriodOut]
+    employees: list[PayrollMonthConsolidationEmployeeOut]
     total: Decimal
 
 
@@ -120,6 +157,8 @@ class PayrollDailyReportItemOut(BaseModel):
     overtime_minutes: int
     overtime_amount: Decimal
     recognized_overtime_amount: Decimal
+    special_day_amount: Decimal = Decimal("0.00")
+    recognized_special_day_amount: Decimal = Decimal("0.00")
     approved_adjustment_minutes: int
     approved_adjustment_amount: Decimal
     recognized_total_amount: Decimal
@@ -136,6 +175,8 @@ class PayrollEmployeeDailySummaryOut(BaseModel):
     recognized_base_amount: Decimal
     overtime_minutes: int
     recognized_overtime_amount: Decimal
+    special_day_amount: Decimal = Decimal("0.00")
+    recognized_special_day_amount: Decimal = Decimal("0.00")
     approved_adjustment_minutes: int
     approved_adjustment_amount: Decimal
     recognized_total_amount: Decimal

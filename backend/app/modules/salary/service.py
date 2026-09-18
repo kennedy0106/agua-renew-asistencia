@@ -9,6 +9,8 @@
 """
 
 import uuid
+from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -37,6 +39,36 @@ class SalaryService:
 
     def get_for_date(self, employee_id: uuid.UUID, day: date) -> SalarySetting | None:
         return self.repo.get_for_date(employee_id, day)
+
+    def get_for_days(
+        self, employee_days: dict[uuid.UUID, Iterable[date]]
+    ) -> dict[tuple[uuid.UUID, date], SalarySetting | None]:
+        """Configuración salarial vigente por empleado/día con una sola consulta."""
+        normalized = {
+            employee_id: sorted(set(days))
+            for employee_id, days in employee_days.items()
+            if days
+        }
+        if not normalized:
+            return {}
+        all_days = [day for days in normalized.values() for day in days]
+        history_by_employee: dict[uuid.UUID, list[SalarySetting]] = defaultdict(list)
+        for setting in self.repo.list_overlapping(normalized.keys(), min(all_days), max(all_days)):
+            history_by_employee[setting.employee_id].append(setting)
+        result: dict[tuple[uuid.UUID, date], SalarySetting | None] = {}
+        for employee_id, days in normalized.items():
+            history = history_by_employee.get(employee_id, [])
+            for day in days:
+                result[(employee_id, day)] = next(
+                    (
+                        item
+                        for item in reversed(history)
+                        if item.effective_from <= day
+                        and (item.effective_to is None or item.effective_to >= day)
+                    ),
+                    None,
+                )
+        return result
 
     def get_for_date_or_404(self, employee_id: uuid.UUID, day: date) -> SalarySetting:
         setting = self.repo.get_for_date(employee_id, day)
@@ -94,6 +126,11 @@ class SalaryService:
             custom_first_two_hours_rate=custom_first_two_hours_rate,
             custom_additional_hours_rate=custom_additional_hours_rate,
         )
+
+        # Importación local para no crear un ciclo de módulos al registrar
+        # modelos. La configuración cambia previews, nunca snapshots cerrados.
+        from app.modules.work_calendar.service import WorkCalendarService
+        WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
 
         AuditRepository(self.db).create(
             entity_type="salary",

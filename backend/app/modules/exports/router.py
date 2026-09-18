@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.payroll.repository import PayrollRepository
+from app.modules.payroll.service import PayrollService
 from app.modules.schedules.service import ScheduleService
 
 router = APIRouter(prefix="/api/v1/exports", tags=["exports"])
@@ -153,6 +154,7 @@ def export_salaries(
             "Total (S/)",
             "Estado",
             "Versión del cálculo",
+            "Descanso/Feriado (S/)",
         ]
     ]
     payable_total = Decimal("0.00")
@@ -178,27 +180,41 @@ def export_salaries(
                 f"{record.total:.2f}",
                 estado,
                 period.version,
+                f"{record.special_day_amount:.2f}",
             ]
         )
     rows.append(
         [
             period.name,
             "TOTAL PAGABLE",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
+            "", "", "", "", "", "", "", "", "", "",
             f"{payable_total:.2f}",
             "TOTAL",
             period.version,
+            "",
         ]
     )
     safe_name = "".join(c for c in period.name if c.isalnum() or c in "-_ ").strip().replace(" ", "_")
     filename = f"sueldos_{safe_name}_historial.csv" if include_excluded else f"sueldos_{safe_name}.csv"
     return _csv_response(rows, filename)
+
+
+@router.get("/salaries-month.csv")
+def export_monthly_consolidation(
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_admin_or_boss),
+) -> Response:
+    """CSV of the same current-root view returned by payroll consolidation."""
+    consolidation = PayrollService(db).monthly_consolidation(year, month)
+    rows = [["Año", "Mes", "Empleado", "Básico (S/)", "HE (S/)", "Descanso/Feriado (S/)", "Ajuste manual (S/)", "Total (S/)", "Periodos vigentes"]]
+    for item in consolidation["employees"]:
+        rows.append([
+            year, month, item["employee_name"] or str(item["employee_id"]),
+            f"{item['base_amount']:.2f}", f"{item['overtime_amount']:.2f}",
+            f"{item['special_day_amount']:.2f}", f"{item['manual_adjustment']:.2f}",
+            f"{item['total']:.2f}", ",".join(str(period_id) for period_id in item["period_ids"]),
+        ])
+    rows.append([year, month, "TOTAL", "", "", "", "", f"{consolidation['total']:.2f}", ""])
+    return _csv_response(rows, f"consolidado_{year}_{month:02d}.csv")

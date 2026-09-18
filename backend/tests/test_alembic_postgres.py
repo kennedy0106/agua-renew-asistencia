@@ -5,12 +5,14 @@ En CI el workflow inyecta Postgres y corre este archivo.
 """
 
 import os
+import threading
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from app.core.test_db import assert_disposable_postgres_url
 
@@ -56,8 +58,10 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     columns = {col["name"] for col in inspector.get_columns("payroll_records")}
     assert "missing_salary_days" in columns
     assert "payable" in columns
+    assert "special_day_amount" in columns
     period_cols = {col["name"] for col in inspector.get_columns("payroll_periods")}
     assert "inputs_fingerprint" in period_cols
+    assert {"payroll_month_id", "period_kind"} <= period_cols
     assert "attendance_evidence" in tables
     assert "attendance_consumed_nonces" in tables
     device_cols = {col["name"] for col in inspector.get_columns("attendance_devices")}
@@ -72,6 +76,14 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     assert "device_id" in nonce_cols
     assert "attendance_attempt_resolutions" in tables
     assert "manual_attendance_days" in tables
+    assert {"employee_weekly_rest_rules", "rest_substitutions", "special_day_valuations", "special_day_valuation_components", "holiday_calendar_days", "payroll_months"} <= tables
+    substitution_cols = {col["name"] for col in inspector.get_columns("rest_substitutions")}
+    assert "origin_kind" in substitution_cols
+    calendar_receipt_cols = {col["name"] for col in inspector.get_columns("work_calendar_operation_receipts")}
+    assert "target_entity_id" in calendar_receipt_cols
+    assert "adjustment_operation_receipts" in tables
+    adjustment_cols = {col["name"] for col in inspector.get_columns("hour_adjustments")}
+    assert {"version", "supersedes_id", "voided_at", "voided_by", "void_reason", "approval_snapshot_data"} <= adjustment_cols
     assert "recovery_commitments" in tables
     commitment_constraints = {item["name"] for item in inspector.get_unique_constraints("recovery_commitments")}
     assert "uq_recovery_commitment_employee_permission" in commitment_constraints
@@ -81,6 +93,56 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
         col for col in inspector.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
     )
     assert getattr(reason_col["type"], "length", None) == 500
+
+
+def test_payroll_month_concurrent_q1_returns_domain_conflict(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CAL-04/T30: PostgreSQL serializes two simultaneous Q1 creations.
+
+    The losing transaction reloads the monthly parent after its unique-key
+    race and reports the existing overlapping period, never an IntegrityError.
+    """
+    from app.core.config import get_settings
+    from app.modules.payroll.models import PERIOD_FIRST_HALF
+    from app.modules.payroll.service import PayrollService
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    command.upgrade(Config("alembic.ini"), "head")
+
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+    guard = threading.Lock()
+
+    def create_q1() -> None:
+        session = factory()
+        try:
+            barrier.wait(timeout=10)
+            period = PayrollService(session).create_period(
+                name=None, start_date=None, end_date=None, year=2026, month=8,
+                period_kind=PERIOD_FIRST_HALF,
+            )
+            outcome: object = ("CREATED", period.id)
+        except HTTPException as exc:
+            outcome = ("HTTP", exc.status_code, exc.detail)
+        finally:
+            session.rollback()
+            session.close()
+        with guard:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=create_q1), threading.Thread(target=create_q1)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads)
+    assert sum(1 for result in outcomes if result[0] == "CREATED") == 1
+    assert sum(1 for result in outcomes if result[0] == "HTTP" and result[1] == 409) == 1
 
 
 def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:

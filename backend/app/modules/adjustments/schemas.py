@@ -23,6 +23,8 @@ class AdjustmentCreate(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
     @field_validator("reason")
     @classmethod
@@ -41,8 +43,45 @@ class AdjustmentOut(BaseModel):
     approved_by: uuid.UUID | None
     approved_by_username: str | None
     approved_at: datetime | None
+    version: int = 1
+    supersedes_id: uuid.UUID | None = None
+    voided_at: datetime | None = None
+    voided_by: uuid.UUID | None = None
+    void_reason: str | None = None
+    approval_snapshot: dict | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class AdjustmentUpdate(BaseModel):
+    adjustment_date: date
+    minutes: int = Field(ge=-1440, le=1440)
+    adjustment_type: Literal["PERMISO", "RECUPERACION", "OTRO", "OVERTIME"]
+    reason: str = Field(min_length=3, max_length=500)
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
+
+
+class AdjustmentVoid(BaseModel):
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
+
+
+class AdjustmentApprove(BaseModel):
+    expected_version: int = Field(ge=1)
+    expected_snapshot: dict
+    idempotency_key: str = Field(min_length=8, max_length=128)
 
 
 class BalanceOut(BaseModel):

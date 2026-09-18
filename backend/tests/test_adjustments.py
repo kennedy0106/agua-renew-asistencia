@@ -37,6 +37,21 @@ def _adjustment_payload(**overrides):
     return payload
 
 
+def _approve(client, adjustment: dict):
+    return client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"],
+        "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"approve-{adjustment['id']}",
+    })
+
+
+def _reject(client, adjustment: dict, reason: str = "No corresponde"):
+    return client.patch(f"/api/v1/adjustments/{adjustment['id']}/reject", json={
+        "reason": reason, "expected_version": adjustment["version"],
+        "idempotency_key": f"reject-{adjustment['id']}",
+    })
+
+
 # --- Permisos de creación ---
 
 def test_crear_ajuste_como_admin(client, db_session):
@@ -111,7 +126,7 @@ def test_aprobar_como_boss(client, db_session):
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     adj = client.post(f"/api/v1/employees/{emp}/adjustments", json=_adjustment_payload()).json()
 
-    response = client.patch(f"/api/v1/adjustments/{adj['id']}/approve")
+    response = _approve(client, adj)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "APPROVED"
@@ -122,17 +137,15 @@ def test_aprobar_dos_veces_conflict(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     adj = client.post(f"/api/v1/employees/{emp}/adjustments", json=_adjustment_payload()).json()
-    assert client.patch(f"/api/v1/adjustments/{adj['id']}/approve").status_code == 200
-    assert client.patch(f"/api/v1/adjustments/{adj['id']}/approve").status_code == 409
+    assert _approve(client, adj).status_code == 200
+    assert _approve(client, adj).status_code == 200  # recibo idempotente
 
 
 def test_rechazar_con_motivo(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     adj = client.post(f"/api/v1/employees/{emp}/adjustments", json=_adjustment_payload()).json()
-    response = client.patch(
-        f"/api/v1/adjustments/{adj['id']}/reject", json={"reason": "No corresponde"}
-    )
+    response = _reject(client, adj)
     assert response.status_code == 200
     assert response.json()["status"] == "REJECTED"
 
@@ -149,12 +162,12 @@ def test_aprobar_como_supervisor_forbidden(client, db_session):
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     adj = client.post(f"/api/v1/employees/{emp}/adjustments", json=_adjustment_payload()).json()
     _login(client, "supervisor", "Sup123!")
-    assert client.patch(f"/api/v1/adjustments/{adj['id']}/approve").status_code == 403
+    assert _approve(client, adj).status_code == 403
 
 
 def test_aprobar_inexistente_404(client):
     _login(client, "admin", "Admin123!")
-    assert client.patch(f"/api/v1/adjustments/{uuid.uuid4()}/approve").status_code == 404
+    assert client.patch(f"/api/v1/adjustments/{uuid.uuid4()}/approve", json={"expected_version": 1, "expected_snapshot": {}, "idempotency_key": "approve-unknown-001"}).status_code == 404
 
 
 # --- Listado ---
@@ -214,7 +227,7 @@ def test_balance_incluye_solo_ajustes_aprobados(client, db_session):
         f"/api/v1/employees/{emp}/adjustments",
         json=_adjustment_payload(adjustment_date="2026-08-24", minutes=120),
     ).json()
-    client.patch(f"/api/v1/adjustments/{approved['id']}/approve")
+    client.patch(f"/api/v1/adjustments/{approved['id']}/approve", json={"expected_version": approved["version"], "expected_snapshot": approved["approval_snapshot"], "idempotency_key": "approve-balance-001"})
 
     balance = client.get(f"/api/v1/employees/{emp}/balance?date_from=2026-08-01&date_to=2026-08-31").json()
     # El PENDING (+200) NO cuenta; solo el aprobado (+120).
@@ -237,8 +250,8 @@ def test_balance_no_duplica_overtime(client, db_session):
         f"/api/v1/employees/{emp}/adjustments",
         json=_adjustment_payload(adjustment_date="2026-08-24", minutes=30, reason="Recuperación"),
     ).json()
-    client.patch(f"/api/v1/adjustments/{overtime['id']}/approve")
-    client.patch(f"/api/v1/adjustments/{recuperacion['id']}/approve")
+    _approve(client, overtime)
+    _approve(client, recuperacion)
 
     balance = client.get(f"/api/v1/employees/{emp}/balance?date_from=2026-08-01&date_to=2026-08-31").json()
     assert balance["overtime_minutes"] == 60
@@ -258,7 +271,7 @@ def test_overtime_unico_por_empleado_y_jornada_hasta_rechazo(client, db_session)
     duplicate_pending = client.post(f"/api/v1/employees/{emp}/adjustments", json=payload)
     assert duplicate_pending.status_code == 409
 
-    assert client.patch(f"/api/v1/adjustments/{first.json()['id']}/approve").status_code == 200
+    assert _approve(client, first.json()).status_code == 200
     duplicate_approved = client.post(f"/api/v1/employees/{emp}/adjustments", json=payload)
     assert duplicate_approved.status_code == 409
 
@@ -268,10 +281,7 @@ def test_overtime_unico_por_empleado_y_jornada_hasta_rechazo(client, db_session)
         json={**payload, "adjustment_date": "2026-08-24"},
     )
     assert other_day.status_code == 201
-    assert client.patch(
-        f"/api/v1/adjustments/{other_day.json()['id']}/reject",
-        json={"reason": "El sobretiempo fue corregido"},
-    ).status_code == 200
+    assert _reject(client, other_day.json(), "El sobretiempo fue corregido").status_code == 200
     replacement = client.post(
         f"/api/v1/employees/{emp}/adjustments",
         json={**payload, "adjustment_date": "2026-08-24", "minutes": 90},
@@ -292,7 +302,7 @@ def test_auditoria_de_aprobacion_y_rechazo(client, db_session):
     _login(client, "boss", "Boss123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     adj = client.post(f"/api/v1/employees/{emp}/adjustments", json=_adjustment_payload()).json()
-    client.patch(f"/api/v1/adjustments/{adj['id']}/approve")
+    _approve(client, adj)
 
     _login(client, "admin", "Admin123!")
     logs = client.get("/api/v1/audit-logs").json()
