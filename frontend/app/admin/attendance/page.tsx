@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
-import AppDialog from "@/components/AppDialog";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -500,7 +500,7 @@ export default function AdminAttendancePage() {
 
       {photosFor && (
         <AppDialog labelledBy="evidence-dialog-title" onClose={() => setPhotosFor(null)} className="evidence-dialog">
-          <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><button type="button" className="btn btn-ghost btn-sm" onClick={() => setPhotosFor(null)} aria-label="Cerrar evidencia"><X size={15} /></button></div>
+          <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" aria-label="Cerrar evidencia"><X size={15} /></AppDialogCloseButton></div>
           <div className="evidence-grid">
             <EvidenceImage label="Foto de entrada" src={photoUrls.check_in} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
             <EvidenceImage label="Foto de salida" src={photoUrls.check_out} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
@@ -510,7 +510,7 @@ export default function AdminAttendancePage() {
       )}
 
       {correcting && canManage && (
-        <AppDialog labelledBy="correction-dialog-title" describedBy="correction-dialog-description" onClose={closeCorrectionDialog} className="correction-dialog">
+        <AppDialog labelledBy="correction-dialog-title" describedBy="correction-dialog-description" onClose={closeCorrectionDialog} dismissible={!savingCorrection} className="correction-dialog">
           <form onSubmit={handleSaveCorrection} aria-busy={savingCorrection} className="correction-form">
             <div className="app-dialog-heading">
               <div>
@@ -519,9 +519,9 @@ export default function AdminAttendancePage() {
                   {correcting.employee_name ?? "Registro seleccionado"} · {formatOperationalDate(correcting.work_date)}. Actualice las marcaciones y deje el motivo para el historial del equipo.
                 </p>
               </div>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={closeCorrectionDialog} disabled={savingCorrection} aria-label="Cerrar corrección">
+              <AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={savingCorrection} aria-label="Cerrar corrección">
                 <X size={15} />
-              </button>
+              </AppDialogCloseButton>
             </div>
             {correctionError && <p className="alert alert-error" role="alert" aria-live="assertive">{correctionError}</p>}
             <div className="correction-fields">
@@ -573,7 +573,7 @@ export default function AdminAttendancePage() {
               </div>
             </div>
             <div className="app-dialog-actions">
-              <button type="button" className="btn btn-ghost" onClick={closeCorrectionDialog} disabled={savingCorrection}>Cancelar</button>
+              <AppDialogCloseButton className="btn btn-ghost" disabled={savingCorrection}>Cancelar</AppDialogCloseButton>
               <button type="submit" className="btn btn-amber" disabled={savingCorrection || corrReason.trim().length < 3}>
                 <Pencil size={15} />
                 {savingCorrection && <Spinner />}
@@ -641,7 +641,7 @@ export default function AdminAttendancePage() {
       <TablePagination {...dailyPagination} />
 
       {adjustingBreak && (
-        <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog}>
+        <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog} dismissible={!savingBreak}>
           <form onSubmit={saveBreak}>
           <h2 id="break-dialog-title">Ajustar refrigerio</h2>
           <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {formatOperationalDate(adjustingBreak.work_date)}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
@@ -652,7 +652,7 @@ export default function AdminAttendancePage() {
           <label className="label" htmlFor="daily-break-reason">Motivo</label>
           <input id="daily-break-reason" className="input" minLength={3} maxLength={500} value={breakReason} onChange={(event) => setBreakReason(event.target.value)} placeholder="Ej.: mayor demanda" required />
           <div className="app-dialog-actions">
-            <button type="button" className="btn btn-ghost" onClick={closeBreakDialog} disabled={savingBreak}>Cancelar</button>
+            <AppDialogCloseButton className="btn btn-ghost" disabled={savingBreak}>Cancelar</AppDialogCloseButton>
             {adjustingBreak.break_source === "OVERRIDE" && <button type="button" className="btn btn-outline" disabled={savingBreak || breakReason.trim().length < 3} onClick={() => void resetBreakToAutomatic()}>Volver al cálculo automático</button>}
             <button type="submit" className="btn btn-primary" disabled={savingBreak || breakReason.trim().length < 3} aria-busy={savingBreak}>{savingBreak && <Spinner />}{savingBreak ? "Guardando refrigerio…" : "Guardar refrigerio"}</button>
           </div>

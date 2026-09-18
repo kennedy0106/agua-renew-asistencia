@@ -1516,8 +1516,14 @@ textarea {
 }
 .datefield-panel.is-end-aligned { right: 0; left: auto; }
 
-.dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 1rem; background: rgba(21, 67, 153, 0.28); }
-.app-dialog { width: min(100%, 31rem); display: grid; gap: 0.8rem; padding: 1.25rem; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: #fff; box-shadow: var(--shadow-panel); }
+.dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 1rem; background: rgba(21, 67, 153, 0.28); opacity: 1; transition: opacity 220ms var(--ease-water); }
+.app-dialog { width: min(100%, 31rem); display: grid; gap: 0.8rem; padding: 1.25rem; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: #fff; box-shadow: var(--shadow-panel); opacity: 1; transform: translateY(0) scale(1); transform-origin: center; transition: opacity 220ms var(--ease-water), transform 220ms var(--ease-water); will-change: opacity, transform; }
+.dialog-backdrop[data-motion-state="entering"],
+.dialog-backdrop[data-motion-state="exiting"] { opacity: 0; }
+.dialog-backdrop[data-motion-state="entering"] .app-dialog,
+.dialog-backdrop[data-motion-state="exiting"] .app-dialog { opacity: 0; transform: translateY(0.35rem) scale(0.965); }
+.dialog-backdrop[data-motion-state="exiting"] { pointer-events: none; transition-duration: 170ms; }
+.dialog-backdrop[data-motion-state="exiting"] .app-dialog { transition-duration: 170ms; }
 .app-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.65rem; }
 .app-dialog-actions .btn { min-height: 2.75rem; }
 .correction-dialog { width: min(100%, 42rem); }
@@ -3910,6 +3916,8 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
   *, *::before, *::after { scroll-behavior: auto !important; }
   .btn, .nav-link, .stat-card, .card, .operation-row, .activity-row, .table tbody tr, .kiosk-card { transition-duration: 120ms !important; animation: none !important; transform: none !important; }
   .kiosk-countdown { animation: none !important; }
+  .dialog-backdrop { transition: opacity 120ms ease !important; }
+  .dialog-backdrop .app-dialog { transform: none !important; transition: opacity 120ms ease !important; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -4239,7 +4247,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 
 .dashboard-progress { grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; align-self: end; }
 .dashboard-progress-track { flex: 1; height: 0.5rem; overflow: hidden; border-radius: 2px; background: rgba(21, 67, 153, 0.1); }
-.dashboard-progress-track span { display: block; height: 100%; min-width: 0.55rem; border-radius: inherit; background: linear-gradient(90deg, #00a047, #20c98a); box-shadow: 0 2px 9px -4px rgba(0, 160, 71, 0.78); transition: width 500ms var(--ease-water); }
+.dashboard-progress-track span { display: block; height: 100%; min-width: 0.55rem; border-radius: inherit; background: linear-gradient(90deg, #00a047, #20c98a); box-shadow: 0 2px 9px -4px rgba(0, 160, 71, 0.78); transition: width 280ms var(--ease-water); }
 .dashboard-command-link { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--brand-blue); font-size: 0.76rem; font-weight: 740; white-space: nowrap; }
 .dashboard-command-link:hover { color: var(--brand-ink); }
 

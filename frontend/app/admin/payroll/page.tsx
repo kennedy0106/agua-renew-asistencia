@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
-import AppDialog from "@/components/AppDialog";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -370,7 +370,6 @@ export default function AdminPayrollPage() {
               {period.status === "CLOSED" && (
                 <button className="btn btn-outline btn-sm" onClick={(event) => { rectificationTriggerRef.current = event.currentTarget; setRectifyingId(period.id); setRectificationReason(""); setRectificationError(null); }} disabled={busy}>
                   {actionKey === `rectify:${period.id}` && <Spinner />}
-                  {actionKey === `rectify:${period.id}` && <Spinner />}
                   {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
                 </button>
               )}
@@ -380,7 +379,7 @@ export default function AdminPayrollPage() {
       </div>
 
       {rectifyingId && (
-        <AppDialog labelledBy="rectification-title" onClose={closeRectification}>
+        <AppDialog labelledBy="rectification-title" onClose={closeRectification} dismissible={!busy}>
           <form onSubmit={(event) => { event.preventDefault(); void handleRectification(rectifyingId); }}>
             <h2 id="rectification-title" className="card-title">Rectificar periodo cerrado</h2>
             <p className="card-sub">Indica el motivo. Se conservará el historial y se abrirá una nueva versión.</p>
@@ -388,7 +387,7 @@ export default function AdminPayrollPage() {
             <textarea id="rectification-reason" data-autofocus ref={rectificationInputRef} className="input" value={rectificationReason} onChange={(event) => setRectificationReason(event.target.value)} minLength={3} required rows={3} />
             {rectificationError && <p className="alert alert-error" role="alert">{rectificationError}</p>}
             <div className="app-dialog-actions">
-              <button className="btn btn-outline" type="button" onClick={closeRectification} disabled={busy}>Cancelar</button>
+              <AppDialogCloseButton className="btn btn-outline" disabled={busy}>Cancelar</AppDialogCloseButton>
               <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3} aria-busy={busy}>{busy && <Spinner />}{busy ? "Creando rectificación…" : "Crear rectificación"}</button>
             </div>
           </form>

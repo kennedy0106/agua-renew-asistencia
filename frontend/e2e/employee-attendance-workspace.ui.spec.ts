@@ -117,10 +117,27 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
   await page.goto("/admin/employees/employee-1");
   for (const [button, dialog] of [["Nueva jornada", "Nueva jornada laboral"], ["Configurar sueldo", "Configurar sueldo"], ["Nuevo ajuste", "Nuevo ajuste"], ["Gestionar descansos y feriados", "Descansos y feriados"]] as const) {
     await page.getByRole("button", { name: button }).click();
-    await expect(page.getByRole("dialog", { name: dialog })).toBeVisible();
+    const modal = page.getByRole("dialog", { name: dialog });
+    await expect(modal).toBeVisible();
+    await expect(modal.locator("..")).toHaveAttribute("data-motion-state", "open");
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: dialog })).toBeHidden();
+    await expect(modal.locator("..")).toHaveAttribute("data-motion-state", "exiting");
+    await expect(modal).toBeHidden();
   }
+
+  await page.getByRole("button", { name: "Nuevo ajuste" }).click();
+  const adjustmentDialog = page.getByRole("dialog", { name: "Nuevo ajuste" });
+  await adjustmentDialog.getByRole("button", { name: "Cancelar" }).click();
+  await expect(adjustmentDialog.locator("..")).toHaveAttribute("data-motion-state", "exiting");
+  await expect(adjustmentDialog).toBeHidden();
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "Nuevo ajuste" }).click();
+  const reducedDialog = page.getByRole("dialog", { name: "Nuevo ajuste" });
+  await expect(reducedDialog).toBeVisible();
+  await expect.poll(() => reducedDialog.evaluate((element) => getComputedStyle(element).transform)).toBe("none");
+  await page.keyboard.press("Escape");
+  await expect(reducedDialog).toBeHidden();
 });
 
 test("agenda no genera desborde horizontal en móvil", async ({ page }) => {

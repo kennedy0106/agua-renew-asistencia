@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
-import AppDialog from "@/components/AppDialog";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import EmployeeAttendanceWorkspace, { type EmployeeAttendanceWorkspaceHandle } from "@/components/EmployeeAttendanceWorkspace";
 import { DetailSkeleton, Skeleton, Spinner } from "@/components/Loading";
 import { useNotifications } from "@/components/Notifications";
@@ -636,9 +636,9 @@ export default function EmployeeDetailPage() {
           )}
         </div>
 
-        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={() => !saving && setShowForm(false)} className="employee-profile-dialog employee-profile-dialog--wide">
+        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={() => setShowForm(false)} dismissible={!saving} className="employee-profile-dialog employee-profile-dialog--wide">
           <form onSubmit={handleSaveSchedule} className="schedule-form">
-            <div className="app-dialog-heading"><div><h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2><p className="card-sub">El cambio preserva el historial de la jornada anterior.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowForm(false)} disabled={saving}>Cerrar</button></div>
+            <div className="app-dialog-heading"><div><h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2><p className="card-sub">El cambio preserva el historial de la jornada anterior.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={saving}>Cerrar</AppDialogCloseButton></div>
             <section className="schedule-form-section">
               <div>
                 <label className="label">Vigente desde</label>
@@ -693,7 +693,7 @@ export default function EmployeeDetailPage() {
               </div>
               </div>
             </section>
-            <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowForm(false)} disabled={saving}>Cancelar</button><button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
+            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={saving}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
               <Check size={15} />
               {saving && <Spinner />}
               {saving ? "Guardando jornada…" : "Guardar jornada"}
@@ -774,9 +774,9 @@ export default function EmployeeDetailPage() {
             </button>
           </div>
 
-          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={() => !savingSalary && setShowSalaryForm(false)} className="employee-profile-dialog">
+          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={() => setShowSalaryForm(false)} dismissible={!savingSalary} className="employee-profile-dialog">
             <form onSubmit={handleSaveSalary} className="schedule-form">
-              <div className="app-dialog-heading"><div><h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2><p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowSalaryForm(false)} disabled={savingSalary}>Cerrar</button></div>
+              <div className="app-dialog-heading"><div><h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2><p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={savingSalary}>Cerrar</AppDialogCloseButton></div>
               <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
                 <div>
                   <label className="label">Vigente desde</label>
@@ -859,7 +859,7 @@ export default function EmployeeDetailPage() {
                   </>
                 )}
               </div>
-              <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowSalaryForm(false)} disabled={savingSalary}>Cancelar</button><button
+              <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingSalary}>Cancelar</AppDialogCloseButton><button
                 type="submit"
                 className="btn btn-primary"
                 disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
@@ -1025,19 +1025,19 @@ export default function EmployeeDetailPage() {
       )}
 
       {confirmQrRotation && (
-        <AppDialog labelledBy="rotate-qr-title" onClose={() => !rotatingQr && setConfirmQrRotation(false)}>
+        <AppDialog labelledBy="rotate-qr-title" onClose={() => setConfirmQrRotation(false)} dismissible={!rotatingQr}>
           <h2 id="rotate-qr-title" className="card-title">¿Rotar el código QR?</h2>
           <p className="card-sub">El QR actual dejará de identificar a este empleado. Usa esta acción solo si se perdió o comprometió la credencial.</p>
           <div className="app-dialog-actions">
-            <button className="btn btn-outline" type="button" onClick={() => setConfirmQrRotation(false)} disabled={rotatingQr}>Cancelar</button>
+            <AppDialogCloseButton className="btn btn-outline" disabled={rotatingQr}>Cancelar</AppDialogCloseButton>
             <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr} aria-busy={rotatingQr}>{rotatingQr && <Spinner />}{rotatingQr ? "Rotando QR…" : "Rotar QR"}</button>
           </div>
         </AppDialog>
       )}
 
-        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={() => !savingAdj && setShowAdjForm(false)} className="employee-profile-dialog">
+        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={() => setShowAdjForm(false)} dismissible={!savingAdj} className="employee-profile-dialog">
           <form onSubmit={handleCreateAdjustment} className="schedule-form">
-            <div className="app-dialog-heading"><div><h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2><p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p></div><button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowAdjForm(false)} disabled={savingAdj}>Cerrar</button></div>
+            <div className="app-dialog-heading"><div><h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2><p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={savingAdj}>Cerrar</AppDialogCloseButton></div>
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
                 <label className="label">Fecha</label>
@@ -1082,7 +1082,7 @@ export default function EmployeeDetailPage() {
                 />
               </div>
             </div>
-            <div className="app-dialog-actions"><button className="btn btn-ghost" type="button" onClick={() => setShowAdjForm(false)} disabled={savingAdj}>Cancelar</button><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3}>
+            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingAdj}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3}>
               <Plus size={15} />
               {savingAdj && <Spinner />}
               {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
