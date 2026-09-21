@@ -35,8 +35,26 @@ const statusCopy: Record<string, string> = {
   MANUAL: "Administrativa", PERMISSION: "Permiso", RECOVERY: "Recuperación",
   OVERTIME_PENDING: "Adicional pendiente", OVERTIME_APPROVED: "Adicional aprobado",
   FUTURE: "Fecha futura", OUTSIDE_EMPLOYMENT: "Fuera del contrato",
-  WEEKLY_REST: "Descanso semanal", HOLIDAY: "Feriado", SPECIAL_DAY_PENDING: "Valoración especial pendiente",
-  SPECIAL_DAY_APPROVED: "Valoración especial aprobada",
+  WEEKLY_REST: "Descanso semanal", HOLIDAY: "Feriado", SPECIAL_DAY_PENDING: "Pago pendiente de confirmación",
+  SPECIAL_DAY_APPROVED: "Pago confirmado para planilla",
+};
+
+const adjustmentTypeCopy: Record<string, string> = {
+  PERMISO: "Permiso", RECUPERACION: "Recuperación", OVERTIME: "Horas extra", OTRO: "Otro ajuste",
+};
+const specialSourceCopy: Record<string, string> = {
+  WEEKLY_REST: "descanso semanal trabajado", HOLIDAY: "feriado trabajado", MAY_DAY_COINCIDENCE: "primero de mayo",
+};
+const specialStatusCopy: Record<string, string> = {
+  PENDING: "Pendiente de confirmación", APPROVED: "Confirmado para planilla", REVIEW_REQUIRED: "Requiere revisión", VOIDED: "Anulado",
+};
+const substitutionStatusCopy: Record<string, string> = {
+  PROPOSED: "Pendiente de aprobación", APPROVED: "Aprobado", ENJOYED: "Descanso confirmado", CANCELLED: "Cancelado", INVALIDATED: "Requiere revisión",
+};
+const valuationComponentCopy: Record<string, string> = {
+  WEEKLY_REST_WORK: "Trabajo realizado", WEEKLY_REST_SURCHARGE: "Pago adicional por descanso",
+  HOLIDAY_WORK: "Trabajo realizado", HOLIDAY_SURCHARGE: "Pago adicional por feriado",
+  MAY_DAY_BASE: "Pago del primero de mayo", MAY_DAY_WORK: "Trabajo realizado", MAY_DAY_SURCHARGE: "Pago adicional",
 };
 
 function isoToday() {
@@ -72,12 +90,27 @@ function money(value: string | number | null | undefined) {
   return `S/ ${Number(value).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("es-PE", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Lima" }).format(new Date(value));
+}
+
 function toLimaIso(date: string, time: string) {
   return time ? `${date}T${time}:00-05:00` : null;
 }
 
 function friendlyError(error: unknown, fallback: string) {
   return error instanceof ApiError ? error.message : fallback;
+}
+
+function previewIssue(message?: string | null, code?: string | null) {
+  if (message && !/^[A-Z0-9_]+$/.test(message)) return message;
+  const copy: Record<string, string> = {
+    MANUAL_DAY_EXISTS: "Ya existe una carga para esta fecha. Puede editarla desde el detalle del día.",
+    ATTENDANCE_EXISTS: "Esta fecha ya tiene marcaciones. Revise el detalle antes de continuar.",
+    CLOSED_PERIOD: "La planilla de esta fecha está cerrada y requiere una corrección autorizada.",
+    RECOVERY_COMMITMENT_REQUIRED: "Seleccione el permiso que estas horas recuperan.",
+  };
+  return copy[code ?? message ?? ""] ?? "Esta fecha necesita revisión antes de guardarse.";
 }
 
 export type EmployeeAttendanceWorkspaceHandle = {
@@ -152,12 +185,28 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
   const [substitutionStart, setSubstitutionStart] = useState("");
   const [substitutionEnd, setSubstitutionEnd] = useState("");
   const [valuation, setValuation] = useState<SpecialDayValuation | null>(null);
+  const [showSubstitution, setShowSubstitution] = useState(false);
 
   const bounds = useMemo(() => monthBounds(month), [month]);
   const byDate = useMemo(() => new Map(agenda.map((day) => [day.work_date, day])), [agenda]);
   const calendarByDate = useMemo(() => new Map(calendarDays.map((day) => [day.work_date, day])), [calendarDays]);
   const focused = focusedDate ? byDate.get(focusedDate) ?? null : null;
   const focusedCalendar = focusedDate ? calendarByDate.get(focusedDate) ?? null : null;
+  const referenceDuration = Math.max(0, Number(referenceMinutes) || 0);
+  const referenceHours = Math.floor(referenceDuration / 60);
+  const referenceRemainder = referenceDuration % 60;
+  const calendarReasonForSave = calendarReason.trim().length >= 3 ? calendarReason.trim() : "Actualización desde el perfil del empleado";
+
+  function openCalendarDialog() {
+    const firstRest = calendarDays.find((day) => day.weekly_rest);
+    if (firstRest) setRestWeekday(String(calendarOffset(firstRest.work_date)));
+    const suggested = focusedCalendar?.reference_daily_minutes
+      ?? focusedCalendar?.scheduled_minutes
+      ?? focused?.expected_minutes;
+    if (suggested && suggested > 0) setReferenceMinutes(String(suggested));
+    setShowSubstitution(false);
+    setCalendarDialogOpen(true);
+  }
 
   const loadAgenda = useCallback(async (background = false) => {
     if (background) setRefreshing(true);
@@ -431,7 +480,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     if (calendarBusy) return;
     setCalendarBusy(true); setError(null);
     try {
-      await workCalendarApi.setWeeklyRestRule({ employee_id: employeeId, weekly_rest_weekday: Number(restWeekday), reference_daily_minutes: Number(referenceMinutes), source: "Perfil del empleado", reason: calendarReason.trim(), effective_from: bounds.from });
+      await workCalendarApi.setWeeklyRestRule({ employee_id: employeeId, weekly_rest_weekday: Number(restWeekday), reference_daily_minutes: Number(referenceMinutes), source: "Perfil del empleado", reason: calendarReasonForSave, effective_from: bounds.from });
       setNotice("Regla de descanso guardada. La agenda ya muestra su vigencia.");
       await Promise.all([loadAgenda(true), loadAccrual()]);
     } catch (err) { setError(friendlyError(err, "No se pudo guardar la regla de descanso.")); }
@@ -443,8 +492,8 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     setCalendarBusy(true); setError(null);
     try {
       const origin = focusedCalendar?.holiday ? "HOLIDAY" : "WEEKLY_REST";
-      const result = await workCalendarApi.proposeSubstitution({ employee_id: employeeId, original_date: focusedDate, origin_kind: origin, substitute_start: `${substitutionStart}:00-05:00`, substitute_end: `${substitutionEnd}:00-05:00`, reference: "Acuerdo administrativo", reason: calendarReason.trim(), idempotency_key: crypto.randomUUID() });
-      setSubstitution(result); setNotice("Sustitución propuesta. Requiere aprobación y evidencia de disfrute.");
+      const result = await workCalendarApi.proposeSubstitution({ employee_id: employeeId, original_date: focusedDate, origin_kind: origin, substitute_start: `${substitutionStart}:00-05:00`, substitute_end: `${substitutionEnd}:00-05:00`, reference: "Acuerdo administrativo", reason: calendarReasonForSave, idempotency_key: crypto.randomUUID() });
+      setSubstitution(result); setNotice("Cambio de descanso guardado. Ahora debe aprobarse.");
     } catch (err) { setError(friendlyError(err, "No se pudo proponer la sustitución.")); }
     finally { setCalendarBusy(false); }
   }
@@ -453,8 +502,8 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     if (!substitution || calendarBusy) return;
     setCalendarBusy(true); setError(null);
     try {
-      const result = await workCalendarApi.substitutionAction(substitution.id, action, { expected_version: substitution.version, reason: calendarReason.trim(), idempotency_key: crypto.randomUUID(), evidence: action === "verify" ? { reference: "Evidencia administrativa desde perfil" } : undefined });
-      setSubstitution(result); setNotice(action === "approve" ? "Sustitución aprobada." : action === "verify" ? "Descanso sustitutorio verificado." : "Sustitución cancelada y auditada.");
+      const result = await workCalendarApi.substitutionAction(substitution.id, action, { expected_version: substitution.version, reason: calendarReasonForSave, idempotency_key: crypto.randomUUID(), evidence: action === "verify" ? { reference: "Evidencia administrativa desde perfil" } : undefined });
+      setSubstitution(result); setNotice(action === "approve" ? "Cambio de descanso aprobado." : action === "verify" ? "Descanso tomado y confirmado." : "Cambio de descanso cancelado. El historial se conserva.");
       await Promise.all([loadAgenda(true), loadAccrual()]);
     } catch (err) { setError(friendlyError(err, "La acción sobre la sustitución fue rechazada.")); }
     finally { setCalendarBusy(false); }
@@ -466,8 +515,8 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     try {
       const source = focusedCalendar?.holiday ? (focusedCalendar.holiday.day_kind === "MAY_DAY" ? "MAY_DAY_COINCIDENCE" : "HOLIDAY") : "WEEKLY_REST";
       const result = await workCalendarApi.previewValuation({ employee_id: employeeId, work_date: focusedDate, source_kind: source });
-      setValuation(result); setNotice("Valoración especial previsualizada; revise el importe antes de aprobar.");
-    } catch (err) { setError(friendlyError(err, "No se pudo previsualizar la valoración especial.")); }
+      setValuation(result); setNotice("Pago calculado. Revise el importe antes de confirmarlo para planilla.");
+    } catch (err) { setError(friendlyError(err, "No se pudo calcular el pago de este día.")); }
     finally { setCalendarBusy(false); }
   }
 
@@ -476,9 +525,9 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     setCalendarBusy(true); setError(null);
     try {
       const result = action === "approve"
-        ? await workCalendarApi.approveValuation(valuation.id, { expected_version: valuation.version, preview_token: valuation.preview_token ?? "", idempotency_key: crypto.randomUUID(), reason: calendarReason.trim() })
-        : await workCalendarApi.reconcileValuation(valuation.id, { expected_version: valuation.version, reference: calendarReason.trim(), idempotency_key: crypto.randomUUID() });
-      setValuation(result); setNotice(action === "approve" ? "Valoración aprobada y enviada al próximo cálculo." : "Valoración conciliada y retirada del cálculo.");
+        ? await workCalendarApi.approveValuation(valuation.id, { expected_version: valuation.version, preview_token: valuation.preview_token ?? "", idempotency_key: crypto.randomUUID(), reason: calendarReasonForSave })
+        : await workCalendarApi.reconcileValuation(valuation.id, { expected_version: valuation.version, reference: calendarReasonForSave, idempotency_key: crypto.randomUUID() });
+      setValuation(result); setNotice(action === "approve" ? "Pago confirmado para la próxima planilla." : "Pago marcado como ya realizado; no se volverá a sumar.");
       await Promise.all([loadAgenda(true), loadAccrual()]);
     } catch (err) { setError(friendlyError(err, "La acción sobre la valoración fue rechazada.")); }
     finally { setCalendarBusy(false); }
@@ -562,17 +611,17 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
             <div className="employee-day-statuses">{focused.statuses.map((status) => <span className="badge badge-blue" key={status}>{statusCopy[status] ?? status}</span>)}</div>
             <dl className="employee-day-facts">
               <div><dt>Jornada esperada</dt><dd>{formatMinutes(focused.expected_minutes)}</dd></div>
-              {focusedCalendar && <><div><dt>Programado</dt><dd>{formatMinutes(focusedCalendar.scheduled_minutes)}</dd></div><div><dt>Referencia especial</dt><dd>{focusedCalendar.reference_daily_minutes === null ? "Pendiente de referencia" : formatMinutes(focusedCalendar.reference_daily_minutes)}</dd></div></>}
+              {focusedCalendar && <><div><dt>Horario programado</dt><dd>{formatMinutes(focusedCalendar.scheduled_minutes)}</dd></div><div><dt>Duración usada para calcular descansos y feriados</dt><dd>{focusedCalendar.reference_daily_minutes === null ? "Aún no configurada" : formatMinutes(focusedCalendar.reference_daily_minutes)}</dd></div></>}
               <div><dt>Marcaciones</dt><dd>{focused.attendance.length || "Ninguna"}</dd></div>
               <div><dt>Carga administrativa</dt><dd>{focused.manual_day ? formatMinutes(focused.manual_day.worked_minutes_net) : "Ninguna"}</dd></div>
             </dl>
             {focused.attendance.map((item) => <p className="employee-day-entry" key={item.id}>{item.check_in_at.slice(11, 16)} → {item.check_out_at?.slice(11, 16) ?? "abierta"} · {item.worked_minutes === null ? "en curso" : formatMinutes(item.worked_minutes)}</p>)}
             {focusedCalendar?.holiday && <p className="employee-day-entry">{focusedCalendar.holiday.name} · {focusedCalendar.holiday.source}</p>}
             {focused.holiday && <p className="employee-day-entry">{focused.holiday.name} · {focused.holiday.source}</p>}
-            {focused.special_day_valuations?.map((item) => <p className="employee-day-entry" key={item.id}>{item.source_kind}: {money(item.amount)} · {item.status}</p>)}
-            {focused.manual_day && <div className="employee-day-record"><strong>{focused.manual_day.reason}</strong><p>N {focused.manual_day.normal_minutes} · P {focused.manual_day.additional_minutes} · R {focused.manual_day.recovery_minutes} min</p><div className="button-row"><button className="btn btn-outline btn-sm" type="button" onClick={() => beginManualEdit(focused.manual_day!)}>Editar</button><button className="btn btn-danger btn-sm" type="button" onClick={() => { setVoidingManual(focused.manual_day!); setManualVoidReason(""); setManualOperationKey(crypto.randomUUID()); }}>Anular</button><Link className="btn btn-ghost btn-sm" href={`/admin/attendance/history?employee_id=${employeeId}`}>Historial</Link></div></div>}
+            {focused.special_day_valuations?.map((item) => <p className="employee-day-entry" key={item.id}>Pago por {specialSourceCopy[item.source_kind] ?? "día especial"}: {money(item.amount)} · {specialStatusCopy[item.status] ?? "Requiere revisión"}</p>)}
+            {focused.manual_day && <div className="employee-day-record"><strong>{focused.manual_day.reason}</strong><p>Jornada regular: {formatMinutes(focused.manual_day.normal_minutes)} · Horas adicionales: {formatMinutes(focused.manual_day.additional_minutes)} · Recuperación: {formatMinutes(focused.manual_day.recovery_minutes)}</p><div className="button-row"><button className="btn btn-outline btn-sm" type="button" onClick={() => beginManualEdit(focused.manual_day!)}>Editar</button><button className="btn btn-danger btn-sm" type="button" onClick={() => { setVoidingManual(focused.manual_day!); setManualVoidReason(""); setManualOperationKey(crypto.randomUUID()); }}>Anular</button><Link className="btn btn-ghost btn-sm" href={`/admin/attendance/history?employee_id=${employeeId}`}>Historial</Link></div></div>}
             {focused.adjustments.map((item) => <div className="employee-day-record" key={item.id}>
-              <strong>{item.adjustment_type} · {formatMinutes(item.minutes)}</strong><p>{item.reason} · {item.status === "APPROVED" ? "Aprobado" : item.status === "PENDING" ? "Pendiente" : "Rechazado"}</p>
+              <strong>{adjustmentTypeCopy[item.adjustment_type] ?? "Ajuste de horas"} · {formatMinutes(item.minutes)}</strong><p>{item.reason} · {item.status === "APPROVED" ? "Aprobado" : item.status === "PENDING" ? "Pendiente" : "Rechazado"}</p>
               {!item.voided_at && <div className="button-row"><button type="button" className="btn btn-outline btn-sm" onClick={() => beginAdjustmentEdit(item)}>Editar</button><button type="button" className="btn btn-danger btn-sm" onClick={() => beginAdjustmentVoid(item as HourAdjustment)}>Eliminar</button></div>}
             </div>)}
           </>}
@@ -582,24 +631,24 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       <section className="employee-disclosure-card" aria-labelledby="work-calendar-title">
         <div>
           <h3 id="work-calendar-title">Descansos y feriados</h3>
-          <p>Regla vigente: {weekdays[Number(restWeekday)] ?? "Sin definir"} · referencia {formatMinutes(Number(referenceMinutes) || 0)}. Las sustituciones y valoraciones se gestionan por fecha.</p>
+          <p>Descanso habitual: {weekdays[Number(restWeekday)] ?? "Sin definir"} · jornada usada para el cálculo: {formatMinutes(Number(referenceMinutes) || 0)}.</p>
         </div>
-        <button type="button" className="btn btn-outline" onClick={() => setCalendarDialogOpen(true)}>Gestionar descansos y feriados</button>
+        <button type="button" className="btn btn-outline" onClick={openCalendarDialog}>Configurar descansos y feriados</button>
       </section>
 
       {calendarDialogOpen && <AppDialog labelledBy="work-calendar-dialog-title" onClose={() => setCalendarDialogOpen(false)} dismissible={!calendarBusy} className="employee-workspace-dialog">
       <section className="employee-batch-panel" aria-labelledby="work-calendar-dialog-title">
-        <div className="app-dialog-heading"><div><h2 id="work-calendar-dialog-title">Descansos y feriados</h2><p>Las reglas y acuerdos se auditan. Una fecha cerrada solicitará rectificación.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={calendarBusy}>Cerrar</AppDialogCloseButton></div>
-        <div className="employee-batch-head"><div><h3>Regla de descanso</h3><p>Las reglas y acuerdos se auditan. Una fecha cerrada solicitará rectificación.</p></div>{calendarBusy && <InlineLoading label="Actualizando calendario…" />}</div>
+        <div className="app-dialog-heading"><div><h2 id="work-calendar-dialog-title">Descansos y feriados</h2><p>Indique el descanso habitual. El sistema calculará automáticamente los pagos que correspondan.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={calendarBusy}>Cerrar</AppDialogCloseButton></div>
+        <div className="employee-batch-head"><div><h3>Descanso habitual</h3><p>Esta configuración se aplicará desde el inicio del mes mostrado en la agenda.</p></div>{calendarBusy && <InlineLoading label="Actualizando calendario…" />}</div>
         <div className="employee-batch-grid">
           <label><span className="label">Día de descanso</span><Select value={restWeekday} onValueChange={setRestWeekday}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{weekdays.map((day, index) => <SelectItem value={String(index)} key={day}>{day}</SelectItem>)}</SelectContent></Select></label>
-          <label><span className="label">Minutos de referencia</span><input className="input" type="number" min="1" max="1440" value={referenceMinutes} onChange={(event) => setReferenceMinutes(event.target.value)} /></label>
-          <label className="employee-batch-wide"><span className="label">Motivo / referencia administrativa</span><input className="input" value={calendarReason} onChange={(event) => setCalendarReason(event.target.value)} /></label>
+          <fieldset className="employee-duration-setting"><legend>Duración habitual de la jornada</legend><div><label><span>Horas</span><input className="input" type="number" min="0" max="24" value={referenceHours} onChange={(event) => setReferenceMinutes(String((Number(event.target.value) || 0) * 60 + referenceRemainder))} /></label><label><span>Minutos</span><input className="input" type="number" min="0" max="59" value={referenceRemainder} onChange={(event) => setReferenceMinutes(String(referenceHours * 60 + (Number(event.target.value) || 0)))} /></label></div><small>Se completó con el horario del empleado. Solo cámbielo si ese descanso debe calcularse con otra duración.</small></fieldset>
         </div>
-        <div className="employee-batch-actions"><AsyncButton type="button" className="btn btn-outline" busy={calendarBusy} busyLabel="Guardando regla…" disabled={calendarReason.trim().length < 3} onClick={() => void saveWeeklyRestRule()}>Guardar regla de descanso</AsyncButton></div>
-        {focusedDate && (focusedCalendar?.weekly_rest || focusedCalendar?.holiday) && <div className="employee-day-record"><strong>{focusedCalendar?.holiday ? `Feriado: ${focusedCalendar.holiday.name}` : "Descanso semanal"}</strong><p>Fecha origen: {focusedDate}. El descanso sustitutorio requiere 24 horas consecutivas y evidencia.</p><div className="employee-inline-editor-grid"><label><span className="label">Inicio sustitutorio</span><input className="input" type="datetime-local" value={substitutionStart} onChange={(event) => setSubstitutionStart(event.target.value)} /></label><label><span className="label">Fin sustitutorio</span><input className="input" type="datetime-local" value={substitutionEnd} onChange={(event) => setSubstitutionEnd(event.target.value)} /></label></div><div className="button-row"><AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Proponiendo…" disabled={!substitutionStart || !substitutionEnd || calendarReason.trim().length < 3} onClick={() => void proposeRestSubstitution()}>Proponer sustitución</AsyncButton><AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Previsualizando…" onClick={() => void previewSpecialValuation()}>Previsualizar valoración</AsyncButton></div></div>}
-        {substitution && <div className="employee-day-record"><strong>Sustitución {substitution.status.toLowerCase()}</strong><p>{substitution.substitute_start.slice(0, 16)} → {substitution.substitute_end.slice(0, 16)} · {substitution.origin_kind}</p><div className="button-row">{substitution.status === "PROPOSED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Aprobando…" onClick={() => void actOnSubstitution("approve")}>Aprobar</AsyncButton>}{substitution.status === "APPROVED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Verificando…" onClick={() => void actOnSubstitution("verify")}>Verificar disfrute</AsyncButton>}{!["CANCELLED", "INVALIDATED", "ENJOYED"].includes(substitution.status) && <AsyncButton type="button" className="btn btn-danger btn-sm" busy={calendarBusy} busyLabel="Cancelando…" onClick={() => void actOnSubstitution("cancel")}>Cancelar</AsyncButton>}</div></div>}
-        {valuation && <div className="employee-day-record"><strong>Valoración {valuation.source_kind} · {money(valuation.amount)}</strong><p>{valuation.components.map((item) => `${item.component_kind}: ${money(item.amount)}`).join(" · ")}</p><div className="button-row">{valuation.status === "PENDING" && <AsyncButton type="button" className="btn btn-primary btn-sm" busy={calendarBusy} busyLabel="Aprobando…" onClick={() => void actOnValuation("approve")}>Aprobar importe</AsyncButton>}{valuation.status !== "VOIDED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Conciliando…" onClick={() => void actOnValuation("reconcile")}>Conciliar pago existente</AsyncButton>}</div></div>}
+        <details className="employee-calendar-note"><summary>Añadir una nota para el historial</summary><label><span className="label">Nota administrativa</span><input className="input" value={calendarReason} onChange={(event) => setCalendarReason(event.target.value)} placeholder="Ej. acuerdo firmado el 18 de septiembre" /></label></details>
+        <div className="employee-batch-actions"><AsyncButton type="button" className="btn btn-primary" busy={calendarBusy} busyLabel="Guardando configuración…" disabled={referenceDuration < 1} onClick={() => void saveWeeklyRestRule()}>Guardar configuración</AsyncButton></div>
+        {focusedDate && (focusedCalendar?.weekly_rest || focusedCalendar?.holiday) && <div className="employee-day-record"><strong>{focusedCalendar?.holiday ? `Feriado: ${focusedCalendar.holiday.name}` : "Descanso semanal"}</strong><p>{new Intl.DateTimeFormat("es-PE", { dateStyle: "long", timeZone: "UTC" }).format(new Date(`${focusedDate}T12:00:00Z`))}. Elija solo la acción que necesita.</p><div className="button-row"><button type="button" className="btn btn-outline btn-sm" onClick={() => setShowSubstitution((current) => !current)}>{showSubstitution ? "Ocultar cambio de descanso" : "Cambiar el descanso a otra fecha"}</button><AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Calculando pago…" onClick={() => void previewSpecialValuation()}>Calcular pago de este día</AsyncButton></div>{showSubstitution && <div className="employee-substitution-form"><p>Indique el periodo continuo en el que la persona tomará el descanso.</p><div className="employee-inline-editor-grid"><label><span className="label">Inicio del nuevo descanso</span><input className="input" type="datetime-local" value={substitutionStart} onChange={(event) => setSubstitutionStart(event.target.value)} /></label><label><span className="label">Fin del nuevo descanso</span><input className="input" type="datetime-local" value={substitutionEnd} onChange={(event) => setSubstitutionEnd(event.target.value)} /></label></div><AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Guardando solicitud…" disabled={!substitutionStart || !substitutionEnd} onClick={() => void proposeRestSubstitution()}>Guardar cambio de descanso</AsyncButton></div>}</div>}
+        {substitution && <div className="employee-day-record"><strong>Cambio de descanso · {substitutionStatusCopy[substitution.status] ?? "Requiere revisión"}</strong><p>{formatDateTime(substitution.substitute_start)} → {formatDateTime(substitution.substitute_end)} · corresponde a {specialSourceCopy[substitution.origin_kind] ?? "un día especial"}</p><div className="button-row">{substitution.status === "PROPOSED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Aprobando…" onClick={() => void actOnSubstitution("approve")}>Aprobar cambio</AsyncButton>}{substitution.status === "APPROVED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Confirmando…" onClick={() => void actOnSubstitution("verify")}>Confirmar descanso tomado</AsyncButton>}{!["CANCELLED", "INVALIDATED", "ENJOYED"].includes(substitution.status) && <AsyncButton type="button" className="btn btn-danger btn-sm" busy={calendarBusy} busyLabel="Cancelando…" onClick={() => void actOnSubstitution("cancel")}>Cancelar cambio</AsyncButton>}</div></div>}
+        {valuation && <div className="employee-day-record"><strong>Pago calculado por {specialSourceCopy[valuation.source_kind] ?? "día especial"}: {money(valuation.amount)}</strong><p>{specialStatusCopy[valuation.status] ?? "Requiere revisión"}</p><dl className="employee-payment-breakdown">{valuation.components.map((item) => <div key={item.component_kind}><dt>{valuationComponentCopy[item.component_kind] ?? "Concepto incluido"}</dt><dd>{money(item.amount)}</dd></div>)}</dl><div className="button-row">{valuation.status === "PENDING" && <AsyncButton type="button" className="btn btn-primary btn-sm" busy={calendarBusy} busyLabel="Confirmando…" onClick={() => void actOnValuation("approve")}>Confirmar para planilla</AsyncButton>}{valuation.status !== "VOIDED" && <AsyncButton type="button" className="btn btn-outline btn-sm" busy={calendarBusy} busyLabel="Registrando pago…" onClick={() => void actOnValuation("reconcile")}>Marcar como ya pagado</AsyncButton>}</div></div>}
       </section>
       </AppDialog>}
 
@@ -612,19 +661,19 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       <section className="employee-batch-panel" aria-labelledby="employee-batch-dialog-title">
         <div className="app-dialog-heading"><div className="employee-batch-head"><div><h2 id="employee-batch-dialog-title">Registrar en las fechas seleccionadas</h2><p>La previsualización comprueba conflictos y calcula cada importe antes de guardar.</p></div><span className="badge badge-blue">{selectedDates.length} {selectedDates.length === 1 ? "seleccionada" : "seleccionadas"}</span></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={previewing || savingBatch}>Cerrar</AppDialogCloseButton></div>
         <div className="employee-batch-grid">
-          <label><span className="label">Tratamiento</span><Select value={treatment} onValueChange={(value) => { setTreatment(value as Treatment); invalidatePreview(); }}><SelectTrigger aria-label="Tratamiento"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="NORMAL">Jornada normal</SelectItem><SelectItem value="ADDITIONAL">Adicional pagado</SelectItem><SelectItem value="RECOVERY">Recuperación</SelectItem><SelectItem value="MIXED">Distribución mixta</SelectItem></SelectContent></Select></label>
+          <label><span className="label">Cómo registrar estas horas</span><Select value={treatment} onValueChange={(value) => { setTreatment(value as Treatment); invalidatePreview(); }}><SelectTrigger aria-label="Cómo registrar estas horas"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="NORMAL">Como jornada regular</SelectItem><SelectItem value="ADDITIONAL">Como horas adicionales pagadas</SelectItem><SelectItem value="RECOVERY">Como recuperación de un permiso</SelectItem><SelectItem value="MIXED">Dividir entre varios tipos</SelectItem></SelectContent></Select></label>
           <label><span className="label">Horas netas</span><div className="employee-duration-input"><input className="input" type="number" min="0" max="24" value={hours} onChange={(event) => { setHours(event.target.value); invalidatePreview(); }} aria-label="Horas netas" /><input className="input" type="number" min="0" max="59" value={minutes} onChange={(event) => { setMinutes(event.target.value); invalidatePreview(); }} aria-label="Minutos netos" /></div></label>
           <label className="employee-batch-wide"><span className="label">Motivo</span><input className="input" value={reason} onChange={(event) => { setReason(event.target.value); invalidatePreview(); }} /></label>
           {(treatment === "ADDITIONAL" || treatment === "MIXED") && <label className="employee-batch-wide"><span className="label">Actividad realizada en las horas adicionales</span><input className="input" value={activity} onChange={(event) => { setActivity(event.target.value); invalidatePreview(); }} placeholder="Ej. mantenimiento de la unidad y cierre de ruta" /></label>}
           {(treatment === "RECOVERY" || treatment === "MIXED") && <label className="employee-batch-wide"><span className="label">Compromiso de recuperación</span><Select value={commitmentId} onValueChange={(value) => { setCommitmentId(value); invalidatePreview(); }}><SelectTrigger aria-label="Compromiso de recuperación"><SelectValue placeholder="Seleccione un compromiso" /></SelectTrigger><SelectContent>{commitments.map((item) => <SelectItem value={item.id} key={item.id}>{item.reference} · {item.pending_minutes} min pendientes</SelectItem>)}</SelectContent></Select></label>}
-          {treatment === "MIXED" && <fieldset className="employee-mixed-fields"><legend>Distribución en minutos</legend><label>Normal<input className="input" type="number" min="0" value={normalMinutes} onChange={(event) => { setNormalMinutes(event.target.value); invalidatePreview(); }} /></label><label>Adicional<input className="input" type="number" min="0" value={additionalMinutes} onChange={(event) => { setAdditionalMinutes(event.target.value); invalidatePreview(); }} /></label><label>Recuperación<input className="input" type="number" min="0" value={recoveryMinutes} onChange={(event) => { setRecoveryMinutes(event.target.value); invalidatePreview(); }} /></label></fieldset>}
+          {treatment === "MIXED" && <fieldset className="employee-mixed-fields"><legend>Reparto exacto del tiempo (minutos)</legend><label>Jornada regular<input className="input" type="number" min="0" value={normalMinutes} onChange={(event) => { setNormalMinutes(event.target.value); invalidatePreview(); }} /></label><label>Horas adicionales<input className="input" type="number" min="0" value={additionalMinutes} onChange={(event) => { setAdditionalMinutes(event.target.value); invalidatePreview(); }} /></label><label>Horas recuperadas<input className="input" type="number" min="0" value={recoveryMinutes} onChange={(event) => { setRecoveryMinutes(event.target.value); invalidatePreview(); }} /></label></fieldset>}
           <fieldset className="employee-known-times"><legend>Horarios conocidos (opcionales)</legend><label>Entrada<input className="input" type="time" value={checkIn} onChange={(event) => { setCheckIn(event.target.value); invalidatePreview(); }} /></label><label>Salida<input className="input" type="time" value={checkOut} onChange={(event) => { setCheckOut(event.target.value); invalidatePreview(); }} /></label></fieldset>
         </div>
 
         {selectedDates.length > 0 && <div className="employee-batch-dates"><div className="employee-batch-date employee-batch-date--head"><span>Fecha</span><span>Horas</span><span>Min</span><span>Motivo / actividad específica</span></div>{selectedDates.map((date) => { const row = overrides[date]; return <div className="employee-batch-date" key={date}><strong>{date}</strong><input className="input" type="number" min="0" max="24" aria-label={`Horas del ${date}`} value={row?.hours ?? hours} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: event.target.value, minutes: row?.minutes ?? minutes, reason: row?.reason ?? reason, activity: row?.activity ?? activity } })); invalidatePreview(); }} /><input className="input" type="number" min="0" max="59" aria-label={`Minutos del ${date}`} value={row?.minutes ?? minutes} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: row?.hours ?? hours, minutes: event.target.value, reason: row?.reason ?? reason, activity: row?.activity ?? activity } })); invalidatePreview(); }} /><input className="input" aria-label={`Detalle del ${date}`} value={(treatment === "ADDITIONAL" || treatment === "MIXED") ? (row?.activity ?? activity) : (row?.reason ?? reason)} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: row?.hours ?? hours, minutes: row?.minutes ?? minutes, reason: treatment === "NORMAL" || treatment === "RECOVERY" ? event.target.value : row?.reason ?? reason, activity: treatment === "ADDITIONAL" || treatment === "MIXED" ? event.target.value : row?.activity ?? activity } })); invalidatePreview(); }} /></div>; })}</div>}
 
         <div className="employee-batch-actions"><AsyncButton type="button" className="btn btn-outline" busy={previewing} busyLabel="Comprobando fechas…" disabled={!selectedDates.length || savingBatch} onClick={() => void runPreview()}>Previsualizar lote</AsyncButton>{preview && <AsyncButton type="button" busy={savingBatch} busyLabel="Guardando el mismo envío…" disabled={hasConflicts} onClick={() => void saveBatch()}>Guardar {preview.items.length} fechas</AsyncButton>}</div>
-        {preview && <div className="employee-batch-preview" aria-live="polite"><h4>Resultado de la previsualización</h4>{preview.items.map((item) => <div className={`employee-preview-row is-${item.status.toLowerCase()}`} key={item.work_date}><strong>{item.work_date}</strong><span>{item.status === "READY" ? `${formatMinutes(item.effective_row.worked_minutes_net)} listos para guardar` : item.message ?? item.error_code ?? "Conflicto"}</span><span>{item.payment_preview?.amount ? money(item.payment_preview.amount) : ""}</span></div>)}</div>}
+        {preview && <div className="employee-batch-preview" aria-live="polite"><h4>Revisión antes de guardar</h4>{preview.items.map((item) => <div className={`employee-preview-row is-${item.status.toLowerCase()}`} key={item.work_date}><strong>{item.work_date}</strong><span>{item.status === "READY" ? `${formatMinutes(item.effective_row.worked_minutes_net)} listos para guardar` : previewIssue(item.message, item.error_code)}</span><span>{item.payment_preview?.amount ? money(item.payment_preview.amount) : ""}</span></div>)}</div>}
       </section>
       </AppDialog>}
 

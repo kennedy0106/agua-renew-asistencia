@@ -304,7 +304,6 @@ export default function AdminPayrollPage() {
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 {actionKey === "create" ? <Spinner /> : <Plus size={15} />}
-                {actionKey === "create" && <Spinner />}
                 {actionKey === "create" ? "Creando periodo…" : "Crear periodo"}
               </button>
             </div>
@@ -350,7 +349,6 @@ export default function AdminPayrollPage() {
               </button>
               {period.status !== "CLOSED" && (
                 <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
-                  {actionKey === `calculate:${period.id}` && <Spinner />}
                   {actionKey === `calculate:${period.id}` && <Spinner />}
                   {actionKey === `calculate:${period.id}` ? "Calculando…" : period.status === "OPEN" ? "Calcular" : "Recalcular"}
                 </button>

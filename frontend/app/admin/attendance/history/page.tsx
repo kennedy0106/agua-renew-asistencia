@@ -93,6 +93,14 @@ const knownTimeLabel = (value?: string | null) =>
         timeZone: "America/Lima",
       }).format(new Date(value))
     : "Sin dato";
+const formatDuration = (minutes: number) => {
+  const hours = Math.floor(Math.abs(minutes) / 60);
+  const remainder = Math.abs(minutes) % 60;
+  return `${minutes < 0 ? "−" : ""}${hours} h ${String(remainder).padStart(2, "0")}`;
+};
+const operationCopy: Record<string, string> = {
+  BATCH: "carga de horas", UPDATE: "edición", VOID: "anulación", APPROVE: "aprobación",
+};
 const toDateTimeInput = (value?: string | null) => {
   if (!value) return "";
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -120,8 +128,8 @@ function paymentLabel(
   if (!payment) return "Sin valoración";
   const method =
     payment.method === "REVIEWED"
-      ? "Importe revisado"
-      : "Sobretiempo ordinario";
+      ? "Importe acordado"
+      : "Cálculo automático de horas extra";
   const amount =
     payment.amount === null ? "sin importe" : `S/ ${payment.amount}`;
   // The row state is authoritative.  The nested snapshot is a valuation
@@ -131,7 +139,11 @@ function paymentLabel(
       ? "Aprobado"
       : (effectiveStatus ?? payment.status) === "PENDING"
         ? "Pendiente de aprobación"
-        : effectiveStatus ?? payment.status;
+        : (effectiveStatus ?? payment.status) === "REVIEW_REQUIRED"
+          ? "Requiere revisión"
+          : (effectiveStatus ?? payment.status) === "VOIDED"
+            ? "Anulado"
+            : "No aprobado";
   return `${method} · ${amount} · ${status}`;
 }
 
@@ -213,8 +225,8 @@ export default function HistoricalAttendancePage() {
       const refreshed = await loadHistory();
       if (generation !== recoveryGeneration.current) return;
       setMessage(refreshed
-        ? `Operación recuperada: ${receipt.operation_type}. Historial actualizado.`
-        : `Operación recuperada: ${receipt.operation_type}. No se pudo actualizar el historial.`);
+        ? `Se recuperó la ${operationCopy[receipt.operation_type] ?? "operación"}. El historial está actualizado.`
+        : `Se recuperó la ${operationCopy[receipt.operation_type] ?? "operación"}, pero no se pudo actualizar el historial.`);
     });
     return () => { recoveryGeneration.current += 1; };
   // The recovery is intentionally scoped to a user identity, not form state.
@@ -757,6 +769,10 @@ export default function HistoricalAttendancePage() {
         : "Operación recuperada sin duplicar la carga; no se pudo actualizar el historial.");
     } finally { if (mutationInFlight.current === pending.key) mutationInFlight.current = null; setBusy(false); }
   };
+  const commitmentTotal = Math.max(0, Number(commitmentMinutes) || 0);
+  const commitmentHours = Math.floor(commitmentTotal / 60);
+  const commitmentRemainder = commitmentTotal % 60;
+
   return (
     <AdminShell
       title="Cargar horas anteriores"
@@ -820,8 +836,8 @@ export default function HistoricalAttendancePage() {
                 <th>Incluir</th>
                 <th>Empleado</th>
                 <th>Trabajó</th>
-                <th>Tratamiento</th>
-                <th>Distribución / recuperación</th>
+                <th>¿Cómo se registran?</th>
+                <th>Detalle</th>
                 <th>Pago adicional</th>
                 <th>Motivo</th>
                 {showTimes && <th>Entrada / salida</th>}
@@ -883,7 +899,7 @@ export default function HistoricalAttendancePage() {
                       />
                       </div>
                     </td>
-                    <td data-label="Tratamiento">
+                    <td data-label="Cómo registrar las horas">
                       <select
                         className="select"
                         value={row.treatment}
@@ -895,13 +911,13 @@ export default function HistoricalAttendancePage() {
                             void loadCommitments(row.employee_id);
                         }}
                       >
-                        <option value="NORMAL">Jornada normal</option>
-                        <option value="ADDITIONAL">Adicional pagado</option>
-                        <option value="RECOVERY">Recuperación</option>
-                        <option value="MIXED">Dividir horas</option>
+                        <option value="NORMAL">Como jornada regular</option>
+                        <option value="ADDITIONAL">Como horas adicionales pagadas</option>
+                        <option value="RECOVERY">Como recuperación de un permiso</option>
+                        <option value="MIXED">Dividir entre varios tipos</option>
                       </select>
                     </td>
-                    <td data-label="Distribución / recuperación">
+                    <td data-label="Detalle de las horas">
                       <div className="historical-detail-fields">
                       {row.treatment === "MIXED" ? (
                         <>
@@ -915,7 +931,7 @@ export default function HistoricalAttendancePage() {
                                 normal_minutes: Number(event.target.value),
                               })
                             }
-                            placeholder="N"
+                            placeholder="Regular"
                           />
                           <input
                             aria-label="Adicional"
@@ -927,7 +943,7 @@ export default function HistoricalAttendancePage() {
                                 additional_minutes: Number(event.target.value),
                               })
                             }
-                            placeholder="P"
+                            placeholder="Adicional"
                           />
                           <input
                             aria-label="Recuperación"
@@ -946,7 +962,7 @@ export default function HistoricalAttendancePage() {
                                   ),
                               })
                             }
-                            placeholder="R"
+                            placeholder="Recuperación"
                           />
                           {row.recovery_minutes > 0 && (
                             <select
@@ -965,14 +981,13 @@ export default function HistoricalAttendancePage() {
                                 })
                               }
                             >
-                              <option value="">Seleccione compromiso</option>
+                              <option value="">Seleccione el permiso que recupera</option>
                               {commitmentsFor(row.employee_id).map((commitment) => (
                                   <option
                                     key={commitment.id}
                                     value={commitment.id}
                                   >
-                                    {commitment.reference} · pendiente{" "}
-                                    {commitment.pending_minutes} min
+                                    {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
                                   </option>
                                 ))}
                             </select>
@@ -995,11 +1010,10 @@ export default function HistoricalAttendancePage() {
                             })
                           }
                         >
-                          <option value="">Seleccione compromiso</option>
+                          <option value="">Seleccione el permiso que recupera</option>
                           {commitmentsFor(row.employee_id).map((commitment) => (
                               <option key={commitment.id} value={commitment.id}>
-                                {commitment.reference} · pendiente{" "}
-                                {commitment.pending_minutes} min
+                                {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
                               </option>
                             ))}
                         </select>
@@ -1024,11 +1038,11 @@ export default function HistoricalAttendancePage() {
                               })
                             }
                           >
-                            <option value="">Seleccione método</option>
+                            <option value="">Seleccione cómo calcular el pago</option>
                             <option value="OVERTIME">
-                              Sobretiempo ordinario
+                              Calcular automáticamente como horas extra
                             </option>
-                            <option value="REVIEWED">Importe revisado</option>
+                            <option value="REVIEWED">Usar un importe ya acordado</option>
                           </select>
                           {row.payment_method === "REVIEWED" && (
                             <>
@@ -1150,10 +1164,10 @@ export default function HistoricalAttendancePage() {
                           (employee) => employee.id === item.employee_id,
                         )?.first_name ?? item.employee_id}
                       </td>
-                      <td>{item.worked_minutes_net} min</td>
-                      <td>{item.normal_minutes} min</td>
-                      <td>{item.additional_minutes} min</td>
-                      <td>{item.recovery_minutes} min</td>
+                      <td>{formatDuration(item.worked_minutes_net)}</td>
+                      <td>{formatDuration(item.normal_minutes)}</td>
+                      <td>{formatDuration(item.additional_minutes)}</td>
+                      <td>{formatDuration(item.recovery_minutes)}</td>
                       <td>
                         {paymentLabel(
                           item.payment,
@@ -1184,10 +1198,10 @@ export default function HistoricalAttendancePage() {
       <section className="panel historical-recovery-panel">
         <div className="historical-section-head">
           <div>
-        <h2>Compromiso histórico de recuperación</h2>
+        <h2>Registrar un permiso pendiente de recuperar</h2>
         <p>
-          Registre el permiso pendiente antes de aplicar horas de recuperación.
-          Indique si el permiso ya fue reconocido en el saldo.
+          Haga esto solo cuando el empleado tenga horas de permiso que recuperará después.
+          El sistema descontará cada recuperación de este pendiente.
         </p>
           </div>
           <span className="badge badge-blue">Configuración previa</span>
@@ -1223,23 +1237,19 @@ export default function HistoricalAttendancePage() {
             />
           </label>
           <label>
-            Minutos pendientes
-            <input
-              aria-label="Minutos pendientes"
-              type="number"
-              min="1"
-              max="1440"
-              value={commitmentMinutes}
-              onChange={(event) => setCommitmentMinutes(event.target.value)}
-            />
+            Tiempo pendiente
+            <span className="historical-duration-fields">
+              <input aria-label="Horas pendientes" type="number" min="0" max="24" value={commitmentHours} onChange={(event) => setCommitmentMinutes(String((Number(event.target.value) || 0) * 60 + commitmentRemainder))} placeholder="Horas" />
+              <input aria-label="Minutos pendientes" type="number" min="0" max="59" value={commitmentRemainder} onChange={(event) => setCommitmentMinutes(String(commitmentHours * 60 + (Number(event.target.value) || 0)))} placeholder="Minutos" />
+            </span>
           </label>
           <label>
-            Referencia
+            Motivo del permiso
             <input
               aria-label="Referencia del compromiso"
               value={commitmentReference}
               onChange={(event) => setCommitmentReference(event.target.value)}
-              placeholder="Permiso acordado"
+              placeholder="Ej. permiso médico del 4 de septiembre"
             />
           </label>
           <label>
@@ -1249,7 +1259,7 @@ export default function HistoricalAttendancePage() {
               checked={commitmentCovered}
               onChange={(event) => setCommitmentCovered(event.target.checked)}
             />{" "}
-            Permiso ya reconocido en el saldo
+            Este permiso ya aparece descontado en el saldo
           </label>
         </div>
         <button
@@ -1257,7 +1267,7 @@ export default function HistoricalAttendancePage() {
           disabled={busy}
           onClick={createCommitment}
         >
-          Registrar compromiso histórico
+          Registrar permiso pendiente
         </button>
       </section>
       <section className="panel historical-history-panel">
@@ -1274,7 +1284,7 @@ export default function HistoricalAttendancePage() {
                 void loadHistory(0, includeVoided);
               }}
             />{" "}
-            Mostrar anuladas y linaje
+            Mostrar anuladas y versiones anteriores
           </label>
         </div>
         {history.length ? (<>
@@ -1283,10 +1293,10 @@ export default function HistoricalAttendancePage() {
               <thead>
                 <tr>
                   <th>Fecha / empleado</th>
-                  <th>W real</th>
-                  <th>N normal</th>
-                  <th>P adicional</th>
-                  <th>R recuperación</th>
+                  <th>Total trabajado</th>
+                  <th>Jornada regular</th>
+                  <th>Horas adicionales</th>
+                  <th>Horas recuperadas</th>
                   <th>Horarios conocidos</th>
                   <th>Motivo</th>
                   <th>Pago / versión</th>
@@ -1311,10 +1321,10 @@ export default function HistoricalAttendancePage() {
                             : item.employee_id}
                         </small>
                       </td>
-                      <td>{item.worked_minutes_net} min</td>
-                      <td>{item.normal_minutes} min</td>
-                      <td>{item.additional_minutes} min</td>
-                      <td>{item.recovery_minutes} min</td>
+                      <td>{formatDuration(item.worked_minutes_net)}</td>
+                      <td>{formatDuration(item.normal_minutes)}</td>
+                      <td>{formatDuration(item.additional_minutes)}</td>
+                      <td>{formatDuration(item.recovery_minutes)}</td>
                       <td>
                         Entrada: {knownTimeLabel(item.known_check_in_at)}
                         <br />
@@ -1383,8 +1393,7 @@ export default function HistoricalAttendancePage() {
         >
           <h2>Editar carga histórica</h2>
           <p className="muted">
-            La corrección crea una nueva versión auditada. Empleado y fecha son
-            inmutables.
+            Guardaremos la corrección sin borrar el registro anterior. El empleado y la fecha no se pueden cambiar aquí.
           </p>
           <div className="form-row">
             <label>
@@ -1432,9 +1441,9 @@ export default function HistoricalAttendancePage() {
               />
             </label>
             <label>
-              Tratamiento
+              Cómo registrar estas horas
               <select
-                aria-label="Tratamiento de edición"
+                aria-label="Cómo registrar estas horas"
                 value={edit.treatment}
                 onChange={(event) => {
                   const treatment = event.target.value as Draft["treatment"];
@@ -1443,10 +1452,10 @@ export default function HistoricalAttendancePage() {
                     void loadCommitments(edit.employee_id);
                 }}
               >
-                <option value="NORMAL">Jornada normal</option>
-                <option value="ADDITIONAL">Adicional pagado</option>
-                <option value="RECOVERY">Recuperación</option>
-                <option value="MIXED">Dividir horas</option>
+                <option value="NORMAL">Como jornada regular</option>
+                <option value="ADDITIONAL">Como horas adicionales pagadas</option>
+                <option value="RECOVERY">Como recuperación de un permiso</option>
+                <option value="MIXED">Dividir entre varios tipos</option>
               </select>
             </label>
           </div>
@@ -1503,7 +1512,7 @@ export default function HistoricalAttendancePage() {
           {(edit.treatment === "RECOVERY" ||
             (edit.treatment === "MIXED" && edit.recovery_minutes > 0)) && (
             <label>
-              Compromiso
+              Permiso que recupera
               <select
                 aria-label="Compromiso editado"
                 value={edit.recovery_allocations[0]?.commitment_id ?? ""}
@@ -1524,11 +1533,10 @@ export default function HistoricalAttendancePage() {
                   })
                 }
               >
-                <option value="">Seleccione compromiso</option>
+                <option value="">Seleccione el permiso que recupera</option>
                 {commitmentsFor(edit.employee_id).map((commitment) => (
                     <option key={commitment.id} value={commitment.id}>
-                      {commitment.reference} · pendiente{" "}
-                      {commitment.pending_minutes} min
+                      {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
                     </option>
                   ))}
               </select>
@@ -1538,7 +1546,7 @@ export default function HistoricalAttendancePage() {
             (edit.treatment === "MIXED" && edit.additional_minutes > 0)) && (
             <div className="form-row">
               <label>
-                Método de pago adicional
+                Cómo calcular el pago adicional
                 <select
                   aria-label="Método de pago adicional editado"
                   value={edit.payment_method ?? ""}
@@ -1550,15 +1558,15 @@ export default function HistoricalAttendancePage() {
                     })
                   }
                 >
-                  <option value="">Seleccione método</option>
-                  <option value="OVERTIME">Sobretiempo ordinario</option>
-                  <option value="REVIEWED">Importe revisado</option>
+                  <option value="">Seleccione cómo calcular el pago</option>
+                  <option value="OVERTIME">Calcular automáticamente como horas extra</option>
+                  <option value="REVIEWED">Usar un importe ya acordado</option>
                 </select>
               </label>
               {edit.payment_method === "REVIEWED" && (
                 <>
                   <label>
-                    Importe revisado
+                    Importe acordado
                     <input
                       aria-label="Importe revisado editado"
                       type="number"
@@ -1586,7 +1594,7 @@ export default function HistoricalAttendancePage() {
                     />
                   </label>
                   <label>
-                    Referencia
+                    Documento o referencia del acuerdo
                     <input
                       aria-label="Referencia editada"
                       value={edit.source_reference ?? ""}
@@ -1639,10 +1647,8 @@ export default function HistoricalAttendancePage() {
           </div>
           {editPreview && (
             <p className="form-message">
-              Previsualización: W {editPreview.worked_minutes_net} min · N{" "}
-              {editPreview.normal_minutes} min · P{" "}
-              {editPreview.additional_minutes} min · R{" "}
-              {editPreview.recovery_minutes} min ·{" "}
+              Resultado: {formatDuration(editPreview.worked_minutes_net)} trabajadas · {formatDuration(editPreview.normal_minutes)} regulares ·{" "}
+              {formatDuration(editPreview.additional_minutes)} adicionales · {formatDuration(editPreview.recovery_minutes)} recuperadas ·{" "}
               {paymentLabel(
                 editPreview.payment,
                 editPreview.additional_minutes > 0,

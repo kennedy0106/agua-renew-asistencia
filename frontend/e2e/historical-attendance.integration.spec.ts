@@ -290,7 +290,7 @@ test("U02/U03 real: PATCH con R y VOID pierden respuesta después del commit y s
   await page.goto("/admin/attendance/history");
   const sourceRow = page.locator("section").filter({ has: page.getByRole("heading", { name: "Historial de cargas" }) }).locator("tbody tr").filter({ hasText: "Hist20" });
   await sourceRow.getByRole("button", { name: "Editar" }).click();
-  await page.getByLabel("Tratamiento de edición").selectOption("RECOVERY");
+  await page.getByLabel("Cómo registrar estas horas").selectOption("RECOVERY");
   await page.getByLabel("Horas editadas").fill("2");
   await page.getByLabel("Minutos editados").fill("0");
   await page.getByLabel("Compromiso editado").selectOption(commitmentId);

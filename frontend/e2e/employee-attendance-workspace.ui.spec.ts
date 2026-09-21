@@ -85,12 +85,12 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
   await page.getByRole("gridcell").filter({ hasText: /^3Sin registro/ }).click();
   await page.getByRole("button", { name: "Registrar 2 fechas" }).click();
   await expect(page.getByRole("dialog", { name: "Registrar en las fechas seleccionadas" })).toBeVisible();
-  await page.getByLabel("Tratamiento").click();
-  await page.getByRole("option", { name: "Adicional pagado" }).click();
+  await page.getByLabel("Cómo registrar estas horas").click();
+  await page.getByRole("option", { name: "Como horas adicionales pagadas" }).click();
   await page.getByLabel("Actividad realizada en las horas adicionales").fill("Mantenimiento y cierre de ruta");
   await page.getByRole("button", { name: "Previsualizar lote" }).click();
   await expect(page.getByRole("button", { name: "Comprobando fechas…" })).toBeDisabled();
-  await expect(page.getByText("Resultado de la previsualización")).toBeVisible();
+  await expect(page.getByText("Revisión antes de guardar")).toBeVisible();
   await page.getByRole("button", { name: "Guardar 2 fechas" }).click();
   await expect(page.getByText("2 fechas guardadas. La agenda y el acumulado ya están actualizados.")).toBeVisible();
 
@@ -115,10 +115,14 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/employees/employee-1");
-  for (const [button, dialog] of [["Nueva jornada", "Nueva jornada laboral"], ["Configurar sueldo", "Configurar sueldo"], ["Nuevo ajuste", "Nuevo ajuste"], ["Gestionar descansos y feriados", "Descansos y feriados"]] as const) {
+  for (const [button, dialog] of [["Nueva jornada", "Nueva jornada laboral"], ["Configurar sueldo", "Configurar sueldo"], ["Nuevo ajuste", "Nuevo ajuste"], ["Configurar descansos y feriados", "Descansos y feriados"]] as const) {
     await page.getByRole("button", { name: button }).click();
     const modal = page.getByRole("dialog", { name: dialog });
     await expect(modal).toBeVisible();
+    if (dialog === "Descansos y feriados") {
+      await expect(modal.getByText("Duración habitual de la jornada")).toBeVisible();
+      await expect(modal.getByText("Minutos de referencia")).toHaveCount(0);
+    }
     await expect(modal.locator("..")).toHaveAttribute("data-motion-state", "open");
     await page.keyboard.press("Escape");
     await expect(modal.locator("..")).toHaveAttribute("data-motion-state", "exiting");

@@ -619,7 +619,7 @@ export default function EmployeeDetailPage() {
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
           <div>
             <h2 className="card-title">Jornada laboral</h2>
-            <p className="card-sub">Minutos pactados por día; el cambio de jornada preserva el historial.</p>
+            <p className="card-sub">Horario semanal vigente. Los cambios se guardan sin borrar configuraciones anteriores.</p>
           </div>
           {canManage && (
             <button
@@ -982,7 +982,7 @@ export default function EmployeeDetailPage() {
             {overtimeValue && overtimeValue.overtime_minutes > 0 && (
               <div className="card" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", boxShadow: "none", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
                 <span className="muted">
-                  Minutos aprobados: <strong style={{ color: "var(--text)" }}>{overtimeValue.overtime_minutes}</strong>
+                  Tiempo aprobado: <strong style={{ color: "var(--text)" }}>{signedMinutes(overtimeValue.overtime_minutes)}</strong>
                 </span>
                 <span className="muted">
                   Valor: <strong style={{ color: "var(--dark-green)" }}>S/ {Number(overtimeValue.value).toFixed(2)}</strong>
@@ -1044,7 +1044,7 @@ export default function EmployeeDetailPage() {
                 <DateField value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
               </div>
               <div>
-                <label className="label">Minutos (±)</label>
+                <label className="label">Tiempo a sumar o descontar (minutos)</label>
                 <input
                   type="number"
                   min={-1440}
@@ -1054,6 +1054,7 @@ export default function EmployeeDetailPage() {
                   onChange={(e) => setAdjForm({ ...adjForm, minutes: Number(e.target.value) })}
                   required
                 />
+                <small className="muted">Use un número positivo para sumar tiempo y uno negativo para descontarlo.</small>
               </div>
               <div>
                 <label className="label">Tipo</label>

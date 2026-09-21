@@ -35,6 +35,10 @@ function formatMinutes(minutes: number): string {
   return `${h} h ${m.toString().padStart(2, "0")}`;
 }
 
+function periodStatusLabel(status: PayrollPeriod["status"]) {
+  return status === "CLOSED" ? "Cerrado" : status === "CALCULATED" ? "Calculado" : "Abierto";
+}
+
 export default function AdminSalariesPage() {
   const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
@@ -179,7 +183,7 @@ export default function AdminSalariesPage() {
           <SelectContent>
             {periods.map((period) => (
               <SelectItem key={period.id} value={period.id}>
-                {period.name} ({period.status})
+                {period.name} ({periodStatusLabel(period.status)})
               </SelectItem>
             ))}
           </SelectContent>

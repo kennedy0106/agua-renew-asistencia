@@ -122,8 +122,8 @@ test("HST-01 previsualiza, guarda y consulta normal, adicional, recuperación y 
   expect(savedPayloads.map(({ approve_additional }) => approve_additional)).toEqual([false, true, false, true]);
   await expect(page.getByRole("heading", { name: "Historial de cargas" })).toBeVisible();
   const historyPanel = page.getByRole("heading", { name: "Historial de cargas" }).locator("..");
-  await expect(historyPanel.getByText("480 min", { exact: true })).toHaveCount(2);
-  await expect(historyPanel.getByText("120 min", { exact: true })).toHaveCount(2);
+  await expect(historyPanel.getByText("8 h 00", { exact: true })).toHaveCount(2);
+  await expect(historyPanel.getByText("2 h 00", { exact: true })).toHaveCount(2);
 });
 
 test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos incompletos", async ({ page }) => {
@@ -161,7 +161,7 @@ test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos inc
   await expect(page.getByText("La referencia del importe revisado es obligatoria.", { exact: true })).toBeVisible();
   await row.getByLabel("Referencia de importe revisado").fill("Acta RRHH 001");
   await page.getByRole("button", { name: "Previsualizar" }).click();
-  await expect(page.getByText("Importe revisado · S/ 125.50 · Pendiente de aprobación")).toBeVisible();
+  await expect(page.getByText("Importe acordado · S/ 125.50 · Pendiente de aprobación")).toBeVisible();
   await expect(page.getByText("Feriado trabajado · Acta RRHH 001")).toBeVisible();
   await expect(page.getByRole("button", { name: "Guardar y aprobar adicionales" })).toBeEnabled();
   expect(previewPayload).toMatchObject({ payment_method: "REVIEWED", payment_concept: "Feriado trabajado", source_reference: "Acta RRHH 001", reviewed_additional_amount: "125.50" });
@@ -208,12 +208,12 @@ test("HST-01 edita una carga normal como distribución y avisa si su versión qu
   await page.getByRole("button", { name: "Editar" }).click();
   await expect(page.getByRole("heading", { name: "Editar carga histórica" })).toBeVisible();
   await expect(page.getByLabel("Fecha inmutable")).toHaveValue("2026-09-10");
-  await page.getByLabel("Tratamiento de edición").selectOption("MIXED");
+  await page.getByLabel("Cómo registrar estas horas").selectOption("MIXED");
   await page.getByLabel("Normal editado").fill("360");
   await page.getByLabel("Adicional editado").fill("120");
   await page.getByLabel("Método de pago adicional editado").selectOption("OVERTIME");
   await page.getByRole("button", { name: "Previsualizar cambios" }).click();
-  await expect(page.getByText("Previsualización: W 480 min · N 360 min · P 120 min · R 0 min")).toBeVisible();
+  await expect(page.getByText("Resultado: 8 h 00 trabajadas · 6 h 00 regulares · 2 h 00 adicionales · 0 h 00 recuperadas · Cálculo automático de horas extra · S/ 31.50 · Pendiente de aprobación")).toBeVisible();
   await page.getByRole("button", { name: "Guardar corrección" }).click();
   await expect(page.getByText("Corrección versionada guardada. El historial se actualizó.")).toBeVisible();
   expect(updatePayload).toMatchObject({ employee_id: "employee-normal", worked_minutes_net: 480, normal_minutes: 360, additional_minutes: 120, recovery_minutes: 0, expected_version: 1 });
@@ -245,7 +245,7 @@ test("A09/A14: descarta un preview tardío y el estado efectivo aprobado manda s
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await expect(page.getByText("Sobretiempo ordinario · S/ 31.50 · Aprobado")).toBeVisible();
+  await expect(page.getByText("Cálculo automático de horas extra · S/ 31.50 · Aprobado")).toBeVisible();
   await page.getByLabel("Fecha trabajada").fill("2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check();
@@ -433,7 +433,7 @@ test("U06/U07: al recargar consulta el recibo del usuario y recupera sin reenvia
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await expect(page.getByText("Operación recuperada: BATCH. Historial actualizado.")).toBeVisible();
+  await expect(page.getByText("Se recuperó la carga de horas. El historial está actualizado.")).toBeVisible();
   expect(mutations).toBe(0);
   expect(await page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBeNull();
 });
