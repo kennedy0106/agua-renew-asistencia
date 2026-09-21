@@ -142,6 +142,8 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
   const [customTo, setCustomTo] = useState(today);
   const [accrual, setAccrual] = useState<PayrollAccrual | null>(null);
   const [accrualLoading, setAccrualLoading] = useState(true);
+  const [accrualError, setAccrualError] = useState<string | null>(null);
+  const accrualRequestId = useRef(0);
 
   const [treatment, setTreatment] = useState<Treatment>("NORMAL");
   const [hours, setHours] = useState("8");
@@ -228,19 +230,25 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     }
   }, [bounds.from, bounds.to, employeeId]);
 
-  const loadAccrual = useCallback(async () => {
+  const loadAccrual = useCallback(async (background = false) => {
+    const requestId = ++accrualRequestId.current;
     setAccrualLoading(true);
+    setAccrualError(null);
+    if (!background) setAccrual(null);
     try {
-      setAccrual(await employeeAttendanceApi.accrual(employeeId, {
+      const response = await employeeAttendanceApi.accrual(employeeId, {
         period,
         anchor_date: `${month}-${String(Math.min(Number(today.slice(8, 10)), Number(bounds.to.slice(8, 10)))).padStart(2, "0")}`,
         date_from: period === "CUSTOM" ? customFrom : undefined,
         date_to: period === "CUSTOM" ? customTo : undefined,
-      }));
+      });
+      if (requestId === accrualRequestId.current) setAccrual(response);
     } catch (err) {
-      setError(friendlyError(err, "No se pudo calcular el acumulado del periodo."));
+      if (requestId === accrualRequestId.current) {
+        setAccrualError(friendlyError(err, "No se pudo calcular el acumulado del periodo."));
+      }
     } finally {
-      setAccrualLoading(false);
+      if (requestId === accrualRequestId.current) setAccrualLoading(false);
     }
   }, [bounds.to, customFrom, customTo, employeeId, month, period, today]);
 
@@ -345,7 +353,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       const result = await employeeAttendanceApi.createMulti({ ...batchPayload(), preview_token: preview.preview_token });
       setNotice(`${result.items.length} fechas guardadas. La agenda y el acumulado ya están actualizados.`);
       setSelectedDates([]); setOverrides({}); setPreview(null); setBatchKey(crypto.randomUUID()); setBatchDialogOpen(false);
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) {
       const definitive = err instanceof ApiError && (err.responseKind === "DOMAIN_ERROR" || err.responseKind === "REQUEST_VALIDATION");
       setError(definitive
@@ -386,7 +394,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       });
       setEditingAdjustment(null);
       setNotice("Ajuste actualizado. La nueva versión quedó pendiente de aprobación.");
-      await Promise.all([loadAgenda(true), loadAccrual(), onAdjustmentMutated?.()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true), onAdjustmentMutated?.()]);
     } catch (err) { setError(friendlyError(err, "No se pudo actualizar el ajuste.")); }
     finally { setAdjustmentBusy(false); }
   }
@@ -402,7 +410,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       });
       setVoidingAdjustment(null); setVoidReason("");
       setNotice("Ajuste anulado y retirado de los cálculos. El historial se conserva.");
-      await Promise.all([loadAgenda(true), loadAccrual(), onAdjustmentMutated?.()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true), onAdjustmentMutated?.()]);
     } catch (err) { setError(friendlyError(err, "No se pudo anular el ajuste.")); }
     finally { setAdjustmentBusy(false); }
   }
@@ -459,7 +467,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       });
       setEditingManual(null); setManualDraft(null); setManualPreviewToken(null);
       setNotice("Carga actualizada mediante una nueva versión.");
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) { setError(friendlyError(err, "No se pudo actualizar la carga.")); }
     finally { setManualBusy(false); }
   }
@@ -471,7 +479,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       await historicalAttendanceApi.void(voidingManual.id, voidingManual.version, manualVoidReason.trim(), manualOperationKey);
       setVoidingManual(null); setManualVoidReason("");
       setNotice("Carga anulada y retirada de los cálculos. Su historial se conserva.");
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) { setError(friendlyError(err, "No se pudo anular la carga.")); }
     finally { setManualBusy(false); }
   }
@@ -482,7 +490,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     try {
       await workCalendarApi.setWeeklyRestRule({ employee_id: employeeId, weekly_rest_weekday: Number(restWeekday), reference_daily_minutes: Number(referenceMinutes), source: "Perfil del empleado", reason: calendarReasonForSave, effective_from: bounds.from });
       setNotice("Regla de descanso guardada. La agenda ya muestra su vigencia.");
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) { setError(friendlyError(err, "No se pudo guardar la regla de descanso.")); }
     finally { setCalendarBusy(false); }
   }
@@ -504,7 +512,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
     try {
       const result = await workCalendarApi.substitutionAction(substitution.id, action, { expected_version: substitution.version, reason: calendarReasonForSave, idempotency_key: crypto.randomUUID(), evidence: action === "verify" ? { reference: "Evidencia administrativa desde perfil" } : undefined });
       setSubstitution(result); setNotice(action === "approve" ? "Cambio de descanso aprobado." : action === "verify" ? "Descanso tomado y confirmado." : "Cambio de descanso cancelado. El historial se conserva.");
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) { setError(friendlyError(err, "La acción sobre la sustitución fue rechazada.")); }
     finally { setCalendarBusy(false); }
   }
@@ -528,7 +536,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
         ? await workCalendarApi.approveValuation(valuation.id, { expected_version: valuation.version, preview_token: valuation.preview_token ?? "", idempotency_key: crypto.randomUUID(), reason: calendarReasonForSave })
         : await workCalendarApi.reconcileValuation(valuation.id, { expected_version: valuation.version, reference: calendarReasonForSave, idempotency_key: crypto.randomUUID() });
       setValuation(result); setNotice(action === "approve" ? "Pago confirmado para la próxima planilla." : "Pago marcado como ya realizado; no se volverá a sumar.");
-      await Promise.all([loadAgenda(true), loadAccrual()]);
+      await Promise.all([loadAgenda(true), loadAccrual(true)]);
     } catch (err) { setError(friendlyError(err, "La acción sobre la valoración fue rechazada.")); }
     finally { setCalendarBusy(false); }
   }
@@ -565,6 +573,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
             <label><span className="label">Hasta</span><DateField value={customTo} onChange={setCustomTo} /></label>
           </>}
         </div>
+        {accrualError && <div className="alert alert-error" role="alert">{accrualError}</div>}
         {accrualLoading ? <div className="employee-accrual-loading"><DetailSkeleton sections={1} /></div> : accrual && (
           <div className="employee-accrual-grid">
             <div><span>Base acumulada</span><strong>{money(accrual.base_amount)}</strong></div>

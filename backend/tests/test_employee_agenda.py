@@ -14,6 +14,7 @@ from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.service import AdjustmentService
 from app.modules.overtime.service import OvertimeService
 from app.modules.payroll.models import PERIOD_CALCULATED, PayrollPeriod, PayrollRecord
+from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
 
 
 def _login(client):
@@ -271,6 +272,27 @@ def test_half_months_reconcile_exactly_with_month_when_cents_do_not_divide(clien
     second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={"period": "SECOND_HALF", "anchor_date": "2026-08-20"}).json()
     month = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={"period": "MONTH", "anchor_date": "2026-08-20"}).json()
     assert first["base_amount"] + second["base_amount"] == month["base_amount"] == 1500.01
+
+
+def test_first_half_accrual_includes_approved_special_day_valuation(client, db_session):
+    _login(client)
+    employee = _employee(client, db_session)
+    _configure(client, employee)
+    db_session.add(SpecialDayValuation(
+        employee_id=uuid.UUID(employee), work_date=date(2026, 8, 9),
+        source_kind="WEEKLY_REST", status=VALUATION_APPROVED,
+        worked_minutes=480, reference_daily_minutes=480,
+        amount=Decimal("25.00"), calculation={},
+    ))
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/employees/{employee}/payroll-accrual",
+        params={"period": "FIRST_HALF", "anchor_date": "2026-08-20"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["approved_additional_amount"] == 25.0
 
 
 def test_legacy_adjustment_update_approval_and_void_are_versioned(client, db_session):

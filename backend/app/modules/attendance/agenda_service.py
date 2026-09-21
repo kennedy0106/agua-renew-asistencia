@@ -27,7 +27,7 @@ from app.modules.overtime.service import OvertimeService
 from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PAYROLL_MONTH_SEMIMONTHLY, PayrollMonth, PayrollPeriod, PayrollRecord
 from app.modules.schedules.service import ScheduleService
 from app.modules.salary.service import SalaryService
-from app.modules.work_calendar.models import SpecialDayValuation
+from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
 
 _CENTS = Decimal("0.01")
 _MAX_AGENDA_DAYS = 366

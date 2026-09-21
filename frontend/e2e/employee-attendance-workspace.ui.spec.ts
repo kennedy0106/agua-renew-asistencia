@@ -100,6 +100,47 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
   expect(calls[1].body.preview_token).toBe("p".repeat(64));
 });
 
+test("al fallar otra quincena no conserva el importe del periodo anterior", async ({ page }) => {
+  await page.addInitScript((sessionUser) => sessionStorage.setItem(
+    "agua-renew-admin-session-hint",
+    JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser }),
+  ), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
+    if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: [] } });
+    if (path.includes("/payroll-accrual")) {
+      const period = url.searchParams.get("period");
+      if (period === "FIRST_HALF") return route.fulfill({ status: 500, json: { detail: "Fallo de cálculo" } });
+      return route.fulfill({ json: {
+        employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-21",
+        base_amount: "90.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00",
+        manual_adjustment_amount: "0.00", estimated_total: period === "MONTH" ? "300.00" : "100.00",
+        official_total_snapshot: null, closed_period: null, daily: [],
+      } });
+    }
+    if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
+    if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
+    if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-21", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
+    if (path.includes("/overtime/")) return route.fulfill({ json: [] });
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/admin/employees/employee-1");
+  await expect(page.getByText("S/ 100.00", { exact: true })).toBeVisible();
+  await page.getByLabel("Periodo acumulado").click();
+  await page.getByRole("option", { name: "Primera quincena" }).click();
+  await expect(page.locator(".employee-accrual-panel").getByRole("alert")).toBeVisible();
+  await expect(page.getByText("S/ 100.00", { exact: true })).toHaveCount(0);
+
+  await page.getByLabel("Periodo acumulado").click();
+  await page.getByRole("option", { name: "Mes completo" }).click();
+  await expect(page.getByText("S/ 300.00", { exact: true })).toBeVisible();
+  await expect(page.locator(".employee-accrual-panel").getByRole("alert")).toHaveCount(0);
+});
+
 test("las acciones secundarias del perfil se abren en diálogos y Escape las cierra", async ({ page }) => {
   await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
   await page.route("**/api/v1/**", async (route) => {
