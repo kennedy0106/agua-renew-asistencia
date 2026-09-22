@@ -42,7 +42,7 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
     }
     if (path.includes("/payroll-accrual")) return route.fulfill({ json: {
       employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17",
-      base_amount: "566.67", approved_additional_amount: "31.50", pending_additional_amount: "0.00",
+      base_amount: "566.67", closing_regularization_amount: "0.00", approved_additional_amount: "31.50", pending_additional_amount: "0.00",
       manual_adjustment_amount: "0.00", estimated_total: "598.17", official_total_snapshot: null,
       closed_period: null, daily: [],
     } });
@@ -116,7 +116,7 @@ test("al fallar otra quincena no conserva el importe del periodo anterior", asyn
       if (period === "FIRST_HALF") return route.fulfill({ status: 500, json: { detail: "Fallo de cálculo" } });
       return route.fulfill({ json: {
         employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-21",
-        base_amount: "90.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00",
+        base_amount: "90.00", closing_regularization_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00",
         manual_adjustment_amount: "0.00", estimated_total: period === "MONTH" ? "300.00" : "100.00",
         official_total_snapshot: null, closed_period: null, daily: [],
       } });
@@ -148,7 +148,7 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
     if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: [] } });
-    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
     if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
     if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
     if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
@@ -193,7 +193,7 @@ test("agenda no genera desborde horizontal en móvil", async ({ page }) => {
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
     if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: Array.from({ length: 30 }, (_, index) => ({ work_date: `2026-09-${String(index + 1).padStart(2, "0")}`, expected_minutes: 480, statuses: ["NO_RECORD"], attendance: [], manual_day: null, adjustments: [], recovery_commitments: [] })) } });
-    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
     if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
     if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
     if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
@@ -229,7 +229,7 @@ test("el listado abre el editor compartido y anula un ajuste vigente", async ({ 
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
     if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: Array.from({ length: 30 }, (_, index) => ({ work_date: `2026-09-${String(index + 1).padStart(2, "0")}`, expected_minutes: 480, statuses: ["NO_RECORD"], attendance: [], manual_day: null, adjustments: index === 1 ? [adjustment] : [], recovery_commitments: [] })) } });
-    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
     if (path.endsWith("/adjustments/adjustment-1") && request.method() === "PATCH") { mutations.push({ path, body }); return route.fulfill({ json: { ...adjustment, id: "adjustment-2", version: 3, status: "PENDING" } }); }
     if (path.endsWith("/adjustments/adjustment-1/void")) { mutations.push({ path, body }); return route.fulfill({ json: { ...adjustment, version: 3, voided_at: "2026-09-17T18:00:00Z" } }); }
     if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history")) return route.fulfill({ json: [] });
@@ -284,7 +284,7 @@ test("perfil previsualiza una edición versionada y anula la carga conservando e
           adjustments: [], recovery_commitments: [] };
       }),
     } });
-    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
     if (path.endsWith("/manual-days/preview")) { mutations.push({ path, body }); return route.fulfill({ json: { preview_token: "e".repeat(64), expires_at: "2026-09-17T20:00:00Z", items: [] } }); }
     if (path.endsWith("/manual-days/manual-1") && request.method() === "PATCH") { mutations.push({ path, body }); return route.fulfill({ json: { id: "manual-2", version: 4 } }); }
     if (path.endsWith("/manual-days/manual-1/void")) { mutations.push({ path, body }); return route.fulfill({ json: { id: "manual-1", version: 4, voided_at: "2026-09-17T18:00:00Z" } }); }

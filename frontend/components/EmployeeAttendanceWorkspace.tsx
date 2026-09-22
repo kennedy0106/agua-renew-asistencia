@@ -577,6 +577,10 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
         {accrualLoading ? <div className="employee-accrual-loading"><DetailSkeleton sections={1} /></div> : accrual && (
           <div className="employee-accrual-grid">
             <div><span>Base acumulada</span><strong>{money(accrual.base_amount)}</strong></div>
+            <div><span>Valor día legal (sueldo ÷ 30)</span><strong>{money(accrual.legal_daily_value)}</strong></div>
+            {accrual.closing_regularization_amount != null && Number(accrual.closing_regularization_amount) !== 0 && (
+              <div><span>Regularización de cierre</span><strong>{money(accrual.closing_regularization_amount)}</strong></div>
+            )}
             <div><span>Adicionales aprobados</span><strong>{money(accrual.approved_additional_amount)}</strong></div>
             <div><span>Adicionales pendientes</span><strong>{money(accrual.pending_additional_amount)}</strong></div>
             <div className="employee-accrual-total"><span>Total estimado al {accrual.cutoff_date}</span><strong>{money(accrual.estimated_total)}</strong></div>

@@ -309,6 +309,7 @@ function recognitionStatusLabel(status: PayrollDailyReport["daily"][number]["sta
   return {
     FUTURE_PENDING: "Pendiente",
     PENDING: "En curso",
+    NO_SCHEDULE: "Sin jornada",
     NO_ATTENDANCE: "Sin asistencia",
     PARTIAL: "Parcial",
     RECOGNIZED: "Reconocido",
@@ -319,6 +320,7 @@ function recognitionStatusClass(status: PayrollDailyReport["daily"][number]["sta
   return {
     FUTURE_PENDING: "badge-blue",
     PENDING: "badge-amber",
+    NO_SCHEDULE: "badge-blue",
     NO_ATTENDANCE: "badge-red",
     PARTIAL: "badge-amber",
     RECOGNIZED: "badge-green",
@@ -431,17 +433,32 @@ function FragmentRow({
               <div style={{ marginTop: "1rem" }}>
                 <p className="label" style={{ marginBottom: "0.55rem" }}>Resumen informativo a la fecha</p>
                 <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", fontSize: "0.84rem" }}>
-                  <div><p className="muted">Base programada</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.programmed_base_amount)}</p></div>
-                  <div><p className="muted">Base reconocida</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_base_amount)}</p></div>
+                  <div><p className="muted">Valor día legal (sueldo ÷ 30)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.legal_daily_value)}</p></div>
+                  <div><p className="muted">Base por calendario (treintavos)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.calendar_base_amount)}</p></div>
+                  <div><p className="muted">Regularización de cierre</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.regularization_amount)}</p></div>
+                  <div><p className="muted">Base del tramo (calendario + regularización)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.programmed_base_amount)}</p></div>
+                  <div><p className="muted">Base reconocida (asistencia)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_base_amount)}</p></div>
+                  <div><p className="muted">Saldo no atribuido (base − reconocido)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.unattributed_base_amount)}</p></div>
                   <div><p className="muted">HE reconocida</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_overtime_amount)}</p></div>
-                  <div><p className="muted">Total reconocido</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_total_amount)}</p></div>
+                  <div><p className="muted">Total reconocido (asistencia)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.recognized_total_amount)}</p></div>
                   <div><p className="muted">Base futura pendiente</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.future_pending_base_amount)}</p></div>
                   <div><p className="muted">Diferencia por revisar</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.review_difference_amount)}</p></div>
                 </div>
+                <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.5rem" }}>
+                  Cada fecha del tramo aporta su treintavo legal (sueldo vigente ÷ 30), incluso descansos. La base por
+                  calendario más la regularización de cierre suman la base del tramo. La base reconocida valora la
+                  asistencia al mismo valor día y no es el sueldo total devengado.
+                </p>
               </div>
             )}
             <div style={{ marginTop: "1rem" }}>
               <p className="label" style={{ marginBottom: "0.55rem" }}>Desglose diario del periodo</p>
+              <p className="muted" style={{ fontSize: "0.76rem", marginBottom: "0.45rem" }}>
+                Todas las fechas calendario del tramo aparecen, incluso descansos o días sin jornada. Cada fecha aporta su
+                treintavo legal (sueldo vigente ÷ 30): la base no se reparte entre jornadas programadas. La regularización
+                de cierre (28/29/31 y redondeo) aparece por separado y anclada al cierre. El valor día legal (sueldo ÷ 30,
+                D.S. 012-92-TR, art. 2) no cambia si el mes tiene 28, 29, 30 o 31 días.
+              </p>
               {dailyLoading ? (
                 <div aria-live="polite" aria-label="Cargando desglose diario" style={{ display: "grid", gap: "0.45rem", maxWidth: 640 }}>
                   <Skeleton width="100%" height={12} />
@@ -451,7 +468,7 @@ function FragmentRow({
               ) : dailyError ? (
                 <p className="muted" role="status" style={{ fontSize: "0.84rem" }}>{dailyError}</p>
               ) : daily.length === 0 ? (
-                <p className="muted" style={{ fontSize: "0.84rem" }}>No hay jornadas programadas ni movimientos para este empleado.</p>
+                <p className="muted" style={{ fontSize: "0.84rem" }}>No hay fechas del tramo para este empleado.</p>
               ) : (
                 <>
                   <div className="table-wrap payroll-daily-responsive-wrap" style={{ margin: 0 }}>
@@ -462,11 +479,13 @@ function FragmentRow({
                         <th>Estado</th>
                         <th style={{ textAlign: "right" }}>Reconocido</th>
                         <th style={{ textAlign: "right" }}>Esperado</th>
-                        <th style={{ textAlign: "right" }}>Base programada</th>
-                        <th style={{ textAlign: "right" }}>Base reconocida</th>
+                        <th style={{ textAlign: "right" }}>Valor día legal</th>
+                        <th style={{ textAlign: "right" }}>Base por calendario</th>
+                        <th style={{ textAlign: "right" }}>Regularización</th>
+                        <th style={{ textAlign: "right" }}>Reconocido (asistencia)</th>
                         <th style={{ textAlign: "right" }}>HE reconocida</th>
                         <th style={{ textAlign: "right" }}>Ajustes aprobados</th>
-                        <th style={{ textAlign: "right" }}>Total reconocido</th>
+                        <th style={{ textAlign: "right" }}>Total reconocido (asistencia)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -476,7 +495,9 @@ function FragmentRow({
                           <td><span className={`badge ${recognitionStatusClass(item.status)}`}>{recognitionStatusLabel(item.status)}</span></td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{formatMinutes(item.recognized_minutes)}</td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{formatMinutes(item.expected_minutes)}</td>
+                          <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{formatMoney(item.legal_base_amount)}</td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{formatMoney(item.base_amount)}</td>
+                          <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{Number(item.regularization_amount) !== 0 ? formatMoney(item.regularization_amount) : "—"}</td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{formatMoney(item.recognized_base_amount)}</td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{item.overtime_minutes > 0 ? formatMoney(item.recognized_overtime_amount) : "—"}</td>
                           <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>{item.approved_adjustment_minutes !== 0 ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto` : "—"}</td>
@@ -494,11 +515,13 @@ function FragmentRow({
                       <dl className="responsive-table-card__grid">
                         <div className="responsive-table-card__item"><dt>Reconocido</dt><dd>{formatMinutes(item.recognized_minutes)}</dd></div>
                         <div className="responsive-table-card__item"><dt>Esperado</dt><dd>{formatMinutes(item.expected_minutes)}</dd></div>
-                        <div className="responsive-table-card__item"><dt>Base programada</dt><dd>{formatMoney(item.base_amount)}</dd></div>
-                        <div className="responsive-table-card__item"><dt>Base reconocida</dt><dd>{formatMoney(item.recognized_base_amount)}</dd></div>
+                        <div className="responsive-table-card__item"><dt>Valor día legal</dt><dd>{formatMoney(item.legal_base_amount)}</dd></div>
+                        <div className="responsive-table-card__item"><dt>Base por calendario</dt><dd>{formatMoney(item.base_amount)}</dd></div>
+                        <div className="responsive-table-card__item"><dt>Regularización</dt><dd>{Number(item.regularization_amount) !== 0 ? formatMoney(item.regularization_amount) : "—"}</dd></div>
+                        <div className="responsive-table-card__item"><dt>Reconocido (asistencia)</dt><dd>{formatMoney(item.recognized_base_amount)}</dd></div>
                         <div className="responsive-table-card__item"><dt>HE reconocida</dt><dd>{item.overtime_minutes > 0 ? formatMoney(item.recognized_overtime_amount) : "—"}</dd></div>
                         <div className="responsive-table-card__item"><dt>Ajustes aprobados</dt><dd>{item.approved_adjustment_minutes !== 0 ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto` : "—"}</dd></div>
-                        <div className="responsive-table-card__item"><dt>Total reconocido</dt><dd><strong>{formatMoney(item.recognized_total_amount)}</strong></dd></div>
+                        <div className="responsive-table-card__item"><dt>Total reconocido (asistencia)</dt><dd><strong>{formatMoney(item.recognized_total_amount)}</strong></dd></div>
                       </dl>
                     </article>
                   ))}

@@ -875,6 +875,10 @@ export type PayrollAccrual = {
   date_to: string;
   cutoff_date: string;
   base_amount: string | number;
+  /** Conciliación exacta con sueldo/Q1/Q2 oficial; 0 fuera del cierre real. */
+  closing_regularization_amount: string | number;
+  /** Valor día de ley: sueldo / 30 (D.S. 012-92-TR art. 2), igual en todo mes. */
+  legal_daily_value: string | number;
   approved_additional_amount: string | number;
   pending_additional_amount: string | number;
   manual_adjustment_amount: string | number;
@@ -884,6 +888,8 @@ export type PayrollAccrual = {
   daily: Array<{
     work_date: string;
     base_amount: string | number;
+    regularization_amount: string | number;
+    legal_daily_value: string | number;
     recognized_base_amount: string | number;
     approved_additional_amount: string | number;
     pending_additional_amount: string | number;
@@ -1198,8 +1204,20 @@ export type PayrollDailyReportItem = {
   expected_minutes: number;
   recognized_minutes: number;
   status:
-    "FUTURE_PENDING" | "PENDING" | "NO_ATTENDANCE" | "PARTIAL" | "RECOGNIZED";
+    | "FUTURE_PENDING"
+    | "PENDING"
+    | "NO_SCHEDULE"
+    | "NO_ATTENDANCE"
+    | "PARTIAL"
+    | "RECOGNIZED";
+  /** Base atribuida por calendario: treintavo legal (sueldo / 30) de la fecha. */
   base_amount: string;
+  /** Valor día de ley (sueldo / 30): referencia para descuentos y valoraciones. */
+  legal_daily_value: string;
+  /** Valor día legal de la jornada completa, a centavos (columna principal). */
+  legal_base_amount: string;
+  /** Regularización anclada al cierre (28/29/31 y redondeo), no repartida. */
+  regularization_amount: string;
   recognized_base_amount: string;
   overtime_minutes: number;
   overtime_amount: string;
@@ -1215,8 +1233,17 @@ export type PayrollEmployeeDailySummary = {
   employee_name: string | null;
   worked_minutes: number;
   expected_minutes: number;
+  /** Base del tramo = base de calendario + regularización = snapshot oficial. */
   programmed_base_amount: string;
+  /** Base atribuida por calendario: suma de treintavos diarios. */
+  calendar_base_amount: string;
+  /** Ajuste separado por longitud del mes (28/29/31) y redondeo, al cierre. */
+  regularization_amount: string;
+  /** Valor día de ley (sueldo / 30, D.S. 012-92-TR art. 2): igual en 28/29/30/31 días. */
+  legal_daily_value: string;
   recognized_base_amount: string;
+  /** Saldo de la base oficial no atribuido a asistencia (descansos/feriados/fin de mes). */
+  unattributed_base_amount: string;
   overtime_minutes: number;
   recognized_overtime_amount: string;
   approved_adjustment_minutes: number;
