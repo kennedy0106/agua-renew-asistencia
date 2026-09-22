@@ -4,10 +4,13 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import uuid
 
+import pytest
+
 from sqlalchemy import event
 
 from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance import agenda_service as agenda_module
 from app.modules.attendance.agenda_service import EmployeeAgendaService
 from app.modules.attendance.service import AttendanceService
 from app.modules.adjustments.models import HourAdjustment
@@ -262,16 +265,227 @@ def test_accrual_uses_payroll_proration_without_creating_period(client, db_sessi
     assert body["closed_period"] is None
 
 
-def test_half_months_reconcile_exactly_with_month_when_cents_do_not_divide(client, db_session):
+def test_accrual_mid_period_suma_treintavos_sin_adelantar_la_quincena(client, db_session, monkeypatch):
+    """Al 21/09/2026 con sueldo 650: MONTH=455.00 y SECOND_HALF=130.00.
+
+    Antes se repartía la quincena completa entre los días transcurridos y el
+    acumulado llegaba a 650/325 antes de cerrar. Ahora cada día aporta su
+    treintavo legal (650/30) y no hay regularización hasta el cierre real.
+    """
     _login(client)
     employee = _employee(client, db_session)
     assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
-        "effective_from": "2026-08-01", "monthly_salary": "1500.01", "overtime_enabled": True,
+        "effective_from": "2026-08-01", "monthly_salary": "650.00", "overtime_enabled": True,
+    }).status_code == 201
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: datetime(2026, 9, 21, 12, tzinfo=timezone.utc))
+
+    month = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "MONTH", "anchor_date": "2026-09-21",
+    }).json()
+    second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "SECOND_HALF", "anchor_date": "2026-09-21",
+    }).json()
+    assert month["base_amount"] == 455.0
+    # El treintavo por fila (21.67 × 21) deja 455.07; el residuo de redondeo
+    # (-0.07) se informa como regularización para conciliar 455.00 exacto.
+    assert Decimal(str(month["closing_regularization_amount"])) == Decimal("-0.07")
+    assert second["base_amount"] == 130.0
+    assert Decimal(str(second["closing_regularization_amount"])) == Decimal("-0.02")
+    for payload in (month, second):
+        base = sum(Decimal(str(item["base_amount"])) for item in payload["daily"])
+        reg = sum(Decimal(str(item["regularization_amount"])) for item in payload["daily"])
+        assert base + reg == Decimal(str(payload["base_amount"]))
+    # Los días futuros (22-30) no aportan al acumulado.
+    assert all(Decimal(str(item["base_amount"])) == Decimal("0.00") for item in month["daily"] if item["work_date"] > "2026-09-21")
+
+
+def _closing_employee(client, db_session):
+    created = client.post("/api/v1/employees", json={
+        "dni": "74561299", "employee_code": "AGENDA-02", "first_name": "Cierre",
+        "last_name": "Mensual", "job_role_id": str(db_session._test_job_roles["Operario"]),
+        "hire_date": "2026-01-01",
+    })
+    assert created.status_code == 201, created.text
+    employee = created.json()["id"]
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-01-01", "monthly_salary": "650.00", "overtime_enabled": True,
+    }).status_code == 201
+    return employee
+
+
+def test_accrual_regulariza_al_cierre_en_meses_de_28_y_31(client, db_session, monkeypatch):
+    """La regularización de cierre concilia sueldo/Q1/Q2 exactos sin inflar días."""
+    _login(client)
+    employee = _closing_employee(client, db_session)
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: datetime(2026, 10, 5, 12, tzinfo=timezone.utc))
+
+    for anchor, regularization, first_regularization, event_day in (
+        ("2026-08-20", "-21.77", "-0.05", "2026-08-31"),
+        ("2026-02-20", "43.24", "-0.05", "2026-02-28"),
+    ):
+        month = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+            "period": "MONTH", "anchor_date": anchor,
+        }).json()
+        first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+            "period": "FIRST_HALF", "anchor_date": anchor,
+        }).json()
+        second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+            "period": "SECOND_HALF", "anchor_date": anchor,
+        }).json()
+        assert month["base_amount"] == 650.0
+        assert Decimal(str(month["closing_regularization_amount"])) == Decimal(regularization)
+        assert first["base_amount"] + second["base_amount"] == 650.0
+        assert Decimal(str(first["closing_regularization_amount"])) == Decimal(first_regularization)
+        # El evento se ancla a su fecha real (fin de mes), no se reparte, y su
+        # base diaria sigue siendo el treintavo puro.
+        event = next(item for item in month["daily"] if item["work_date"] == event_day)
+        assert Decimal(str(event["base_amount"])) == Decimal("21.67")
+        assert Decimal(str(event["regularization_amount"])) == Decimal(regularization)
+        for payload in (month, first, second):
+            base = sum(Decimal(str(item["base_amount"])) for item in payload["daily"])
+            reg = sum(Decimal(str(item["regularization_amount"])) for item in payload["daily"])
+            assert base + reg == Decimal(str(payload["base_amount"]))
+
+
+def test_accrual_custom_additivity_matches_month(client, db_session, monkeypatch):
+    """CUSTOM 1-15 + CUSTOM 16-fin suma exactamente el MONTH, con eventos."""
+    _login(client)
+    employee = _closing_employee(client, db_session)
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: datetime(2026, 10, 5, 12, tzinfo=timezone.utc))
+
+    month = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "MONTH", "anchor_date": "2026-08-20",
+    }).json()
+    first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "CUSTOM", "anchor_date": "2026-08-20", "date_from": "2026-08-01", "date_to": "2026-08-15",
+    }).json()
+    second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "CUSTOM", "anchor_date": "2026-08-20", "date_from": "2026-08-16", "date_to": "2026-08-31",
+    }).json()
+    assert month["base_amount"] == 650.0
+    assert first["base_amount"] == 325.0
+    assert second["base_amount"] == 325.0
+    assert first["base_amount"] + second["base_amount"] == month["base_amount"]
+    assert Decimal(str(month["closing_regularization_amount"])) == Decimal("-21.77")
+    assert Decimal(str(first["closing_regularization_amount"])) == Decimal("-0.05")
+    assert Decimal(str(second["closing_regularization_amount"])) == Decimal("-21.72")
+    for payload in (month, first, second):
+        base = sum(Decimal(str(item["base_amount"])) for item in payload["daily"])
+        reg = sum(Decimal(str(item["regularization_amount"])) for item in payload["daily"])
+        assert base + reg == Decimal(str(payload["base_amount"]))
+
+
+@pytest.mark.parametrize(
+    "monthly_salary, first_half, second_half, first_regularization, second_regularization, month_regularization",
+    [
+        # Los treintavos puros por fila (50.00) no suman Q1 por doble redondeo:
+        # Q1 = 750.01 y Q2 = 750.00; la regularización visible carga el residuo.
+        ("1500.01", Decimal("750.01"), Decimal("750.00"), Decimal("0.01"), Decimal("-50.00"), Decimal("-49.99")),
+        # Q1 crudo 499.995 → HALF_UP 500.00; Q2 = 499.99 con residuo en Q1.
+        ("999.99", Decimal("500.00"), Decimal("499.99"), Decimal("0.05"), Decimal("-33.29"), Decimal("-33.24")),
+    ],
+)
+def test_half_months_reconcile_exactly_with_month_when_cents_do_not_divide(
+    client, db_session, monthly_salary, first_half, second_half,
+    first_regularization, second_regularization, month_regularization,
+):
+    _login(client)
+    employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": monthly_salary, "overtime_enabled": True,
     }).status_code == 201
     first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={"period": "FIRST_HALF", "anchor_date": "2026-08-20"}).json()
     second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={"period": "SECOND_HALF", "anchor_date": "2026-08-20"}).json()
     month = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={"period": "MONTH", "anchor_date": "2026-08-20"}).json()
-    assert first["base_amount"] + second["base_amount"] == month["base_amount"] == 1500.01
+    assert Decimal(str(first["base_amount"])) == first_half
+    assert Decimal(str(second["base_amount"])) == second_half
+    assert (
+        Decimal(str(first["base_amount"])) + Decimal(str(second["base_amount"]))
+        == Decimal(str(month["base_amount"]))
+        == Decimal(monthly_salary)
+    )
+    assert Decimal(str(first["closing_regularization_amount"])) == first_regularization
+    assert Decimal(str(second["closing_regularization_amount"])) == second_regularization
+    assert Decimal(str(month["closing_regularization_amount"])) == month_regularization
+    # Cada periodo concilia exactamente a céntimos: base + regularización.
+    for payload in (first, second, month):
+        base = sum(Decimal(str(item["base_amount"])) for item in payload["daily"])
+        reg = sum(Decimal(str(item["regularization_amount"])) for item in payload["daily"])
+        assert base + reg == Decimal(str(payload["base_amount"]))
+    # El mismo rango pedido como CUSTOM debe dar idéntico resultado.
+    custom_first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "CUSTOM", "anchor_date": "2026-08-20", "date_from": "2026-08-01", "date_to": "2026-08-15",
+    }).json()
+    custom_second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "CUSTOM", "anchor_date": "2026-08-20", "date_from": "2026-08-16", "date_to": "2026-08-31",
+    }).json()
+    assert Decimal(str(custom_first["base_amount"])) == first_half
+    assert Decimal(str(custom_second["base_amount"])) == second_half
+
+
+def test_primera_quincena_setiembre_regulariza_centimos(client, db_session, monkeypatch):
+    """Setiembre Q1 sueldo 650: 15 × 21.67 = 325.05 y regularización -0.05 -> 325.00."""
+    _login(client)
+    employee = _closing_employee(client, db_session)
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: datetime(2026, 10, 5, 12, tzinfo=timezone.utc))
+
+    first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "FIRST_HALF", "anchor_date": "2026-09-21",
+    }).json()
+    assert first["base_amount"] == 325.0
+    assert Decimal(str(first["closing_regularization_amount"])) == Decimal("-0.05")
+    assert len(first["daily"]) == 15
+    # Base diaria = treintavo puro; la conciliación va aparte.
+    assert all(Decimal(str(item["base_amount"])) == Decimal("21.67") for item in first["daily"])
+    base = sum(Decimal(str(item["base_amount"])) for item in first["daily"])
+    reg = sum(Decimal(str(item["regularization_amount"])) for item in first["daily"])
+    assert base == Decimal("325.05")
+    assert base + reg == Decimal("325.00")
+
+
+@pytest.mark.parametrize(
+    "month, anchor, event_day",
+    [(1, "2026-01-20", "2026-01-31"), (2, "2026-02-20", "2026-02-28"), (8, "2026-08-20", "2026-08-31")],
+)
+def test_accrual_mes_completo_con_aumento_dia16(client, db_session, monkeypatch, month, anchor, event_day):
+    """Aumento 650 -> 700 el día 16: Q1 325 + Q2 350 = mes 675 con 28/31 días."""
+    _login(client)
+    created = client.post("/api/v1/employees", json={
+        "dni": f"7457{month:04d}", "employee_code": f"AGENDA-{month:02d}",
+        "first_name": "Aumento", "last_name": "Mitad",
+        "job_role_id": str(db_session._test_job_roles["Operario"]), "hire_date": "2026-01-01",
+    })
+    assert created.status_code == 201, created.text
+    employee = created.json()["id"]
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-01-01", "monthly_salary": "650.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": f"2026-{month:02d}-16", "monthly_salary": "700.00", "overtime_enabled": True,
+    }).status_code == 201
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: datetime(2026, 10, 5, 12, tzinfo=timezone.utc))
+
+    month_out = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "MONTH", "anchor_date": anchor,
+    }).json()
+    first = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "FIRST_HALF", "anchor_date": anchor,
+    }).json()
+    second = client.get(f"/api/v1/employees/{employee}/payroll-accrual", params={
+        "period": "SECOND_HALF", "anchor_date": anchor,
+    }).json()
+    assert month_out["base_amount"] == 675.0
+    assert first["base_amount"] == 325.0
+    assert second["base_amount"] == 350.0
+    assert Decimal(str(first["base_amount"])) + Decimal(str(second["base_amount"])) == Decimal("675.00")
+    for payload in (month_out, first, second):
+        base = sum(Decimal(str(item["base_amount"])) for item in payload["daily"])
+        reg = sum(Decimal(str(item["regularization_amount"])) for item in payload["daily"])
+        assert base + reg == Decimal(str(payload["base_amount"]))
+    # El día 31 conserva su treintavo base 23.33 y la normalización va aparte.
+    event = next(item for item in month_out["daily"] if item["work_date"] == event_day)
+    assert Decimal(str(event["base_amount"])) == Decimal("23.33")
+    assert Decimal(str(event["regularization_amount"])) != Decimal("0.00")
 
 
 def test_first_half_accrual_includes_approved_special_day_valuation(client, db_session):

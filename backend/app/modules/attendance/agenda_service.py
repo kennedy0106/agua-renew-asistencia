@@ -2,6 +2,13 @@
 
 Estas consultas reutilizan asistencia, ajustes, HST-01 y sueldo vigente. No
 crean periodos, no recalculan snapshots y nunca generan marcas del kiosco.
+
+La base acumulada no reparte la quincena ni el mes entre los días transcurridos:
+cada fecha calendario en relación laboral aporta su treintavo legal (sueldo
+vigente / 30) y la conciliación con el sueldo/Q1/Q2 oficial se informa como una
+regularización separada, anclada a fechas reales de cierre. El valor día de ley
+es sueldo / 30 (D.S. 012-92-TR, art. 2), constante en meses de 28, 29, 30 o 31
+días.
 """
 from __future__ import annotations
 
@@ -14,6 +21,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.legal import daily_value, daily_value_out, fortnight_halves
 from app.core.timezone import lima_now
 from app.modules.adjustments.models import ADJUSTMENT_APPROVED, HourAdjustment
 from app.modules.adjustments.service import AdjustmentService
@@ -24,7 +32,7 @@ from app.modules.attendance.service import AttendanceService
 from app.modules.audit.models import AuditLog
 from app.modules.employees.models import Employee
 from app.modules.overtime.service import OvertimeService
-from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PAYROLL_MONTH_SEMIMONTHLY, PayrollMonth, PayrollPeriod, PayrollRecord
+from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PayrollPeriod, PayrollRecord
 from app.modules.schedules.service import ScheduleService
 from app.modules.salary.service import SalaryService
 from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
@@ -268,18 +276,30 @@ class EmployeeAgendaService:
             target = special_by_day if item.status == VALUATION_APPROVED else pending_special_by_day
             target[item.work_date] = target.get(item.work_date, Decimal("0.00")) + item.amount
         salary_service = SalaryService(self.db)
-        # Los céntimos se asignan sobre el mes completo y luego se filtran al
-        # periodo solicitado. Así 1–15 + 16–fin coincide exactamente con mes.
+        # ``base_amount`` de cada fecha es SIEMPRE el treintavo legal puro
+        # (sueldo vigente / 30) redondeado a céntimos; el evento de regularización
+        # jamás se suma a la base del día. Toda la conciliación con el sueldo
+        # mensual y con Q1/Q2 —incluido el residuo de redondear cada fila— vive
+        # en ``regularization_amount``, de modo que
+        # sum(base_amount) + sum(regularization_amount) = base_amount del resumen
+        # exactamente a céntimos para MONTH, FIRST_HALF, SECOND_HALF y CUSTOM.
+        # Los días posteriores al corte no aportan.
         base_by_day: dict[date, Decimal] = {}
+        regularization_by_day: dict[date, Decimal] = {}
+        # Valor día de ley por fecha (sueldo / 30), independiente del reparto.
+        legal_daily_by_day: dict[date, Decimal] = {}
+        # Se acumulan los sueldos y se divide entre 30 una sola vez: sumar
+        # divisiones truncadas sesgaba el redondeo (15 × 1500.01/30 caía bajo
+        # 750.005 y bajaba a 750.00).
+        base_salary_sum = Decimal("0.00")
+        event_numerator_total = Decimal("0.00")
         months = {(item.year, item.month) for item in days}
         for year, month in months:
             month_start = date(year, month, 1)
             month_end = date(year, month, monthrange(year, month)[1])
-            payroll_month = self.db.scalar(select(PayrollMonth).where(PayrollMonth.year == year, PayrollMonth.month == month))
             month_days = [
                 month_start + timedelta(days=offset)
-                for offset in range((min(today, month_end) - month_start).days + 1)
-                if min(today, month_end) >= month_start
+                for offset in range((month_end - month_start).days + 1)
             ]
             active_days = [
                 item_day for item_day in month_days
@@ -289,47 +309,93 @@ class EmployeeAgendaService:
                 )
             ]
             salary_by_day = salary_service.get_for_days({employee_id: active_days})
-            # Once the month is configured for CAL-04, estimations use the
-            # same Q1/Q2 allocator as planilla instead of calendar-day thirds.
-            if payroll_month and payroll_month.mode == PAYROLL_MONTH_SEMIMONTHLY and active_days:
-                first = salary_service.get_for_date(employee_id, month_start)
-                last = salary_service.get_for_date(employee_id, month_end)
-                stable = first is not None and last is not None and first.id == last.id and not (
-                    (employee.hire_date and employee.hire_date > month_start) or
-                    (employee.termination_date and employee.termination_date < month_end)
-                )
-                if stable:
-                    q1, q2 = (first.monthly_salary / Decimal(2)).quantize(_CENTS, rounding=ROUND_HALF_UP), Decimal("0.00")
-                    q2 = first.monthly_salary - q1
-                    for segment_days, amount in (([d for d in month_days if d.day <= 15], q1), ([d for d in month_days if d.day >= 16], q2)):
-                        if not segment_days:
-                            continue
-                        partial = Decimal("0.00")
-                        for item_day in segment_days[:-1]:
-                            share = (amount / Decimal(len(segment_days))).quantize(_CENTS, rounding=ROUND_HALF_UP)
-                            base_by_day[item_day] = share; partial += share
-                        base_by_day[segment_days[-1]] = amount - partial
+            for item_day in active_days:
+                salary = salary_by_day.get((employee_id, item_day))
+                if salary is None:
                     continue
-            raw: list[tuple[date, Decimal]] = []
-            for item_day in month_days:
-                active = not ((employee.hire_date and item_day < employee.hire_date) or (employee.termination_date and item_day > employee.termination_date))
-                salary = salary_by_day.get((employee_id, item_day)) if active else None
-                raw.append((item_day, salary.monthly_salary / Decimal(monthrange(year, month)[1]) if salary else Decimal("0.00")))
-            total = sum((amount for _, amount in raw), Decimal("0.00")).quantize(_CENTS, rounding=ROUND_HALF_UP)
-            allocated = Decimal("0.00")
-            for item_day, amount in raw[:-1]:
-                rounded = amount.quantize(_CENTS, rounding=ROUND_HALF_UP)
-                base_by_day[item_day] = rounded
-                allocated += rounded
-            if raw:
-                base_by_day[raw[-1][0]] = total - allocated
+                legal_daily_by_day[item_day] = daily_value_out(salary.monthly_salary)
+                if date_from <= item_day <= date_to and item_day <= cutoff:
+                    base_salary_sum += salary.monthly_salary
+                    base_by_day[item_day] = daily_value(salary.monthly_salary).quantize(
+                        _CENTS, rounding=ROUND_HALF_UP
+                    )
+        # Normalización de cierre por cada mes completo y ya transcurrido
+        # (fin de mes <= corte). El sueldo mensual remunera 30 días legales: se
+        # concilia Q2 con el sueldo vigente al cierre para que un día 31 no cree
+        # un treintavo extra y febrero complete los 30 días. Q1 conserva los
+        # treintavos reales de 1–15 y Q2 cierra en 15 treintavos del sueldo de
+        # cierre (con aumento el 16: Q1 325 + Q2 350 = 675, en enero o agosto).
+        # Altas o ceses parciales no llevan normalización: suman treintavos
+        # reales. Cada conciliación se lleva como numerador (×30) para dividir
+        # una sola vez y no sesgar el redondeo.
+        for year, month in months:
+            month_start = date(year, month, 1)
+            month_end = date(year, month, monthrange(year, month)[1])
+            if (employee.hire_date and employee.hire_date > month_start) or (
+                employee.termination_date and employee.termination_date < month_end
+            ):
+                continue
+            if not (date_from <= month_end <= date_to and month_end <= cutoff):
+                continue
+            closing = salary_service.get_for_date(employee_id, month_end)
+            midpoint = salary_service.get_for_date(employee_id, date(year, month, 15))
+            if closing is None or midpoint is None:
+                continue
+            month_days = [
+                month_start + timedelta(days=offset)
+                for offset in range((month_end - month_start).days + 1)
+            ]
+            salary_by_month = salary_service.get_for_days({employee_id: month_days})
+            month_salary_sum = sum(
+                (
+                    salary.monthly_salary
+                    for item_day in month_days
+                    if (salary := salary_by_month.get((employee_id, item_day))) is not None
+                ),
+                Decimal("0.00"),
+            )
+            second_half_salary_sum = sum(
+                (
+                    salary.monthly_salary
+                    for item_day in month_days
+                    if item_day.day >= 16
+                    and (salary := salary_by_month.get((employee_id, item_day))) is not None
+                ),
+                Decimal("0.00"),
+            )
+            days_in_month = Decimal(monthrange(year, month)[1])
+            month_numerator = month_salary_sum + (Decimal(30) - days_in_month) * closing.monthly_salary
+            month_target = (month_numerator / Decimal(30)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            q1_target, _ = fortnight_halves(midpoint.monthly_salary)
+            q2_target = (month_target - q1_target).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            event_numerator = Decimal(30) * q2_target - second_half_salary_sum
+            event_numerator_total += event_numerator
+            regularization_by_day[month_end] = (
+                regularization_by_day.get(month_end, Decimal("0.00"))
+                + (event_numerator / Decimal(30)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        base_total = ((base_salary_sum + event_numerator_total) / Decimal(30)).quantize(
+            _CENTS, rounding=ROUND_HALF_UP
+        )
+        # Residuo de redondear cada treintavo. Se acumula en la última fecha del
+        # rango (ancla de cierre) para que los componentes visibles sumen la base
+        # exacta del resumen sin agregar ni perder un centavo.
+        rounded_base_total = sum(base_by_day.values(), Decimal("0.00"))
+        residual = (
+            base_total - rounded_base_total - sum(regularization_by_day.values(), Decimal("0.00"))
+        ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        eligible_days = [item_day for item_day in days if item_day <= cutoff]
+        if eligible_days and residual != Decimal("0.00"):
+            anchor = eligible_days[-1]
+            regularization_by_day[anchor] = regularization_by_day.get(anchor, Decimal("0.00")) + residual
+        # Regularización visible total = base conciliada - treintavos mostrados.
+        closing_regularization = (base_total - rounded_base_total).quantize(_CENTS, rounding=ROUND_HALF_UP)
         daily: list[dict] = []
-        raw_base_total = Decimal("0.00")
         approved_total = Decimal("0.00")
         pending_total = Decimal("0.00")
         for work_date in days:
-            base_raw = base_by_day.get(work_date, Decimal("0.00"))
-            raw_base_total += base_raw
+            base_amount = base_by_day.get(work_date, Decimal("0.00"))
+            regularization_amount = regularization_by_day.get(work_date, Decimal("0.00"))
             manual = manual_by_day.get(work_date)
             approved = approved_values.get(work_date, Decimal("0.00"))
             approved += special_by_day.get(work_date, Decimal("0.00"))
@@ -346,11 +412,16 @@ class EmployeeAgendaService:
             approved_total += approved
             pending_total += pending
             daily.append({
-                "work_date": work_date, "base_amount": base_raw,
+                "work_date": work_date,
+                # Treintavo legal del día (0 en días futuros). El evento de
+                # regularización y el residuo de redondeo se informan aparte y
+                # nunca se reparten entre jornadas ni se suman a la base del día.
+                "base_amount": base_amount,
+                "regularization_amount": regularization_amount,
+                "legal_daily_value": legal_daily_by_day.get(work_date, Decimal("0.00")),
                 "approved_additional_amount": approved, "pending_additional_amount": pending,
-                "estimated_total_amount": (base_raw + approved).quantize(_CENTS, rounding=ROUND_HALF_UP),
+                "estimated_total_amount": (base_amount + regularization_amount + approved).quantize(_CENTS, rounding=ROUND_HALF_UP),
             })
-        base_total = raw_base_total.quantize(_CENTS, rounding=ROUND_HALF_UP)
         record = self.db.execute(select(PayrollRecord, PayrollPeriod).join(PayrollPeriod).where(
             PayrollRecord.employee_id == employee_id,
             PayrollPeriod.start_date == date_from, PayrollPeriod.end_date == date_to,
@@ -367,9 +438,17 @@ class EmployeeAgendaService:
             official = payroll_record.total if payroll_period.status == PERIOD_CLOSED else None
             closed_period = ({"id": str(payroll_period.id), "version": payroll_period.version, "status": payroll_period.status}
                              if payroll_period.status == PERIOD_CLOSED else None)
+        cutoff_salary = salary_service.get_for_date(employee_id, cutoff)
+        legal_daily_value = daily_value_out(cutoff_salary.monthly_salary) if cutoff_salary else Decimal("0.00")
         return {
             "employee_id": str(employee_id), "date_from": date_from, "date_to": date_to,
             "cutoff_date": cutoff, "base_amount": base_total,
+            # Componente de conciliación exacta con el sueldo/Q1/Q2 oficial.
+            # Distinto del valor diario y solo presente cuando el periodo cerró.
+            "closing_regularization_amount": closing_regularization,
+            # Valor día de ley (sueldo / 30): referencia para descuentos y
+            # valoraciones. No cambia si el mes tiene 28, 29, 30 o 31 días.
+            "legal_daily_value": legal_daily_value,
             "approved_additional_amount": approved_total.quantize(_CENTS),
             "pending_additional_amount": pending_total.quantize(_CENTS),
             "manual_adjustment_amount": manual_adjustment,

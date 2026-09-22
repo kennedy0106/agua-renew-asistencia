@@ -1106,10 +1106,18 @@ class AttendanceService:
         for record, minutes in zip(records, contributions, strict=True):
             record.worked_minutes = minutes
             self.db.add(record)
+        # El flush hace visibles los minutos nuevos (la sesión corre sin
+        # autoflush) y deja el commit al final, después de revalorizar.
+        self.db.flush()
+        # Una valoración especial vigente del mismo empleado/día parte de estos
+        # minutos netos ya consolidados: se recalcula (o se exige rectificación
+        # si su planilla está cerrada) sin crear filas ni descontar de nuevo el
+        # refrigerio.  Si revalorizar falla, nada se confirma.
+        from app.modules.work_calendar.service import SpecialDayValuationService
+
+        SpecialDayValuationService(self.db).recompute_for_day(employee_id, work_date)
         if commit:
             self.db.commit()
-        else:
-            self.db.flush()
         return gross - break_to_apply
 
     def _break_override(self, employee_id: uuid.UUID, work_date: date) -> AttendanceBreakOverride | None:
@@ -1242,6 +1250,10 @@ class AttendanceService:
             override.requested_break_minutes, override.reason, override.created_by_user_id = requested_break_minutes, reason.strip(), current_user_id
             self.db.add(override)
             action = "break_override_updated"
+        # El refrigerio debe estar persistido antes de recalcular: la sesión
+        # corre sin autoflush, y el neto (y su valoración) deben partir del
+        # override nuevo, no del automático previo.
+        self.db.flush()
         self._recompute_day(employee_id, work_date, commit=False)
         self.db.flush()
         AuditRepository(self.db).create(entity_type="attendance_break_override", entity_id=override.id, action=action, old_values=old_values, new_values={"employee_id": str(employee_id), "work_date": work_date.isoformat(), "requested_break_minutes": requested_break_minutes}, reason=reason.strip(), performed_by=current_user_id, commit=False)

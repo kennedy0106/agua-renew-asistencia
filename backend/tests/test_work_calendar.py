@@ -6,7 +6,9 @@ from decimal import Decimal
 from sqlalchemy import select
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
+from app.modules.payroll.models import PayrollPeriod
 from app.modules.users.models import User
+from app.modules.work_calendar.models import SpecialDayValuation
 
 
 def _login(client):
@@ -125,7 +127,7 @@ def test_substitution_requires_24_hours_and_administrative_evidence(client, db_s
     assert verified.json()["status"] == "ENJOYED"
 
 
-def test_may_day_catalog_and_excess_remain_review_required(client, db_session):
+def test_may_day_catalog_keeps_special_treatment_and_values_effective_hours(client, db_session):
     _login(client)
     employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
     # Catalog endpoint is idempotent and exposes May Day as its own treatment.
@@ -140,14 +142,22 @@ def test_may_day_catalog_and_excess_remain_review_required(client, db_session):
     assert preview.status_code == 200, preview.text
     payload = preview.json()
     assert payload["source_kind"] == "MAY_DAY_COINCIDENCE"
-    assert payload["status"] == "REVIEW_REQUIRED"
+    # Las horas efectivas sobre la referencia se pagan (no se topan ni exigen revisión).
+    assert payload["status"] == "PENDING"
+    assert payload["calculation"]["known_minutes"] == 360
     assert payload["calculation"]["excess_minutes"] == 60
-    rejected = client.post(f"/api/v1/work-calendar/valuations/{payload['id']}/approve", json={
+    # Trato especial de Primero de Mayo: pago del día + trabajo al 100% de las
+    # horas efectivas: 21.67 + 2 × 21.6667 × 360/300 = 21.67 + 52.00 = 73.67.
+    assert Decimal(str(payload["amount"])) == Decimal("73.67")
+    components = {item["component_kind"]: (item["minutes"], Decimal(item["amount"])) for item in payload["components"]}
+    assert components["MAY_DAY_PAID"] == (0, Decimal("21.67"))
+    assert components["MAY_DAY_WORK"] == (360, Decimal("52.00"))
+    approved = client.post(f"/api/v1/work-calendar/valuations/{payload['id']}/approve", json={
         "expected_version": payload["version"], "preview_token": payload["preview_token"],
-        "idempotency_key": "cal-test-may-day-excess", "reason": "Intento controlado",
+        "idempotency_key": "cal-test-may-day-effective", "reason": "Aprobación de horas efectivas",
     })
-    assert rejected.status_code == 409
-    assert "SPECIAL_DAY_OVERTIME_REVIEW_REQUIRED" in rejected.text
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
 
 
 def test_holiday_substitution_may_be_enjoyed_outside_the_origin_week(client, db_session):
@@ -223,3 +233,250 @@ def test_special_components_reference_and_manual_work_guard(client, db_session):
     })
     assert blocked.status_code == 409
     assert "carga administrativa incompatible" in blocked.text
+
+
+def test_approved_special_day_excludes_ordinary_overtime(client, db_session):
+    """Un feriado aprobado no se re-paga como hora extra ordinaria del mismo día."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    assert client.post("/api/v1/work-calendar/holidays/catalogs/2026").status_code == 201
+    db_session.add(AttendanceRecord(
+        employee_id=employee_id, work_date=date(2026, 6, 29),
+        check_in_at=datetime(2026, 6, 29, 8, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 6, 29, 13, tzinfo=timezone.utc), worked_minutes=300, status="COMPLETE",
+    ))
+    db_session.commit()
+    # 2026-06-29 (lunes) cae dentro de la jornada L-V; sin feriado sería una
+    # jornada ordinaria y una HE de 60 min valdría 25%.
+    adjustment = client.post(f"/api/v1/employees/{employee_id}/adjustments", json={
+        "adjustment_date": "2026-06-29", "minutes": 60, "adjustment_type": "OVERTIME",
+        "reason": "Sobretiempo en feriado",
+    })
+    assert adjustment.status_code == 201, adjustment.text
+    payload = adjustment.json()
+    approved_adj = client.patch(f"/api/v1/adjustments/{payload['id']}/approve", json={
+        "expected_version": payload["version"], "expected_snapshot": payload["approval_snapshot"],
+        "idempotency_key": "cal-test-holiday-overtime-exclusion",
+    })
+    assert approved_adj.status_code == 200, approved_adj.text
+
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-06-29", "source_kind": "HOLIDAY",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    assert value["source_kind"] == "HOLIDAY"
+    assert Decimal(str(value["amount"])) == Decimal("43.33")
+    approved = client.post(f"/api/v1/work-calendar/valuations/{value['id']}/approve", json={
+        "expected_version": value["version"], "preview_token": value["preview_token"],
+        "idempotency_key": "cal-test-holiday-valuation", "reason": "Feriado trabajado",
+    })
+    assert approved.status_code == 200, approved.text
+
+    overtime = client.get(f"/api/v1/employees/{employee_id}/overtime/value?date_from=2026-06-01&date_to=2026-06-30").json()
+    # La misma jornada ya se valora como feriado: no se duplica como HE ordinaria.
+    assert Decimal(str(overtime["value"])) == Decimal("0.00")
+    assert overtime["overtime_minutes"] == 0
+
+
+def _special_day_with_attendance(client, db_session, *, worked_minutes: int = 300):
+    """Empleado con descanso semanal configurado y una asistencia completada."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    rule = client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 6, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Descanso semanal acordado", "effective_from": "2026-01-01",
+    })
+    assert rule.status_code == 201, rule.text
+    record = AttendanceRecord(
+        employee_id=employee_id, work_date=date(2026, 8, 2),
+        check_in_at=datetime(2026, 8, 2, 8, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 8, 2, 8 + worked_minutes // 60, worked_minutes % 60, tzinfo=timezone.utc),
+        worked_minutes=worked_minutes, status="COMPLETE",
+    )
+    db_session.add(record)
+    db_session.commit()
+    return employee_id, record
+
+
+def _preview_and_approve(client, employee_id, *, key: str):
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-08-02", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    approved = client.post(f"/api/v1/work-calendar/valuations/{value['id']}/approve", json={
+        "expected_version": value["version"], "preview_token": value["preview_token"],
+        "idempotency_key": key, "reason": "Aprobación de prueba",
+    })
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
+    return value
+
+
+def _stored_valuation(db_session, valuation_id: str) -> SpecialDayValuation:
+    db_session.expire_all()
+    row = db_session.scalar(select(SpecialDayValuation).where(SpecialDayValuation.id == uuid.UUID(valuation_id)))
+    assert row is not None
+    return row
+
+
+def test_pending_valuation_recomputes_on_break_change(client, db_session):
+    """Un refrigerio nuevo recalcula la valoración PENDIENTE sin descuentos dobles."""
+    employee_id, _record = _special_day_with_attendance(client, db_session)
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-08-02", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    assert value["status"] == "PENDING"
+    assert value["worked_minutes"] == 300
+    assert Decimal(value["amount"]) == Decimal("43.33")
+    original_token = value["preview_token"]
+
+    response = client.put(f"/api/v1/attendance/daily/{employee_id}/2026-08-02/break", json={
+        "requested_break_minutes": 30, "reason": "Refrigerio ajustado por jefe",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["worked_minutes"] == 270
+
+    row = _stored_valuation(db_session, value["id"])
+    assert row.status == "PENDING"
+    assert row.worked_minutes == 270
+    assert row.reference_daily_minutes == 300
+    assert Decimal(str(row.amount)) == Decimal("39.00")
+    assert row.preview_token and row.preview_token != original_token
+    assert row.version == value["version"] + 1
+    assert row.calculation["known_minutes"] == 270
+    assert row.approved_at is None and row.approved_by_user_id is None
+    components = {item.component_kind: item for item in row.components}
+    assert components["WEEKLY_REST_WORK"].minutes == 270
+    assert components["WEEKLY_REST_SURCHARGE"].minutes == 270
+    assert sum(Decimal(str(item.amount)) for item in row.components) == Decimal("39.00")
+    # La valoración sigue siendo la única activa: no se creó una fila ajena.
+    active = db_session.scalars(select(SpecialDayValuation).where(
+        SpecialDayValuation.employee_id == employee_id,
+        SpecialDayValuation.work_date == date(2026, 8, 2), SpecialDayValuation.voided_at.is_(None),
+    )).all()
+    assert len(active) == 1
+
+
+def test_approved_valuation_reopens_to_pending_when_hours_change_in_open_period(client, db_session):
+    """Una valoración aprobada en planilla abierta se invalida y exige nueva aprobación."""
+    employee_id, record = _special_day_with_attendance(client, db_session)
+    value = _preview_and_approve(client, employee_id, key="cal-recompute-open-approve")
+
+    period = client.post("/api/v1/payroll/periods", json={"year": 2026, "month": 8, "period_kind": "FIRST_HALF"})
+    assert period.status_code == 201, period.text
+    period_id = period.json()["id"]
+    calculated = client.post(f"/api/v1/payroll/periods/{period_id}/calculate")
+    assert calculated.status_code == 200, calculated.text
+    assert Decimal(str(calculated.json()[0]["special_day_amount"])) == Decimal("43.33")
+
+    corrected = client.patch(f"/api/v1/attendance/{record.id}", json={
+        "check_out_at": datetime(2026, 8, 2, 12, tzinfo=timezone.utc).isoformat(),
+        "reason": "Corrección de salida del jefe",
+    })
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["worked_minutes"] == 240
+
+    row = _stored_valuation(db_session, value["id"])
+    assert row.status == "PENDING"
+    assert row.worked_minutes == 240
+    assert Decimal(str(row.amount)) == Decimal("34.67")
+    assert row.preview_token is not None
+    assert row.approved_at is None and row.approved_by_user_id is None
+    assert row.version > value["version"]
+    assert row.calculation["known_minutes"] == 240
+    assert row.calculation["excess_minutes"] == 0
+
+    db_session.expire_all()
+    reopened = db_session.get(PayrollPeriod, uuid.UUID(period_id))
+    assert reopened.status == "OPEN"
+    assert reopened.inputs_fingerprint is None
+
+
+def test_approved_valuation_in_closed_period_blocks_hours_change(client, db_session):
+    """Un pago cerrado no se modifica en silencio: exige rectificación explícita."""
+    employee_id, record = _special_day_with_attendance(client, db_session)
+    value = _preview_and_approve(client, employee_id, key="cal-recompute-closed-approve")
+
+    period = client.post("/api/v1/payroll/periods", json={"year": 2026, "month": 8, "period_kind": "FIRST_HALF"})
+    assert period.status_code == 201, period.text
+    period_id = period.json()["id"]
+    assert client.post(f"/api/v1/payroll/periods/{period_id}/calculate").status_code == 200
+    closed = client.post(f"/api/v1/payroll/periods/{period_id}/confirm")
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["status"] == "CLOSED"
+
+    blocked = client.patch(f"/api/v1/attendance/{record.id}", json={
+        "check_out_at": datetime(2026, 8, 2, 12, tzinfo=timezone.utc).isoformat(),
+        "reason": "Intento de corrección sobre pago cerrado",
+    })
+    assert blocked.status_code == 409, blocked.text
+    assert "RECTIFICATION" in blocked.text
+
+    # La operación se revierte por completo: ni la asistencia ni la valoración cambian.
+    db_session.rollback()
+    row = _stored_valuation(db_session, value["id"])
+    assert row.status == "APPROVED"
+    assert row.worked_minutes == 300
+    assert Decimal(str(row.amount)) == Decimal("43.33")
+    stored_record = db_session.get(AttendanceRecord, record.id)
+    assert stored_record.worked_minutes == 300
+
+
+def test_pending_valuation_recomputes_on_manual_attendance(client, db_session):
+    """Una carga histórica también revaloriza el descanso/feriado pendiente."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    rule = client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 1, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Descanso semanal del martes", "effective_from": "2026-01-01",
+    })
+    assert rule.status_code == 201, rule.text
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-09-01", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    assert value["status"] == "PENDING" and value["worked_minutes"] == 0
+
+    created = client.post("/api/v1/attendance/manual-days/batch", json={
+        "work_date": "2026-09-01",
+        "rows": [{
+            "employee_id": str(employee_id), "worked_minutes_net": 240, "normal_minutes": 240,
+            "additional_minutes": 0, "recovery_minutes": 0, "reason": "Trabajo documentado",
+            "recovery_allocations": [],
+        }],
+        "idempotency_key": "cal-manual-recompute", "approve_additional": False,
+    })
+    assert created.status_code == 200, created.text
+
+    row = _stored_valuation(db_session, value["id"])
+    assert row.status == "PENDING"
+    assert row.worked_minutes == 240
+    assert Decimal(str(row.amount)) == Decimal("34.67")
+    assert row.preview_token is not None
+
+
+def test_notes_only_correction_keeps_approved_valuation_untouched(client, db_session):
+    """Una corrección que no cambia el neto no renueva ni invalida la aprobación."""
+    employee_id, record = _special_day_with_attendance(client, db_session)
+    value = _preview_and_approve(client, employee_id, key="cal-notes-only-approve")
+    original = _stored_valuation(db_session, value["id"])
+    original_version = original.version
+    original_amount = original.amount
+
+    corrected = client.patch(f"/api/v1/attendance/{record.id}", json={
+        "notes": "Se registra una incidencia sin alterar horas",
+        "reason": "Anotar incidencia administrativa",
+    })
+    assert corrected.status_code == 200, corrected.text
+
+    row = _stored_valuation(db_session, value["id"])
+    assert row.status == "APPROVED"
+    assert row.version == original_version
+    assert row.worked_minutes == 300
+    assert row.amount == original_amount
+    assert row.approved_at is not None

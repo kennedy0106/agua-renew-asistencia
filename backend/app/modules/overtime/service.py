@@ -9,8 +9,10 @@
 - Tasas efectivas resueltas por get_effective_overtime_rates (política general
   o override por empleado). No se duplica la decisión.
 - Si overtime_enabled = false en el salary vigente → no se paga horas extra.
-- Tarifa ordinaria: sueldo mensual / 30 / horas de jornada del día
-  (minutos programados del weekday, sin restar refrigerio).
+- Tarifa ordinaria (D.S. 007-2002-TR, art. 12): valor día legal / horas de la
+  jornada del día (minutos programados del weekday, sin restar refrigerio),
+  donde valor día = sueldo mensual / 30 (D.S. 012-92-TR, art. 2). El divisor 30
+  es fijo: no depende de si el mes tiene 28, 29, 30 o 31 días.
 - Dinero SIEMPRE en Decimal; se redondea a céntimos una sola vez por día.
 """
 
@@ -22,6 +24,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.legal import daily_value, hourly_value, hourly_value_out
 from app.modules.adjustments.models import ADJUSTMENT_APPROVED
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.repository import AttendanceRepository
@@ -90,15 +93,14 @@ class OvertimeService:
         return detected
 
     def hourly_rate(self, employee_id: uuid.UUID, ref: date) -> Decimal:
-        """Sueldo / 30 / horas de jornada del día (R04)."""
+        """Valor día legal / horas de la jornada del día (D.S. 007-2002-TR, art. 12)."""
         salary = SalaryService(self.db).get_for_date(employee_id, ref)
         if salary is None:
             return Decimal("0")
         day_minutes = ScheduleService(self.db).expected_minutes(employee_id, ref)
         if day_minutes <= 0:
             return Decimal("0")
-        hours = Decimal(day_minutes) / Decimal(60)
-        return (salary.monthly_salary / Decimal(30) / hours).quantize(_RATE, rounding=ROUND_HALF_UP)
+        return hourly_value_out(salary.monthly_salary, day_minutes)
 
     def _raw_hourly_rate(self, employee_id: uuid.UUID, ref: date) -> Decimal:
         salary = SalaryService(self.db).get_for_date(employee_id, ref)
@@ -107,8 +109,7 @@ class OvertimeService:
         day_minutes = ScheduleService(self.db).expected_minutes(employee_id, ref)
         if day_minutes <= 0:
             return Decimal("0")
-        hours = Decimal(day_minutes) / Decimal(60)
-        return salary.monthly_salary / Decimal(30) / hours
+        return hourly_value(salary.monthly_salary, day_minutes)
 
     def special_day_hourly_rate(self, employee_id: uuid.UUID, ref: date) -> Decimal:
         """Tarifa de CAL-01/03 usando referencia histórica, aun con jornada cero."""
@@ -116,7 +117,7 @@ class OvertimeService:
         if salary is None:
             return Decimal("0")
         reference = WorkCalendarService(self.db).resolve_employee_day(employee_id, ref)["reference_daily_minutes"]
-        return salary.monthly_salary / Decimal(30) / (Decimal(reference) / Decimal(60))
+        return daily_value(salary.monthly_salary) / (Decimal(reference) / Decimal(60))
 
     @staticmethod
     def _effective_rates_from_history(salary, policies, day: date) -> dict:
@@ -212,10 +213,8 @@ class OvertimeService:
 
             rates = self._effective_rates_from_history(salary, policy_history, day)
             day_minutes = schedule_minutes_by_day[(employee_id, day)]
-            hourly = (
-                salary.monthly_salary / Decimal(30) / (Decimal(day_minutes) / Decimal(60))
-                if day_minutes > 0 else Decimal("0")
-            )
+            # Valor día legal / horas de la jornada del trabajador (art. 12).
+            hourly = hourly_value(salary.monthly_salary, day_minutes)
             if hourly <= 0:
                 skip_reason = "MISSING_SCHEDULE"
                 breakdown.append(

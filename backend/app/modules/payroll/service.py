@@ -3,10 +3,17 @@
 Reglas del MVP:
 - El payroll se calcula DESPUÉS de asistencia/ajustes, nunca antes.
 - Cálculo por empleado ACTIVO con sueldo vigente en el periodo:
-    total = base_salary (sueldo mensual) + overtime_amount + manual_adjustment
+    total = base_salary (sueldo mensual) + overtime_amount + special_day_amount
+            + manual_adjustment
   adjustment_amount se conserva en 0.00: los ajustes de horas NO cambian el
   monto automáticamente (nada automático en dinero); su efecto monetario se
   aplica vía ajuste manual con motivo, si el jefe lo decide.
+- Divisor legal fijo (D.S. 012-92-TR art. 2): el valor día de un trabajador
+  mensual es el sueldo dividido entre 30 y el de uno quincenal entre 15. Es el
+  mismo valor día en febrero (28 o 29 días), en un mes de 30 y en uno de 31.
+  El sueldo mensual remunera el mes completo (incluye descanso semanal y
+  feriados), por lo que el divisor no se usa para multiplicar días calendario
+  sueltos: sirve para valores unitarios, valoraciones y descuentos.
 - El cierre (CLOSED) congela el snapshot: inmutabilidad.
 - Toda operación sensible (ajuste manual, cierre) queda auditada.
 """
@@ -23,6 +30,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.legal import daily_value, daily_value_out, fortnight_halves
 from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
@@ -56,6 +64,7 @@ from app.modules.work_calendar.models import (
 from app.core.timezone import lima_tz
 
 _CENTS = Decimal("0.01")
+_RATE = Decimal("0.0001")
 
 
 def _report_today() -> date:
@@ -390,22 +399,45 @@ class PayrollService:
         )
 
     def _prorated_base(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
+        """Base del periodo mensual con el modelo de 30 días legales (D.S. 012-92-TR, art. 2).
+
+        - **Mes calendario completo**: cada fecha calendario aporta su treintavo
+          legal (sueldo vigente / 30) y, al cierre, se normaliza la diferencia
+          entre 30 y los días reales del mes con el sueldo vigente a fin de mes.
+          Así un mes estable paga exactamente el sueldo (ni 31/30 ni 28/30), un
+          aumento el día 16 da Q1 325 + Q2 350 = 675 en enero y en febrero, y un
+          día 31 no crea un treintavo adicional.
+        - **Periodo parcial** (alta, cese o filas históricas anteriores a la
+          validación de mes completo): suma treintavos reales del valor día
+          legal (sueldo / 30), sin normalización de mes completo.
+        """
         active_from, active_to = self._employment_bounds(employee, period)
         if active_from > active_to:
             return Decimal("0.00"), None, 0
-        days_in_month = Decimal(monthrange(period.start_date.year, period.start_date.month)[1])
+        month_days = monthrange(period.start_date.year, period.start_date.month)[1]
+        month_start = date(period.start_date.year, period.start_date.month, 1)
+        month_end = date(period.start_date.year, period.start_date.month, month_days)
+        covers_month = active_from <= month_start and active_to >= month_end
         total = Decimal("0")
         reference = None
+        closing = None
         missing_salary_days = 0
         day = active_from
         while day <= active_to:
             salary = salaries.get_for_date(employee.id, day)
-            if salary is not None:
-                reference = reference or salary
-                total += salary.monthly_salary / days_in_month
-            else:
+            if salary is None:
                 missing_salary_days += 1
+            else:
+                reference = reference or salary
+                closing = salary
+                # Treintavo legal sin redondear por día para conservar céntimos.
+                total += daily_value(salary.monthly_salary)
             day += timedelta(days=1)
+        if covers_month and closing is not None and missing_salary_days == 0:
+            # Normalización de cierre: 30 días legales contra los días reales,
+            # valorados con el sueldo vigente a fin de mes. Un día 31 resta su
+            # treintavo y febrero lo completa.
+            total += (Decimal(30) - Decimal(month_days)) * daily_value(closing.monthly_salary)
         return total.quantize(_CENTS, rounding=ROUND_HALF_UP), reference, missing_salary_days
 
     def _base_for_period(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
@@ -421,14 +453,15 @@ class PayrollService:
         last = salaries.get_for_date(employee.id, month_end)
         if first is None or last is None or first.id != last.id:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="BASE_ALLOCATION_REVIEW_REQUIRED")
-        q1 = (first.monthly_salary / Decimal(2)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        # Quincena ÷ 15 devuelve el mismo valor día que el mes ÷ 30.
+        q1, _ = fortnight_halves(first.monthly_salary)
         base = q1 if period.period_kind == PERIOD_FIRST_HALF else first.monthly_salary - q1
         return base.quantize(_CENTS, rounding=ROUND_HALF_UP), first, 0
 
     @staticmethod
     def allocate_semimonthly_base(monthly_salary: Decimal) -> tuple[Decimal, Decimal]:
-        first = (monthly_salary / Decimal(2)).quantize(_CENTS, rounding=ROUND_HALF_UP)
-        return first, (monthly_salary - first).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        """Q1/Q2 del sueldo mensual: la quincena entre 15 da el valor día legal."""
+        return fortnight_halves(monthly_salary)
 
     def _sum_worked_minutes(self, employee_id: uuid.UUID, period: PayrollPeriod) -> int:
         total = self.db.scalar(
@@ -632,10 +665,15 @@ class PayrollService:
         """Descompone un periodo calculado por empleado y jornada.
 
         Es una vista de consulta: parte de los importes ya almacenados en
-        ``PayrollRecord`` y no escribe ni recalcula el periodo. El sueldo base
-        de cada empleado se distribuye proporcionalmente a los minutos de
-        jornada vigentes dentro del periodo; el redondeo se ajusta en la última
-        jornada para que el acumulado sea exactamente el snapshot.
+        ``PayrollRecord`` y no escribe ni recalcula el periodo.
+
+        La representación diaria del sueldo **no se reparte entre jornadas
+        programadas** (nada de 325/13 = 25.00). Se listan todas las fechas
+        calendario del tramo dentro de la relación laboral —incluidos descansos
+        o días sin jornada— y cada fecha aporta su treintavo legal (sueldo
+        vigente / 30). La base oficial del snapshot se concilia con una
+        regularización separada y anclada al cierre: 15 fechas suman 325.00 y un
+        mes de 28/29/31 días regulariza su desfase sin inflar una jornada.
 
         Los ajustes de horas aprobados no alteran dinero automáticamente por
         la regla actual del producto, por lo que su importe es siempre 0.00.
@@ -678,6 +716,14 @@ class PayrollService:
                     SpecialDayValuation.voided_at.is_(None),
                 ))
             }
+            period_days = [
+                active_from + timedelta(days=offset)
+                for offset in range((active_to - active_from).days + 1)
+            ]
+            # Sueldo vigente por fecha (una sola lectura): el reporte diario es
+            # una vista viva y un aumento intrames debe valorar cada jornada con
+            # el sueldo de esa fecha, sin tocar snapshots oficiales ni CLOSED.
+            salary_by_day = SalaryService(self.db).get_for_days({employee.id: period_days})
 
             days: list[dict] = []
             day = active_from
@@ -694,43 +740,107 @@ class PayrollService:
                 ordinary_minutes = int(attendance.get("ordinary_minutes", worked_minutes)) if attendance else 0
                 recovery_minutes = int(attendance.get("recovery_minutes", 0)) if attendance else 0
                 additional_minutes = int(attendance.get("additional_minutes", 0)) if attendance else 0
-                if expected_minutes > 0 or worked_minutes > 0 or approved_minutes != 0 or overtime_item["minutes"] > 0 or special_amount > 0:
-                    days.append(
-                        {
-                            "work_date": day,
-                            "worked_minutes": worked_minutes,
-                            "ordinary_minutes": ordinary_minutes,
-                            "additional_minutes": additional_minutes,
-                            "recovery_minutes": recovery_minutes,
-                            "expected_minutes": expected_minutes,
-                            "overtime_minutes": overtime_item["minutes"],
-                            "overtime_amount": overtime_item["amount"],
-                            "special_day_amount": special_amount,
-                            "approved_adjustment_minutes": approved_minutes,
-                            # Estos datos no cambian el snapshot de planilla. Solo
-                            # permiten que la vista informativa sepa si la jornada
-                            # actual ya terminó o sigue recibiendo marcaciones.
-                            "has_attendance": attendance is not None,
-                            "has_open_entry": bool(attendance["has_open_entry"]) if attendance else False,
-                        }
-                    )
+                # La vista diaria es calendario puro: toda fecha del tramo en
+                # relación laboral aparece, incluso descanso o día sin jornada,
+                # para que una primera quincena 1–15 tenga 15 fechas. La base no
+                # se reparte entre jornadas programadas: cada fecha aporta su
+                # treintavo legal (sueldo vigente / 30).
+                salary = salary_by_day.get((employee.id, day))
+                monthly_salary = salary.monthly_salary if salary is not None else record.monthly_salary
+                legal_raw = daily_value(monthly_salary)
+                days.append(
+                    {
+                        "work_date": day,
+                        "worked_minutes": worked_minutes,
+                        "ordinary_minutes": ordinary_minutes,
+                        "additional_minutes": additional_minutes,
+                        "recovery_minutes": recovery_minutes,
+                        "expected_minutes": expected_minutes,
+                        "overtime_minutes": overtime_item["minutes"],
+                        "overtime_amount": overtime_item["amount"],
+                        "special_day_amount": special_amount,
+                        "approved_adjustment_minutes": approved_minutes,
+                        # Estos datos no cambian el snapshot de planilla. Solo
+                        # permiten que la vista informativa sepa si la jornada
+                        # actual ya terminó o sigue recibiendo marcaciones.
+                        "has_attendance": attendance is not None,
+                        "has_open_entry": bool(attendance["has_open_entry"]) if attendance else False,
+                        "legal_daily_raw": legal_raw,
+                        "legal_daily_value": legal_raw.quantize(_RATE, rounding=ROUND_HALF_UP),
+                        # Base atribuida por calendario: treintavo legal de la
+                        # fecha, a centavos. Nunca una cuota del tramo entre
+                        # jornadas programadas.
+                        "base_amount": legal_raw.quantize(_CENTS, rounding=ROUND_HALF_UP),
+                        "regularization_amount": Decimal("0.00"),
+                        # Valor día legal de una jornada completa, a centavos.
+                        "legal_base_amount": (
+                            legal_raw.quantize(_CENTS, rounding=ROUND_HALF_UP) if expected_minutes > 0
+                            else Decimal("0.00")
+                        ),
+                    }
+                )
                 day += timedelta(days=1)
 
-            self._allocate_base_amount(days, record.base_salary)
             self._allocate_overtime_amount(days, record.overtime_amount)
             self._allocate_special_day_amount(days, record.special_day_amount)
+            # Regularización separada y anclada al cierre: base oficial del
+            # snapshot menos la base de calendario mostrada. Absorbe el ajuste
+            # por longitud real del mes (28/29/31) y el redondeo a céntimos sin
+            # inflar una jornada ni repartir la base entre días programados.
+            calendar_base_total = sum((item["base_amount"] for item in days), Decimal("0.00")).quantize(
+                _CENTS, rounding=ROUND_HALF_UP
+            )
+            regularization_total = (record.base_salary - calendar_base_total).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            if days and regularization_total != Decimal("0.00"):
+                days[-1]["regularization_amount"] = regularization_total
             for item in days:
                 item["approved_adjustment_amount"] = Decimal("0.00")
-                self._set_recognized_amounts(item, today)
+                # El reconocido y la revisión se valoran con el sueldo vigente
+                # crudo / 30 de la fecha, no con la base de calendario ni con
+                # mitades ya redondeadas.
+                self._set_recognized_amounts(item, today, item["legal_daily_raw"])
                 daily.append(
                     {
                         "employee_id": employee.id,
                         "employee_name": f"{employee.first_name} {employee.last_name}",
-                        **item,
+                        **{
+                            key: value
+                            for key, value in item.items()
+                            if key not in ("legal_daily_raw", "recognized_base_raw")
+                        },
                     }
                 )
 
-            recognized_total = sum((item["recognized_total_amount"] for item in days), Decimal("0.00"))
+            # La base reconocida se acumula desde los importes crudos y se
+            # redondea una sola vez en el resumen: sumar filas ya redondeadas
+            # podía exceder la base del tramo por céntimos y volver negativo el
+            # saldo no atribuido. Las filas diarias se mantienen a céntimos.
+            recognized_base_raw_total = sum(
+                (item["recognized_base_raw"] for item in days), Decimal("0.00")
+            )
+            recognized_base = recognized_base_raw_total.quantize(_CENTS, rounding=ROUND_HALF_UP)
+            recognized_overtime = sum(
+                (item["recognized_overtime_amount"] for item in days), Decimal("0.00")
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            recognized_special = sum(
+                (item["recognized_special_day_amount"] for item in days), Decimal("0.00")
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            recognized_total = (recognized_base + recognized_overtime + recognized_special).quantize(
+                _CENTS, rounding=ROUND_HALF_UP
+            )
+            # Base del tramo = base de calendario + regularización de cierre.
+            # Es exactamente el snapshot oficial; los componentes se informan
+            # por separado para que la vista concilie a centavos.
+            programmed_base = (calendar_base_total + regularization_total).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            # Saldo de la base oficial que la asistencia no explica: incluye
+            # descansos, feriados, ausencias y jornadas futuras. No es un
+            # descuento ni un importe devengado y no se recorta con un clamp: una
+            # diferencia material debe seguir visible.
+            unattributed_base = (programmed_base - recognized_base).quantize(_CENTS, rounding=ROUND_HALF_UP)
+            future_pending_base = sum(
+                (item["legal_daily_raw"] for item in days if item["work_date"] > today and item["expected_minutes"] > 0),
+                Decimal("0.00"),
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
             employee_summaries.append(
                 {
                     "employee_id": employee.id,
@@ -738,23 +848,37 @@ class PayrollService:
                     "worked_minutes": sum(item["worked_minutes"] for item in days),
                     "ordinary_minutes": sum(item.get("ordinary_minutes", item["worked_minutes"]) for item in days),
                     "expected_minutes": sum(item["expected_minutes"] for item in days),
-                    "programmed_base_amount": sum((item["base_amount"] for item in days), Decimal("0.00")),
-                    "recognized_base_amount": sum((item["recognized_base_amount"] for item in days), Decimal("0.00")),
+                    # Base del tramo (calendario + regularización) = snapshot.
+                    "programmed_base_amount": programmed_base,
+                    # Base atribuida por calendario: suma de treintavos diarios.
+                    "calendar_base_amount": calendar_base_total,
+                    # Ajuste separado por longitud del mes (28/29/31) y redondeo,
+                    # anclado al cierre. No se reparte entre jornadas.
+                    "regularization_amount": regularization_total,
+                    "recognized_base_amount": recognized_base,
+                    "unattributed_base_amount": unattributed_base,
                     "overtime_minutes": sum(item["overtime_minutes"] for item in days),
-                    "recognized_overtime_amount": sum((item["recognized_overtime_amount"] for item in days), Decimal("0.00")),
+                    "recognized_overtime_amount": recognized_overtime,
                     "special_day_amount": sum((item["special_day_amount"] for item in days), Decimal("0.00")),
-                    "recognized_special_day_amount": sum((item["recognized_special_day_amount"] for item in days), Decimal("0.00")),
+                    "recognized_special_day_amount": recognized_special,
                     "approved_adjustment_minutes": sum(item["approved_adjustment_minutes"] for item in days),
                     "approved_adjustment_amount": Decimal("0.00"),
                     "recognized_total_amount": recognized_total,
-                    "future_pending_base_amount": sum(
-                        (item["base_amount"] for item in days if item["work_date"] > today), Decimal("0.00")
-                    ),
+                    # Proyección a valor día legal de las jornadas futuras; los
+                    # días futuros no aportan al reconocido ni a la revisión.
+                    "future_pending_base_amount": future_pending_base,
                     "review_difference_amount": sum(
                         (item["review_difference_amount"] for item in days), Decimal("0.00")
                     ),
                     "manual_adjustment": record.manual_adjustment,
                     "official_total_snapshot": record.total,
+                    # Valor día legal (sueldo / 30, D.S. 012-92-TR art. 2) del
+                    # sueldo vigente al cierre del tramo (o al inicio si aún no
+                    # hay sueldo a la última fecha). Con sueldo variable es una
+                    # referencia del tramo, no un promedio.
+                    "legal_daily_value": daily_value_out(
+                        (salary_by_day.get((employee.id, active_to)) or salary_by_day.get((employee.id, active_from)) or record).monthly_salary
+                    ),
                 }
             )
 
@@ -769,12 +893,20 @@ class PayrollService:
         }
 
     @staticmethod
-    def _set_recognized_amounts(item: dict, today: date) -> None:
+    def _set_recognized_amounts(item: dict, today: date, legal_daily_raw: Decimal) -> None:
         """Calcula el reconocimiento informativo sin cambiar el snapshot.
 
-        Hoy se mantiene PENDING mientras no exista asistencia o haya alguna
-        sesión abierta. Cuando todas las sesiones de hoy están cerradas, aplica
-        exactamente la misma clasificación informativa que un día pasado.
+        El importe reconocido por asistencia se valora a **valor día legal**
+        (sueldo mensual crudo / 30, D.S. 012-92-TR art. 2), no con una cuota del
+        tramo: un día completo reconocido vale 21.67 con sueldo 650, no 25.00 ni
+        27.08. La base atribuida por calendario y su saldo no atribuido a
+        asistencia se exponen aparte. La diferencia por revisar usa la misma
+        referencia legal.
+
+        Un día sin jornada (descanso o feriado no programado) se informa como
+        ``NO_SCHEDULE``: no es una ausencia. Hoy se mantiene PENDING mientras no
+        exista asistencia o haya alguna sesión abierta. Cuando todas las sesiones
+        de hoy están cerradas, aplica la misma clasificación que un día pasado.
         """
         work_date = item["work_date"]
         expected_minutes = item["expected_minutes"]
@@ -784,6 +916,12 @@ class PayrollService:
         if work_date > today:
             status = "FUTURE_PENDING"
             recognized_minutes = 0
+        elif expected_minutes <= 0:
+            recognized_minutes = 0
+            if can_recognize and (item["overtime_minutes"] > 0 or item.get("special_day_amount", Decimal("0.00")) > 0):
+                status = "RECOGNIZED"
+            else:
+                status = "NO_SCHEDULE"
         elif not can_recognize:
             status = "PENDING"
             recognized_minutes = 0
@@ -792,26 +930,32 @@ class PayrollService:
                 0,
                 min(item.get("ordinary_minutes", item["worked_minutes"]) + item["approved_adjustment_minutes"], expected_minutes),
             )
-            if expected_minutes <= 0:
-                status = "RECOGNIZED" if item["overtime_minutes"] > 0 else "NO_ATTENDANCE"
-            elif recognized_minutes == 0:
+            if recognized_minutes == 0:
                 status = "NO_ATTENDANCE"
             elif recognized_minutes < expected_minutes:
                 status = "PARTIAL"
             else:
                 status = "RECOGNIZED"
 
-        if expected_minutes > 0:
-            recognized_base = (
-                item["base_amount"] * Decimal(recognized_minutes) / Decimal(expected_minutes)
-            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        if expected_minutes > 0 and recognized_minutes > 0:
+            recognized_base_raw = legal_daily_raw * Decimal(recognized_minutes) / Decimal(expected_minutes)
+            recognized_base = recognized_base_raw.quantize(_CENTS, rounding=ROUND_HALF_UP)
         else:
+            recognized_base_raw = Decimal("0.00")
             recognized_base = Decimal("0.00")
         recognized_overtime = item["overtime_amount"] if can_recognize else Decimal("0.00")
         recognized_special = item.get("special_day_amount", Decimal("0.00")) if can_recognize else Decimal("0.00")
         recognized_total = (recognized_base + recognized_overtime + recognized_special).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        if can_recognize and expected_minutes > 0:
+            missing_minutes = max(0, expected_minutes - recognized_minutes)
+            missing_base = (
+                legal_daily_raw * Decimal(missing_minutes) / Decimal(expected_minutes)
+            ).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        else:
+            missing_base = Decimal("0.00")
         review_difference = (
-            item["base_amount"] + item["overtime_amount"] + item.get("special_day_amount", Decimal("0.00")) - recognized_total
+            missing_base + item["overtime_amount"] + item.get("special_day_amount", Decimal("0.00"))
+            - recognized_overtime - recognized_special
             if can_recognize
             else Decimal("0.00")
         ).quantize(_CENTS, rounding=ROUND_HALF_UP)
@@ -819,6 +963,7 @@ class PayrollService:
             recognized_minutes=recognized_minutes,
             status=status,
             recognized_base_amount=recognized_base,
+            recognized_base_raw=recognized_base_raw,
             recognized_overtime_amount=recognized_overtime,
             recognized_special_day_amount=recognized_special,
             recognized_total_amount=recognized_total,
@@ -862,24 +1007,6 @@ class PayrollService:
             .group_by(HourAdjustment.adjustment_date)
         )
         return {adjustment_date: int(minutes or 0) for adjustment_date, minutes in rows}
-
-    @staticmethod
-    def _allocate_base_amount(days: list[dict], total_base: Decimal) -> None:
-        """Reparte el snapshot por minutos pactados y conserva los céntimos."""
-        scheduled = [item for item in days if item["expected_minutes"] > 0]
-        for item in days:
-            item["base_amount"] = Decimal("0.00")
-        if not scheduled:
-            return
-        total_minutes = sum(item["expected_minutes"] for item in scheduled)
-        allocated = Decimal("0.00")
-        for item in scheduled[:-1]:
-            amount = (total_base * Decimal(item["expected_minutes"]) / Decimal(total_minutes)).quantize(
-                _CENTS, rounding=ROUND_HALF_UP
-            )
-            item["base_amount"] = amount
-            allocated += amount
-        scheduled[-1]["base_amount"] = (total_base - allocated).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
     @staticmethod
     def _allocate_overtime_amount(days: list[dict], total_overtime: Decimal) -> None:

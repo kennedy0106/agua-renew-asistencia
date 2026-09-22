@@ -6,6 +6,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.core.timezone import lima_tz
@@ -235,8 +236,69 @@ def test_prorratea_alta_y_cambios_de_sueldo(client, db_session):
     period = _create_period(client)
 
     record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
-    # 8 días a 1550/31 + 8 días a 3100/31, alta inclusiva del 16 al 31.
-    assert record["base_salary"] == "1200.00"
+    # Periodo parcial con treintavos legales (sueldo / 30): 8 días a 1550/30 +
+    # 8 días a 3100/30, alta inclusiva del 16 al 31. El divisor no es 31.
+    assert record["base_salary"] == "1240.00"
+
+
+def test_tramo_parcial_no_recorta_un_aumento_posterior(client, db_session):
+    """Un tramo parcial de <=30 días no lleva tope al primer sueldo histórico."""
+    _login(client, "admin", "Admin123!")
+    response = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": "72845699", "employee_code": "EMP-RAISE", "first_name": "Raúl",
+            "last_name": "Aumento", "job_role_id": str(db_session._test_job_roles["Operario"]),
+            "hire_date": "2026-08-02",
+        },
+    )
+    assert response.status_code == 201, response.text
+    emp = response.json()["id"]
+    _set_salary(client, emp, monthly_salary="1550.00")
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": "2026-08-03", "monthly_salary": "3100.00", "overtime_enabled": False},
+    ).status_code == 201
+    period = _create_period(client)
+
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    # 1 × 1550/30 + 29 × 3100/30 = 3048.33. Un tope al primer sueldo lo
+    # recortaría a 1550.00 y perdería el aumento.
+    assert record["base_salary"] == "3048.33"
+
+
+@pytest.mark.parametrize("month", [1, 2, 8])
+def test_mes_completo_con_aumento_dia16_normaliza_30_dias(client, db_session, month):
+    """Mes completo con aumento el 16: 650 -> 700 da 675.00 en 28 y 31 días.
+
+    El mes se modela como 30 días legales: se suman los treintavos por fecha y
+    se normaliza al cierre con el sueldo vigente a fin de mes. Un día 31 no
+    paga un treintavo extra y febrero completa los 30 días.
+    """
+    _login(client, "admin", "Admin123!")
+    response = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": f"7285{month:04d}", "employee_code": f"EMP-{month:02d}",
+            "first_name": "Mes", "last_name": "Aumento",
+            "job_role_id": str(db_session._test_job_roles["Operario"]),
+            "hire_date": "2026-01-01",
+        },
+    )
+    assert response.status_code == 201, response.text
+    emp = response.json()["id"]
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": "2026-01-01", "monthly_salary": "650.00", "overtime_enabled": False},
+    ).status_code == 201
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": f"2026-{month:02d}-16", "monthly_salary": "700.00", "overtime_enabled": False},
+    ).status_code == 201
+    period = client.post("/api/v1/payroll/periods", json={"year": 2026, "month": month}).json()
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    # 15 × 650/30 + 15 × 700/30 = 325.00 + 350.00 = 675.00.
+    assert record["base_salary"] == "675.00"
 
 
 def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
@@ -415,7 +477,7 @@ def test_summary_periodo_inexistente_404(client):
     assert client.get(f"/api/v1/payroll/periods/{uuid.uuid4()}/summary").status_code == 404
 
 
-def test_reporte_diario_distribuye_snapshot_y_resume_por_empleado(client, db_session):
+def test_reporte_diario_atribuye_base_por_calendario_y_resume_por_empleado(client, db_session):
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -452,7 +514,19 @@ def test_reporte_diario_distribuye_snapshot_y_resume_por_empleado(client, db_ses
         Decimal(summary["recognized_base_amount"]) + Decimal(summary["recognized_overtime_amount"])
     )
     assert summary["official_total_snapshot"] == "1557.81"
-    assert sum(Decimal(row["base_amount"]) for row in report["daily"]) == Decimal("1500.00")
+    # Agosto 2026 tiene 31 fechas: cada una aporta el treintavo legal (1500/30 =
+    # 50.00), así que la base de calendario es 1550.00 y una regularización de
+    # cierre de -50.00 la concilia con el snapshot oficial (1500.00). No hay
+    # reparto de la base entre jornadas programadas.
+    assert sum(Decimal(row["base_amount"]) for row in report["daily"]) == Decimal("1550.00")
+    assert sum(Decimal(row["regularization_amount"]) for row in report["daily"]) == Decimal("-50.00")
+    assert Decimal(summary["calendar_base_amount"]) == Decimal("1550.00")
+    assert Decimal(summary["regularization_amount"]) == Decimal("-50.00")
+    assert (
+        Decimal(summary["calendar_base_amount"]) + Decimal(summary["regularization_amount"])
+        == Decimal(summary["programmed_base_amount"])
+        == Decimal("1500.00")
+    )
     assert sum(Decimal(row["overtime_amount"]) for row in report["daily"]) == Decimal("7.81")
     assert sum(Decimal(row["recognized_total_amount"]) for row in report["daily"]) == Decimal(summary["recognized_total_amount"])
     overtime_day = next(row for row in report["daily"] if row["work_date"] == "2026-08-25")
@@ -509,13 +583,19 @@ def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monk
     assert no_attendance["status"] == "NO_ATTENDANCE"
     assert no_attendance["recognized_minutes"] == 0
     assert no_attendance["recognized_base_amount"] == "0.00"
-    assert Decimal(no_attendance["review_difference_amount"]) == Decimal(no_attendance["base_amount"])
+    # La revisión se valora a valor día legal (1500/30), no a la cuota de reparto.
+    assert Decimal(no_attendance["review_difference_amount"]) == Decimal("50.00")
     assert partial["status"] == "PARTIAL"
     assert partial["recognized_minutes"] == 240
-    assert Decimal("0.00") < Decimal(partial["recognized_base_amount"]) < Decimal(partial["base_amount"])
+    # Media jornada reconocida = 240/480 × (1500/30) = 25.00.
+    assert Decimal(partial["recognized_base_amount"]) == Decimal("25.00")
     assert adjusted["status"] == "RECOGNIZED"
     assert adjusted["recognized_minutes"] == 480
-    assert adjusted["recognized_base_amount"] == adjusted["base_amount"]
+    # Jornada completa reconocida = 1500/30 = 50.00, no una cuota del tramo.
+    assert adjusted["recognized_base_amount"] == "50.00"
+    # La base diaria es el treintavo legal de la fecha, no 1500/21.
+    assert Decimal(adjusted["base_amount"]) == Decimal("50.00")
+    assert Decimal(adjusted["legal_daily_value"]) == Decimal("50.0000")
     assert overtime["recognized_overtime_amount"] == "7.81"
     assert future["status"] == "FUTURE_PENDING"
     assert future["recognized_minutes"] == 0
@@ -558,7 +638,8 @@ def test_reporte_diario_reconoce_hoy_cuando_todas_las_sesiones_terminaron(client
 
     assert item["status"] == "RECOGNIZED"
     assert item["recognized_minutes"] == 480
-    assert item["recognized_base_amount"] == item["base_amount"]
+    # Reconocido por asistencia a valor día legal (1500/30).
+    assert item["recognized_base_amount"] == "50.00"
 
 
 def test_reporte_diario_mantiene_hoy_pendiente_con_entrada_abierta(client, db_session, monkeypatch):
@@ -632,7 +713,8 @@ def test_reporte_diario_usa_neto_con_override_y_solapes(client, db_session, monk
     # Dos sesiones 08:00–17:00 con una hora de solape = 540 min brutos;
     # refrigerio programado de 60 min = 480 min netos reconocidos.
     assert before_day["recognized_minutes"] == 480
-    assert before_day["recognized_base_amount"] == before_day["base_amount"]
+    # 480/480 × (1500/30) = 50.00, no la cuota de reparto del snapshot.
+    assert before_day["recognized_base_amount"] == "50.00"
 
     admin_id = db_session.scalar(select(User.id).where(User.username == "admin"))
     assert admin_id is not None

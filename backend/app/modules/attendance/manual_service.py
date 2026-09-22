@@ -72,6 +72,21 @@ class ManualAttendanceService:
         ))
         return {item.id: item for item in commitments}
 
+    def _recompute_special_days(self, employee_dates: set[tuple[uuid.UUID, date]]) -> None:
+        """Revaloriza descansos/feriados cuyo neto cambió con una carga histórica.
+
+        La carga ya pasó por ``_assert_not_closed``; la revalorización usa los
+        minutos netos consolidados y solo reescribe la valoración del mismo
+        empleado/día, sin volver a descontar refrigerio ni sumar HE.
+        """
+        if not employee_dates:
+            return
+        from app.modules.work_calendar.service import SpecialDayValuationService
+
+        service = SpecialDayValuationService(self.db)
+        for employee_id, work_date in sorted(employee_dates, key=lambda item: (str(item[0]), item[1])):
+            service.recompute_for_day(employee_id, work_date)
+
     def _commitment_ids_for_day(self, manual_day_id: uuid.UUID) -> list[uuid.UUID]:
         return list(self.db.scalars(
             select(ManualRecoveryApplication.commitment_id)
@@ -380,6 +395,7 @@ class ManualAttendanceService:
             # before deriving origin dates; audit flushes are not a contract.
             self.db.flush()
             self._invalidate_calculated_periods(*affected_dates)
+            self._recompute_special_days({(row.employee_id, payload.work_date) for row in payload.rows})
             result = {"created": [str(i.id) for i in created]}
             store_receipt(self.db, key=payload.idempotency_key, digest=digest, actor_id=actor_id, operation_type="BATCH", target_manual_day_id=None, result=result)
             result = commit_with_receipt_recovery(
@@ -692,6 +708,7 @@ class ManualAttendanceService:
                 created.append(item)
             self.db.flush()
             self._invalidate_calculated_periods(*affected_dates)
+            self._recompute_special_days({(payload.employee_id, work_date) for work_date, _ in rows})
             result = {
                 "created": [str(item.id) for item in created],
                 "items": [
@@ -861,6 +878,7 @@ class ManualAttendanceService:
         if item.version != expected_version: self._error("STALE_VERSION", "La carga fue modificada por otra persona", status.HTTP_409_CONFLICT)
         item.voided_at = datetime.now(lima_tz()); item.voided_by_user_id = actor_id; item.void_reason = reason.strip(); item.version += 1
         self._invalidate_calculated_periods(*affected_dates)
+        self._recompute_special_days({(item.employee_id, item.work_date)})
         AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=item.id, action="voided", old_values={"version": expected_version}, new_values={"version": item.version}, reason=item.void_reason, performed_by=actor_id, commit=False)
         self.db.flush()
         result = self.serialize(item)
@@ -911,6 +929,7 @@ class ManualAttendanceService:
         # applications are only pending at this point (autoflush=False).
         self.db.flush()
         self._invalidate_calculated_periods(*affected_dates)
+        self._recompute_special_days({(replacement.employee_id, replacement.work_date)})
         AuditRepository(self.db).create(entity_type="manual_attendance_day", entity_id=replacement.id, action="versioned_update", old_values={"id":str(current.id),"version":current.version}, new_values={"version":replacement.version}, reason=row.reason.strip(), performed_by=actor_id, commit=False)
         result = self.serialize(replacement)
         store_receipt(self.db, key=idempotency_key, digest=digest, actor_id=actor_id, operation_type="UPDATE", target_manual_day_id=item_id, result=result)

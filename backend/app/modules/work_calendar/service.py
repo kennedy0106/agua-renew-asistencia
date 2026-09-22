@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.legal import daily_value, double_days_value
 from app.core.timezone import lima_now, lima_tz
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
@@ -382,18 +383,16 @@ class SpecialDayValuationService:
         return self.db.scalar(select(RestSubstitution).where(RestSubstitution.employee_id == employee_id,
             RestSubstitution.original_date == day, RestSubstitution.status == SUBSTITUTION_ENJOYED).order_by(RestSubstitution.created_at.desc()))
 
-    def preview(self, employee_id: uuid.UUID, work_date: date, requested_kind: str | None, actor: uuid.UUID | None = None) -> SpecialDayValuation:
-        context = self.calendar.resolve_employee_day(employee_id, work_date)
-        source_kind = self._source_kind(context, requested_kind)
-        salary = SalaryService(self.db).get_for_date(employee_id, work_date)
-        if salary is None: raise HTTPException(status_code=422, detail="MISSING_SALARY")
-        worked = worked_minutes(self.db, employee_id, work_date, work_date)
-        reference = context["reference_daily_minutes"]
-        if reference is None or reference <= 0:
-            raise HTTPException(status_code=422, detail="REFERENCE_JOURNEY_REQUIRED")
-        known_minutes = min(worked, reference)
-        daily = salary.monthly_salary / Decimal(30)
-        substituted = self._enjoyed_substitution(employee_id, work_date)
+    @staticmethod
+    def _components_for(source_kind: str, known_minutes: int, reference: int, monthly_salary: Decimal,
+                        daily: Decimal, substituted: RestSubstitution | None) -> tuple[Decimal, list[tuple[str, int, Decimal]]]:
+        """Componentes visibles de una valoración especial.
+
+        Fuente única de ``preview`` y de la actualización automática: toda
+        valoración parte de los minutos netos ya consolidados (un solo
+        refrigerio, HE valoradas aparte), de modo que un cambio de horas o de
+        refrigerio nunca se descuenta ni se computa dos veces.
+        """
         components: list[tuple[str, int, Decimal]] = []
         if substituted:
             amount = Decimal("0.00"); components.append(("SUBSTITUTED_REST", 0, amount))
@@ -403,13 +402,138 @@ class SpecialDayValuationService:
             amount = paid + work_extra
             components = [("MAY_DAY_PAID", 0, paid), ("MAY_DAY_WORK", known_minutes, work_extra)]
         else:
+            # Descanso semanal o feriado trabajado sin sustituto: la labor más
+            # la sobretasa del 100% (D.L. 713, art. 3).
             labor = daily * Decimal(known_minutes) / Decimal(reference)
-            surcharge = labor
-            amount = labor + surcharge
+            amount = double_days_value(monthly_salary, known_minutes, reference)
             prefix = "HOLIDAY" if source_kind == "HOLIDAY" else "WEEKLY_REST"
-            components = [(f"{prefix}_WORK", known_minutes, labor), (f"{prefix}_SURCHARGE", known_minutes, surcharge)]
-        amount = amount.quantize(_CENTS, rounding=ROUND_HALF_UP)
-        status_value = VALUATION_REVIEW_REQUIRED if worked > reference else VALUATION_PENDING
+            components = [(f"{prefix}_WORK", known_minutes, labor), (f"{prefix}_SURCHARGE", known_minutes, labor)]
+        return amount.quantize(_CENTS, rounding=ROUND_HALF_UP), components
+
+    @staticmethod
+    def _calculation_payload(salary, daily: Decimal, known_minutes: int, worked: int, reference: int,
+                             substituted: RestSubstitution | None, context: dict) -> dict:
+        return {"monthly_salary": str(salary.monthly_salary),
+            "daily_amount": str(daily.quantize(_CENTS, rounding=ROUND_HALF_UP)),
+            "known_minutes": known_minutes, "excess_minutes": max(worked - reference, 0),
+            "substitution_id": str(substituted.id) if substituted else None,
+            "context": json.loads(json.dumps(context, default=str))}
+
+    @staticmethod
+    def _rounded_components(components: list[tuple[str, int, Decimal]], amount: Decimal) -> list[tuple[str, int, Decimal]]:
+        # Round the total once.  The final component receives the stable
+        # residual so visible components always reconcile with the total.
+        rounded = [(kind, minutes, value.quantize(_CENTS, rounding=ROUND_HALF_UP)) for kind, minutes, value in components]
+        if rounded:
+            kind, minutes, value = rounded[-1]
+            rounded[-1] = (kind, minutes, value + amount - sum(item[2] for item in rounded))
+        return rounded
+
+    def _write_components(self, row: SpecialDayValuation, components: list[tuple[str, int, Decimal]], amount: Decimal) -> None:
+        for kind, minutes, value in self._rounded_components(components, amount):
+            self.db.add(SpecialDayValuationComponent(valuation_id=row.id, component_kind=kind, minutes=minutes, amount=value))
+
+    def _valuation_is_current(self, row: SpecialDayValuation, *, worked: int, reference: int, amount: Decimal,
+                              calculation: dict, components: list[tuple[str, int, Decimal]]) -> bool:
+        """¿La fila ya refleja exactamente estos insumos monetarios?
+
+        Un cambio que no altera el neto (por ejemplo, solo ``notes``) no debe
+        incrementar la versión, renovar el token ni invalidar una aprobación.
+        """
+        if (row.worked_minutes != worked or row.reference_daily_minutes != reference
+                or row.amount != amount or row.calculation != calculation):
+            return False
+        current = sorted(((c.component_kind, c.minutes, c.amount) for c in row.components), key=lambda item: item[0])
+        expected = sorted(self._rounded_components(components, amount), key=lambda item: item[0])
+        return current == expected
+
+    def recompute_for_day(self, employee_id: uuid.UUID, work_date: date) -> int:
+        """Actualiza las valoraciones especiales vigentes tras cambiar los minutos.
+
+        Los minutos netos ya vienen consolidados por asistencia, así que esta
+        actualización solo reescribe las valoraciones del mismo empleado/día:
+        una PENDING se recalcula, una APPROVED se invalida a PENDING con token
+        nuevo si su planilla sigue abierta y, si el periodo está cerrado, la
+        operación se rechaza para no tocar el pago cerrado en silencio.
+        """
+        rows = list(self.db.scalars(select(SpecialDayValuation).where(
+            SpecialDayValuation.employee_id == employee_id,
+            SpecialDayValuation.work_date == work_date,
+            SpecialDayValuation.voided_at.is_(None),
+        ).with_for_update()))
+        if not rows:
+            return 0
+        context = self.calendar.resolve_employee_day(employee_id, work_date)
+        reference = context["reference_daily_minutes"]
+        if reference is None or reference <= 0:
+            return 0
+        salary = SalaryService(self.db).get_for_date(employee_id, work_date)
+        if salary is None:
+            return 0
+        worked = worked_minutes(self.db, employee_id, work_date, work_date)
+        daily = daily_value(salary.monthly_salary)
+        substituted = self._enjoyed_substitution(employee_id, work_date)
+        calculation = self._calculation_payload(salary, daily, worked, worked, reference, substituted, context)
+        # Solo las filas cuyos insumos monetarios cambiaron se reescriben.  Un
+        # cambio que no altera el neto conserva versión, token y aprobación.
+        pending_updates = []
+        for row in rows:
+            amount, components = self._components_for(
+                row.source_kind, worked, reference, salary.monthly_salary, daily, substituted
+            )
+            if self._valuation_is_current(
+                row, worked=worked, reference=reference, amount=amount,
+                calculation=calculation, components=components,
+            ):
+                continue
+            pending_updates.append((row, amount, components))
+        if not pending_updates:
+            return 0
+        originals = {row.id: row.status for row, _amount, _components in pending_updates}
+        if any(status == VALUATION_APPROVED for status in originals.values()):
+            # Reabre periodos CALCULATED o exige rectificación si están cerrados.
+            self.calendar._invalidate_dates([work_date], employee_id)
+        for row, amount, components in pending_updates:
+            row.worked_minutes = worked
+            row.reference_daily_minutes = reference
+            row.amount = amount
+            if originals[row.id] != VALUATION_APPROVED:
+                # Una aprobada ya fue invalidada (version+1) por _invalidate_dates.
+                row.version += 1
+            row.status = VALUATION_PENDING
+            row.approved_by_user_id = None
+            row.approved_at = None
+            row.preview_token = secrets.token_urlsafe(32)
+            row.calculation = calculation
+            for comp in list(row.components):
+                self.db.delete(comp)
+            self.db.flush()
+            self._write_components(row, components, amount)
+        self.db.flush()
+        return len(pending_updates)
+
+    def preview(self, employee_id: uuid.UUID, work_date: date, requested_kind: str | None, actor: uuid.UUID | None = None) -> SpecialDayValuation:
+        context = self.calendar.resolve_employee_day(employee_id, work_date)
+        source_kind = self._source_kind(context, requested_kind)
+        salary = SalaryService(self.db).get_for_date(employee_id, work_date)
+        if salary is None: raise HTTPException(status_code=422, detail="MISSING_SALARY")
+        worked = worked_minutes(self.db, employee_id, work_date, work_date)
+        reference = context["reference_daily_minutes"]
+        if reference is None or reference <= 0:
+            raise HTTPException(status_code=422, detail="REFERENCE_JOURNEY_REQUIRED")
+        # Todas las horas netas trabajadas se valoran: la jornada de referencia
+        # fija el valor hora, no topa el descanso ni el feriado (D.L. 713, art. 3).
+        known_minutes = worked
+        # Valor día legal = sueldo / 30 (D.S. 012-92-TR, art. 2). El divisor es
+        # fijo: no cambia si el mes tiene 28, 29, 30 o 31 días.
+        daily = daily_value(salary.monthly_salary)
+        substituted = self._enjoyed_substitution(employee_id, work_date)
+        amount, components = self._components_for(
+            source_kind, known_minutes, reference, salary.monthly_salary, daily, substituted
+        )
+        # Pagar por encima de la jornada de referencia ya no exige revisión: son
+        # horas netas efectivamente trabajadas y valoradas a sobretasa del 100%.
+        status_value = VALUATION_PENDING
         old = self.db.scalar(select(SpecialDayValuation).where(SpecialDayValuation.employee_id == employee_id,
             SpecialDayValuation.work_date == work_date, SpecialDayValuation.source_kind == source_kind,
             SpecialDayValuation.voided_at.is_(None)).with_for_update())
@@ -425,18 +549,9 @@ class SpecialDayValuationService:
             old.worked_minutes = worked; old.reference_daily_minutes = reference; old.amount = amount; old.status = status_value; old.version += 1
             for comp in list(old.components): self.db.delete(comp)
             self.db.flush()
-        token = secrets.token_urlsafe(32)
-        old.preview_token = token
-        old.calculation = {"monthly_salary": str(salary.monthly_salary), "daily_amount": str(daily.quantize(_CENTS, rounding=ROUND_HALF_UP)),
-            "known_minutes": known_minutes, "excess_minutes": max(worked-reference, 0), "substitution_id": str(substituted.id) if substituted else None,
-            "context": json.loads(json.dumps(context, default=str))}
-        # Round the total once.  The final component receives the stable
-        # residual so visible components always reconcile with the total.
-        rounded_values = [value.quantize(_CENTS, rounding=ROUND_HALF_UP) for _, _, value in components]
-        if rounded_values:
-            rounded_values[-1] += amount - sum(rounded_values)
-        for (kind, minutes, _), rounded in zip(components, rounded_values):
-            self.db.add(SpecialDayValuationComponent(valuation_id=old.id, component_kind=kind, minutes=minutes, amount=rounded))
+        old.preview_token = secrets.token_urlsafe(32)
+        old.calculation = self._calculation_payload(salary, daily, known_minutes, worked, reference, substituted, context)
+        self._write_components(old, components, amount)
         self.db.commit(); self.db.refresh(old); return old
 
     def get(self, valuation_id: uuid.UUID) -> SpecialDayValuation:
