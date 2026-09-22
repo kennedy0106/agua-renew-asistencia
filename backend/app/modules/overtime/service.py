@@ -160,7 +160,10 @@ class OvertimeService:
 
         adjustments = self.adjustments.list_in_range(
             employee_id, date_from, date_to,
-            status=ADJUSTMENT_APPROVED, adjustment_type="OVERTIME", exclude_approved_special_days=True,
+            status=ADJUSTMENT_APPROVED, adjustment_type="OVERTIME",
+            # Un día con descanso/feriado valorado (aunque siga pendiente de
+            # aprobación) nunca se re-paga como hora extra ordinaria.
+            exclude_active_special_days=True,
         )
 
         # Rows approved through the versioned contract carry the exact
@@ -199,6 +202,9 @@ class OvertimeService:
                     {
                         "adjustment_date": day,
                         "minutes": total_minutes,
+                        "payable_minutes": total_minutes,
+                        "requested_minutes": total_minutes,
+                        "break_minutes": 0,
                         "first_two_minutes": first_two,
                         "additional_minutes": additional,
                         "first_two_hours_rate": Decimal("0.00"),
@@ -221,6 +227,9 @@ class OvertimeService:
                     {
                         "adjustment_date": day,
                         "minutes": total_minutes,
+                        "payable_minutes": total_minutes,
+                        "requested_minutes": total_minutes,
+                        "break_minutes": 0,
                         "first_two_minutes": first_two,
                         "additional_minutes": additional,
                         "first_two_hours_rate": Decimal("0.00"),
@@ -249,6 +258,8 @@ class OvertimeService:
                 {
                     "adjustment_date": day,
                     "minutes": total_minutes,
+                    "requested_minutes": total_minutes,
+                    "break_minutes": 0,
                     "first_two_minutes": first_two,
                     "additional_minutes": additional,
                     "first_two_hours_rate": rates["first_two_hours_rate"],
@@ -264,11 +275,16 @@ class OvertimeService:
             valuation = (item.approval_snapshot_data or {}).get("valuation") or {}
             valuation_inputs = valuation.get("valuation_inputs") or {}
             amount = Decimal(str(valuation.get("amount") or "0.00"))
+            payable_minutes = int(valuation.get("minutes", item.minutes))
+            requested_minutes = int(valuation.get("requested_minutes", item.minutes))
+            break_minutes = int(valuation.get("break_minutes", 0))
             total += amount
             breakdown.append({
-                "adjustment_date": item.adjustment_date, "minutes": item.minutes,
-                "first_two_minutes": min(item.minutes, _FIRST_TWO_MINUTES),
-                "additional_minutes": max(0, item.minutes - _FIRST_TWO_MINUTES),
+                "adjustment_date": item.adjustment_date, "minutes": payable_minutes,
+                "payable_minutes": payable_minutes,
+                "requested_minutes": requested_minutes, "break_minutes": break_minutes,
+                "first_two_minutes": min(payable_minutes, _FIRST_TWO_MINUTES),
+                "additional_minutes": max(0, payable_minutes - _FIRST_TWO_MINUTES),
                 "first_two_hours_rate": Decimal(str(valuation.get("first_two_hours_rate") or "0")),
                 "additional_hours_rate": Decimal(str(valuation.get("additional_hours_rate") or "0")),
                 # Preserve the valuation provenance shown at approval while
@@ -282,7 +298,12 @@ class OvertimeService:
                 ),
             })
 
-        from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
+        from app.modules.work_calendar.models import (
+            SpecialDayValuation,
+            VALUATION_APPROVED,
+            VALUATION_PENDING,
+            VALUATION_REVIEW_REQUIRED,
+        )
         manual = list(self.db.scalars(select(ManualAttendanceDay).where(
             ManualAttendanceDay.employee_id == employee_id,
             ManualAttendanceDay.work_date >= date_from,
@@ -293,19 +314,26 @@ class OvertimeService:
                 SpecialDayValuation.employee_id == employee_id,
                 SpecialDayValuation.work_date >= date_from,
                 SpecialDayValuation.work_date <= date_to,
-                SpecialDayValuation.status == VALUATION_APPROVED,
+                SpecialDayValuation.status.in_((VALUATION_APPROVED, VALUATION_PENDING, VALUATION_REVIEW_REQUIRED)),
                 SpecialDayValuation.voided_at.is_(None),
             )),
         )))
         for item in manual:
             snapshot = item.payment_snapshot or {}
             amount = Decimal(str(snapshot.get("amount") or "0.00"))
+            # El adicional pagable vive en el snapshot; el pedido crudo queda
+            # en ``additional_minutes`` y ya no se usa para pagar.
+            payable = int(snapshot.get("minutes", item.additional_minutes))
+            break_minutes = int(snapshot.get("break_minutes", 0))
             total += amount
-            breakdown.append({"adjustment_date": item.work_date, "minutes": item.additional_minutes, "first_two_minutes": min(item.additional_minutes, _FIRST_TWO_MINUTES), "additional_minutes": max(0, item.additional_minutes - _FIRST_TWO_MINUTES), "first_two_hours_rate": Decimal(str(snapshot.get("first_two_hours_rate") or "0")), "additional_hours_rate": Decimal(str(snapshot.get("additional_hours_rate") or "0")), "source": "historical_manual", "hourly_rate": Decimal(str(snapshot.get("hourly_rate") or "0")), "value": amount, "skip_reason": None})
+            breakdown.append({"adjustment_date": item.work_date, "minutes": payable, "payable_minutes": payable, "requested_minutes": item.additional_minutes, "break_minutes": break_minutes, "first_two_minutes": min(payable, _FIRST_TWO_MINUTES), "additional_minutes": max(0, payable - _FIRST_TWO_MINUTES), "first_two_hours_rate": Decimal(str(snapshot.get("first_two_hours_rate") or "0")), "additional_hours_rate": Decimal(str(snapshot.get("additional_hours_rate") or "0")), "source": "historical_manual", "hourly_rate": Decimal(str(snapshot.get("hourly_rate") or "0")), "value": amount, "skip_reason": None})
+        overtime_minutes = (
+            sum(item["minutes"] for item in breakdown)
+        )
         return {
             "date_from": date_from,
             "date_to": date_to,
-            "overtime_minutes": sum(a.minutes for a in adjustments) + sum(item.additional_minutes for item in manual),
+            "overtime_minutes": overtime_minutes,
             "value": total.quantize(_CENTS, rounding=ROUND_HALF_UP),
             "breakdown": breakdown,
         }

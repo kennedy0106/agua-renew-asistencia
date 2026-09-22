@@ -16,6 +16,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import app.modules.payroll.service as payroll_service
 from app.core.legal import daily_value, days_value, double_days_value, hourly_value
 from app.modules.attendance.models import AttendanceRecord
+from app.modules.attendance.service import AttendanceService
 from app.modules.overtime.service import OvertimeService
 from app.modules.payroll.service import PayrollService
 
@@ -303,4 +304,123 @@ def test_descanso_semanal_paga_todas_las_horas_netas_sobre_la_jornada(client, db
     # El adicional aprobado entra una sola vez al periodo; no se re-paga como HE.
     assert Decimal(str(row["special_day_amount"])) == Decimal("65.00")
     assert Decimal(str(row["overtime_amount"])) == Decimal("0.00")
+
+
+def _daniel(client, db_session):
+    """Daniel EMP-004: jornada 300, referencia de descanso obsoleta 480."""
+    created = client.post("/api/v1/employees", json={
+        "dni": "74033256", "employee_code": "EMP-004", "first_name": "Daniel",
+        "last_name": "Ventas", "job_role_id": str(db_session._test_job_roles["Operario"]),
+        "hire_date": "2026-08-01",
+    })
+    assert created.status_code == 201, created.text
+    employee_id = created.json()["id"]
+    assert client.post(f"/api/v1/employees/{employee_id}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": "650.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee_id}/schedule", json={
+        "effective_from": "2026-08-01", "monday_minutes": 300, "tuesday_minutes": 300,
+        "wednesday_minutes": 300, "thursday_minutes": 300, "friday_minutes": 300,
+        "saturday_minutes": 300, "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+    # Referencia obsoleta: la jornada real es 300, pero la regla guarda 480.
+    rule = client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": employee_id, "weekly_rest_weekday": 6, "reference_daily_minutes": 480,
+        "source": "Contrato", "reason": "Descanso dominical", "effective_from": "2026-08-01",
+    })
+    assert rule.status_code == 201, rule.text
+    return employee_id
+
+
+def test_daniel_primera_quincena_setiembre_505_58(client, db_session, monkeypatch):
+    """Aceptación EMP-004: base 325.00 + HE 115.58 + dominical 65.00 = 505.58.
+
+    El treintavo dominical (21.67) ya está dentro de la base y no se suma otra
+    vez.  La regla de descanso guarda 480 pero la referencia efectiva es la
+    jornada real de 300.
+    """
+    _login(client)
+    employee_id = _daniel(client, db_session)
+    # HE netas reales de la primera quincena (minutos, valor).
+    overtime_days = {
+        "2026-09-02": (360, Decimal("34.23")),
+        "2026-09-04": (240, Decimal("22.53")),
+        "2026-09-09": (150, Decimal("13.76")),
+        "2026-09-11": (240, Decimal("22.53")),
+        "2026-09-12": (240, Decimal("22.53")),
+    }
+    for work_date, (minutes, _amount) in overtime_days.items():
+        created = client.post(f"/api/v1/employees/{employee_id}/adjustments", json={
+            "adjustment_date": work_date, "minutes": minutes, "adjustment_type": "OVERTIME",
+            "reason": "Sobretiempo aprobado",
+        })
+        assert created.status_code == 201, created.text
+        pending = created.json()
+        approved = client.patch(f"/api/v1/adjustments/{pending['id']}/approve", json={
+            "expected_version": pending["version"], "expected_snapshot": pending["approval_snapshot"],
+            "idempotency_key": f"daniel-ot-{work_date}",
+        })
+        assert approved.status_code == 200, approved.text
+    # Domingo 13/09: 510 brutos − 60 de refrigerio = 450 netos.
+    db_session.add(AttendanceRecord(
+        employee_id=uuid.UUID(employee_id), work_date=date(2026, 9, 13),
+        check_in_at=datetime(2026, 9, 13, 8, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 9, 13, 16, 30, tzinfo=timezone.utc),
+        worked_minutes=0, status="COMPLETE",
+    ))
+    db_session.commit()
+    assert AttendanceService(db_session)._recompute_day(
+        uuid.UUID(employee_id), date(2026, 9, 13)
+    ) == 450
+
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": employee_id, "work_date": "2026-09-13", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    # La referencia efectiva es 300 (jornada real), no el 480 almacenado.
+    assert value["reference_daily_minutes"] == 300
+    assert value["calculation"]["context"]["reference_diverges_from_rule"] is True
+    assert Decimal(str(value["amount"])) == Decimal("65.00")
+    approved = client.post(f"/api/v1/work-calendar/valuations/{value['id']}/approve", json={
+        "expected_version": value["version"], "preview_token": value["preview_token"],
+        "idempotency_key": "daniel-special-approve", "reason": "Descanso dominical trabajado",
+    })
+    assert approved.status_code == 200, approved.text
+
+    evaluated = OvertimeService(db_session).value(uuid.UUID(employee_id), date(2026, 9, 1), date(2026, 9, 15))
+    assert Decimal(str(evaluated["value"])) == Decimal("115.58")
+    assert evaluated["overtime_minutes"] == sum(m for m, _ in overtime_days.values())
+
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 9, 20))
+    period = client.post("/api/v1/payroll/periods", json={"year": 2026, "month": 9, "period_kind": "FIRST_HALF"})
+    assert period.status_code == 201, period.text
+    calculated = client.post(f"/api/v1/payroll/periods/{period.json()['id']}/calculate")
+    assert calculated.status_code == 200, calculated.text
+    row = calculated.json()[0]
+    assert Decimal(str(row["base_salary"])) == Decimal("325.00")
+    assert Decimal(str(row["overtime_amount"])) == Decimal("115.58")
+    assert Decimal(str(row["special_day_amount"])) == Decimal("65.00")
+    assert Decimal(str(row["total"])) == Decimal("505.58")
+
+    report = client.get(f"/api/v1/payroll/periods/{period.json()['id']}/daily-report").json()
+    days = {item["work_date"]: item for item in report["daily"] if item["employee_id"] == employee_id}
+    assert len(days) == 15
+    assert all(Decimal(str(item["base_amount"])) == Decimal("21.67") for item in days.values())
+    sunday = days["2026-09-13"]
+    assert sunday["status"] == "RECOGNIZED"
+    assert Decimal(str(sunday["base_amount"])) == Decimal("21.67")
+    assert Decimal(str(sunday["recognized_base_amount"])) == Decimal("0.00")
+    assert Decimal(str(sunday["special_day_amount"])) == Decimal("65.00")
+    summary = next(item for item in report["employees"] if item["employee_id"] == employee_id)
+    assert Decimal(str(summary["calendar_base_amount"])) == Decimal("325.05")
+    assert Decimal(str(summary["regularization_amount"])) == Decimal("-0.05")
+    assert Decimal(str(summary["programmed_base_amount"])) == Decimal("325.00")
+
+    accrual = client.get(f"/api/v1/employees/{employee_id}/payroll-accrual", params={
+        "period": "FIRST_HALF", "anchor_date": "2026-09-15",
+    }).json()
+    assert Decimal(str(accrual["base_amount"])) == Decimal("325.00")
+    assert Decimal(str(accrual["approved_additional_amount"])) == Decimal("180.58")
+    assert Decimal(str(accrual["estimated_total"])) == Decimal("505.58")
 

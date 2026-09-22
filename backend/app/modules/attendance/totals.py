@@ -11,10 +11,64 @@ from app.modules.schedules.service import ScheduleService
 def manual_days(db: Session, employee_id: uuid.UUID, date_from: date, date_to: date):
     return list(db.scalars(select(ManualAttendanceDay).where(ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.work_date >= date_from, ManualAttendanceDay.work_date <= date_to, ManualAttendanceDay.voided_at.is_(None))))
 
+def manual_payable_break_minutes(manual: ManualAttendanceDay) -> int:
+    """Refrigerio incremental aplicado a una carga histórica (snapshot inmutable)."""
+    snapshot = manual.payment_snapshot or {}
+    try:
+        return max(0, int(snapshot.get("break_minutes") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def manual_payable_net_minutes(manual: ManualAttendanceDay) -> int:
+    """Neto pagable de una carga: pedido crudo menos el refrigerio del snapshot."""
+    return max(0, int(manual.worked_minutes_net) - manual_payable_break_minutes(manual))
+
+
 def worked_minutes(db: Session, employee_id: uuid.UUID, date_from: date, date_to: date) -> int:
     sessions = db.scalar(select(func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0)).where(AttendanceRecord.employee_id == employee_id, AttendanceRecord.status == "COMPLETE", AttendanceRecord.work_date >= date_from, AttendanceRecord.work_date <= date_to)) or 0
-    manual = db.scalar(select(func.coalesce(func.sum(ManualAttendanceDay.worked_minutes_net), 0)).where(ManualAttendanceDay.employee_id == employee_id, ManualAttendanceDay.voided_at.is_(None), ManualAttendanceDay.work_date >= date_from, ManualAttendanceDay.work_date <= date_to)) or 0
+    manual = sum(
+        manual_payable_net_minutes(item)
+        for item in manual_days(db, employee_id, date_from, date_to)
+    )
     return int(sessions) + int(manual)
+
+
+def special_day_known_minutes(db: Session, employee_id: uuid.UUID, work_date: date) -> int:
+    """Minutos netos trabajados que una valoración especial debe pagar.
+
+    La asistencia/carga ya contiene el trabajo.  Si el día no tiene ninguna
+    fila de asistencia (solo sobretiempo aprobado registrado como ajuste), se
+    incorporan los minutos pagables de esos ajustes para no dejarlos fuera del
+    descanso/feriado y sin duplicarlos cuando sí existe una fila.
+    """
+    from app.modules.adjustments.models import ADJUSTMENT_APPROVED, HourAdjustment
+
+    base = worked_minutes(db, employee_id, work_date, work_date)
+    has_row = db.scalar(select(AttendanceRecord.id).where(
+        AttendanceRecord.employee_id == employee_id,
+        AttendanceRecord.work_date == work_date,
+        AttendanceRecord.status == "COMPLETE",
+    )) is not None
+    if not has_row:
+        has_row = db.scalar(select(ManualAttendanceDay.id).where(
+            ManualAttendanceDay.employee_id == employee_id,
+            ManualAttendanceDay.work_date == work_date,
+            ManualAttendanceDay.voided_at.is_(None),
+        )) is not None
+    if has_row:
+        return base
+    adjustments = list(db.scalars(select(HourAdjustment).where(
+        HourAdjustment.employee_id == employee_id,
+        HourAdjustment.adjustment_date == work_date,
+        HourAdjustment.adjustment_type == "OVERTIME",
+        HourAdjustment.status == ADJUSTMENT_APPROVED,
+        HourAdjustment.voided_at.is_(None),
+    )))
+    for adjustment in adjustments:
+        valuation = (adjustment.approval_snapshot_data or {}).get("valuation") or {}
+        base += int(valuation.get("minutes", adjustment.minutes))
+    return base
 
 def ordinary_minutes(db: Session, employee_id: uuid.UUID, date_from: date, date_to: date) -> int:
     """Tiempo que puede acreditar cumplimiento ordinario; P/R no cubren faltantes."""

@@ -16,7 +16,7 @@ from app.core.legal import daily_value, double_days_value
 from app.core.timezone import lima_now, lima_tz
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
-from app.modules.attendance.totals import worked_minutes
+from app.modules.attendance.totals import special_day_known_minutes
 from app.modules.audit.repository import AuditRepository
 from app.modules.salary.service import SalaryService
 from app.modules.schedules.service import ScheduleService
@@ -125,6 +125,52 @@ class WorkCalendarService:
             reason=rule.reason, performed_by=actor, commit=False)
         self._commit(); self.db.refresh(rule)
         return rule
+
+    @staticmethod
+    def _weekly_rest_rule_out(rule: EmployeeWeeklyRestRule) -> dict:
+        return {
+            "id": str(rule.id), "employee_id": str(rule.employee_id),
+            "weekly_rest_weekday": rule.weekly_rest_weekday,
+            "reference_daily_minutes": rule.reference_daily_minutes,
+            "effective_from": rule.effective_from, "version": rule.version,
+        }
+
+    def correct_weekly_rest_rule(self, payload, actor: uuid.UUID) -> dict:
+        """Corrección versionada en la misma fecha de vigencia.
+
+        No muta la regla existente: crea una nueva versión con el mismo
+        ``effective_from`` y mayor ``version``.  ``_rule`` y el resolver
+        prefieren la versión mayor, por lo que la corrección entra en vigor sin
+        solapar vigencias y conserva la historia auditable.
+        """
+        cached = self._receipt(payload.idempotency_key, payload, "correct_weekly_rest_rule", actor, payload.employee_id)
+        if cached:
+            return cached
+        prior = self._rule(payload.employee_id, payload.effective_from)
+        if prior is None or prior.effective_from != payload.effective_from:
+            raise HTTPException(status_code=404, detail="No existe una regla de descanso vigente en esa fecha para corregir")
+        if prior.version != payload.expected_version:
+            raise HTTPException(status_code=409, detail="STALE_VERSION")
+        self.invalidate_dependent_valuations(payload.employee_id, payload.effective_from)
+        rule = EmployeeWeeklyRestRule(
+            employee_id=payload.employee_id, weekly_rest_weekday=payload.weekly_rest_weekday,
+            reference_daily_minutes=payload.reference_daily_minutes, source=payload.source.strip(),
+            reason=payload.reason.strip(), effective_from=payload.effective_from,
+            effective_to=None, version=prior.version + 1, created_by_user_id=actor,
+        )
+        self.db.add(rule)
+        self.db.flush()
+        AuditRepository(self.db).create(
+            entity_type="employee_weekly_rest_rule", entity_id=rule.id, action="corrected",
+            old_values={"version": prior.version, "reference_daily_minutes": prior.reference_daily_minutes},
+            new_values={"version": rule.version, "reference_daily_minutes": rule.reference_daily_minutes,
+                        "effective_from": str(rule.effective_from), "supersedes_id": str(prior.id)},
+            reason=rule.reason, performed_by=actor, commit=False,
+        )
+        result = self._weekly_rest_rule_out(rule)
+        self._save_receipt(payload.idempotency_key, payload, "correct_weekly_rest_rule", actor, result, payload.employee_id)
+        self._commit()
+        return result
 
     def invalidate_dependent_valuations(self, employee_id: uuid.UUID, effective_from: date) -> int:
         """Una configuración nueva nunca repricia evidencia cerrada en silencio.
@@ -339,20 +385,44 @@ class WorkCalendarService:
         for holiday in holidays:
             if holiday.holiday_date not in holiday_by_day and holiday.effective_from <= holiday.holiday_date and (holiday.effective_to is None or holiday.effective_to >= holiday.holiday_date):
                 holiday_by_day[holiday.holiday_date] = holiday
-        expected = ScheduleService(self.db).expected_minutes_for_days({employee_id: days})
+        schedules_service = ScheduleService(self.db)
+        expected = schedules_service.expected_minutes_for_days({employee_id: days})
+        schedules_by_day = schedules_service.schedules_for_days({employee_id: days})
         result = []
         for day in days:
             rule = next((item for item in rules if item.effective_from <= day and (item.effective_to is None or item.effective_to >= day)), None)
             holiday = holiday_by_day.get(day)
             scheduled = expected[(employee_id, day)]
+            schedule = schedules_by_day.get((employee_id, day))
             weekly_rest = bool(rule and rule.weekly_rest_weekday == day.weekday())
             is_holiday = holiday is not None and holiday.day_kind != "COMPENSABLE"
-            # A special-day price cannot be derived from an invented one-minute
-            # day.  Normal schedule consumers may still see zero scheduled time.
-            reference = rule.reference_daily_minutes if rule else (scheduled if scheduled > 0 else None)
+            # La referencia del descanso/feriado sale de la jornada ordinaria
+            # vigente del empleado.  Una regla con una referencia obsoleta (p.ej.
+            # 480 sobre una jornada de 300) no repricia el día: se resuelve con
+            # el horario y se marca la divergencia para revisión.
+            if scheduled > 0:
+                reference = scheduled
+                reference_source = "SCHEDULE"
+            elif rule is not None:
+                journey = ScheduleService.journey_from_schedule(schedule)
+                reference = journey if journey > 0 else rule.reference_daily_minutes
+                reference_source = "SCHEDULE" if journey > 0 else "RULE"
+            else:
+                # A special-day price cannot be derived from an invented
+                # one-minute day.  Normal schedule consumers may still see zero
+                # scheduled time; an explicit rule is required.
+                reference = None
+                reference_source = "NONE"
+            rule_reference = rule.reference_daily_minutes if rule is not None else None
+            diverges = bool(
+                rule is not None and reference is not None and reference > 0
+                and rule_reference != reference
+            )
             result.append({"employee_id": str(employee_id), "work_date": day, "scheduled_minutes": scheduled,
                 "attendance_obligation_minutes": 0 if weekly_rest or is_holiday else scheduled,
-                "reference_daily_minutes": reference, "weekly_rest": weekly_rest,
+                "reference_daily_minutes": reference, "reference_source": reference_source,
+                "rule_reference_daily_minutes": rule_reference,
+                "reference_diverges_from_rule": diverges, "weekly_rest": weekly_rest,
                 "holiday": self._holiday_out(holiday), "holiday_unverified": day.year > 2026 and holiday is None})
         return result
 
@@ -470,7 +540,7 @@ class SpecialDayValuationService:
         salary = SalaryService(self.db).get_for_date(employee_id, work_date)
         if salary is None:
             return 0
-        worked = worked_minutes(self.db, employee_id, work_date, work_date)
+        worked = special_day_known_minutes(self.db, employee_id, work_date)
         daily = daily_value(salary.monthly_salary)
         substituted = self._enjoyed_substitution(employee_id, work_date)
         calculation = self._calculation_payload(salary, daily, worked, worked, reference, substituted, context)
@@ -517,7 +587,7 @@ class SpecialDayValuationService:
         source_kind = self._source_kind(context, requested_kind)
         salary = SalaryService(self.db).get_for_date(employee_id, work_date)
         if salary is None: raise HTTPException(status_code=422, detail="MISSING_SALARY")
-        worked = worked_minutes(self.db, employee_id, work_date, work_date)
+        worked = special_day_known_minutes(self.db, employee_id, work_date)
         reference = context["reference_daily_minutes"]
         if reference is None or reference <= 0:
             raise HTTPException(status_code=422, detail="REFERENCE_JOURNEY_REQUIRED")

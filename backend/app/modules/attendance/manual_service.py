@@ -210,7 +210,14 @@ class ManualAttendanceService:
             if legacy:
                 self._error("OVERTIME_RECONCILIATION_REQUIRED", "Existe un sobretiempo legado vigente para esta fecha; reconcilie antes de cargar P", status.HTTP_409_CONFLICT)
         if row.payment_method == "REVIEWED" and row.additional_minutes and row.day_context == "ORDINARY":
-            ordinary = self.estimate_payment(row.employee_id, work_date, row.additional_minutes)
+            # La base de comparación debe usar el mismo refrigerio que la
+            # aprobación; si no, un importe revisado por debajo del mínimo real
+            # pasaría la validación.
+            ordinary = self.estimate_payment(
+                row.employee_id, work_date, row.additional_minutes,
+                ordinary_minutes=row.normal_minutes,
+                ordinary_known_break_minutes=row.known_break_minutes,
+            )
             if ordinary.get("amount") is not None and row.reviewed_additional_amount < Decimal(str(ordinary["amount"])):
                 self._error("REVIEWED_AMOUNT_BELOW_POLICY", "El importe revisado no puede ser menor que la valoración ordinaria aplicable")
         for allocation in row.recovery_allocations:
@@ -248,14 +255,56 @@ class ManualAttendanceService:
             "additional_hours_rate": str(rates["additional_hours_rate"]),
         }
 
-    def estimate_payment(self, employee_id: uuid.UUID, work_date: date, minutes: int, row: ManualDayIn | None = None) -> dict:
-        if not minutes: return {"status": "NOT_APPLICABLE", "amount": "0.00", "minutes": 0}
+    def daily_break_plan(
+        self, employee_id: uuid.UUID, work_date: date, minutes: int,
+        *, ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        """Delegación al cálculo canónico de presencia diaria y refrigerio."""
+        # Import local para mantener la dependencia en una sola dirección al
+        # cargar los módulos; AttendanceService no importa este servicio.
+        from app.modules.attendance.service import AttendanceService
+
+        return AttendanceService(self.db).daily_break_plan(
+            employee_id, work_date, additional_minutes=minutes,
+            ordinary_minutes=ordinary_minutes,
+            ordinary_known_break_minutes=ordinary_known_break_minutes,
+        )
+
+    def estimate_payment(
+        self, employee_id: uuid.UUID, work_date: date, minutes: int,
+        row: ManualDayIn | None = None, *,
+        ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        requested_minutes = max(0, int(minutes or 0))
+        plan = self.daily_break_plan(
+            employee_id, work_date, requested_minutes,
+            ordinary_minutes=ordinary_minutes,
+            ordinary_known_break_minutes=ordinary_known_break_minutes,
+        )
+        break_minutes = plan["break_minutes"]
+        payable_minutes = plan["payable_minutes"]
+        if not requested_minutes:
+            return {
+                "status": "NOT_APPLICABLE", "amount": "0.00", "minutes": 0,
+                "payable_minutes": 0, "requested_minutes": 0, "break_minutes": 0,
+            }
         salary, schedule, inputs = self._valuation_inputs(employee_id, work_date)
         expected = inputs["expected_minutes"]
         if row is not None and row.payment_method == "REVIEWED":
-            ordinary = self._ordinary_payment(minutes, salary, expected, inputs)
-            return {"status": "PENDING", "amount": str(row.reviewed_additional_amount), "minutes": minutes, "method": "REVIEWED", "concept": row.payment_concept, "reference": row.source_reference, "ordinary_minimum_amount": ordinary.get("amount"), "valuation_inputs": inputs}
-        return self._ordinary_payment(minutes, salary, expected, inputs)
+            ordinary = self._ordinary_payment(payable_minutes, salary, expected, inputs)
+            result = {"status": "PENDING", "amount": str(row.reviewed_additional_amount), "minutes": payable_minutes, "method": "REVIEWED", "concept": row.payment_concept, "reference": row.source_reference, "ordinary_minimum_amount": ordinary.get("amount"), "valuation_inputs": inputs}
+        else:
+            result = self._ordinary_payment(payable_minutes, salary, expected, inputs)
+        return {
+            **result,
+            "minutes": payable_minutes,
+            "payable_minutes": payable_minutes,
+            "requested_minutes": requested_minutes,
+            "break_minutes": break_minutes,
+            "break_source": plan["break_source"],
+        }
 
     def _ordinary_payment(self, minutes: int, salary: object | None, expected: int, inputs: dict) -> dict:
         if salary is None or expected <= 0 or not salary.overtime_enabled:
@@ -329,7 +378,7 @@ class ManualAttendanceService:
                 locked_commitments=locked_commitments,
                 validate_periods=False,
             )
-            rows.append({"employee_id": str(row.employee_id), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes, "payment": self.estimate_payment(row.employee_id, payload.work_date, row.additional_minutes, row), "warning": "NORMAL_MISSING" if ScheduleService(self.db).expected_minutes(row.employee_id, payload.work_date) > row.normal_minutes and row.additional_minutes else None})
+            rows.append({"employee_id": str(row.employee_id), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes, "payment": self.estimate_payment(row.employee_id, payload.work_date, row.additional_minutes, row, ordinary_minutes=row.normal_minutes, ordinary_known_break_minutes=row.known_break_minutes), "warning": "NORMAL_MISSING" if ScheduleService(self.db).expected_minutes(row.employee_id, payload.work_date) > row.normal_minutes and row.additional_minutes else None})
         return {"work_date": payload.work_date, "rows": rows, "preview_token": self._preview_token(payload, rows)}
 
     def batch(self, payload: ManualBatchIn, actor_id: uuid.UUID) -> dict:
@@ -536,6 +585,18 @@ class ManualAttendanceService:
                         work_date, row, exclude_manual_day_id=(current.id if current else None),
                         locked_commitments=commitments, validate_periods=True,
                     )
+                # En una jornada de kiosco la presencia ordinaria vive en las
+                # sesiones (la fila sólo aporta P, sin W/N/R); en HST/EMPTY el
+                # ordinario candidato es la propia fila.  El refrigerio se
+                # calcula una sola vez sobre la presencia combinada.
+                payment = self.estimate_payment(
+                    payload.employee_id, work_date, row.additional_minutes, row,
+                    **({} if source == "KIOSK" else {
+                        "ordinary_minutes": row.normal_minutes,
+                        "ordinary_known_break_minutes": row.known_break_minutes,
+                    }),
+                )
+                effective_row = row.model_dump(mode="json")
                 items.append({
                     "work_date": work_date,
                     "status": "READY", "source": source,
@@ -549,7 +610,9 @@ class ManualAttendanceService:
                         "additional_minutes": row.additional_minutes,
                         "recovery_minutes": row.recovery_minutes,
                     },
-                    "payment": self.estimate_payment(payload.employee_id, work_date, row.additional_minutes, row),
+                    "effective_row": effective_row,
+                    "payment": payment,
+                    "payment_preview": payment,
                 })
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
@@ -628,7 +691,8 @@ class ManualAttendanceService:
                 if source == "KIOSK":
                     # Link P to the kiosk-owned day.  It contributes to
                     # overtime/payroll only, never creates a second W/N/R
-                    # attendance row.
+                    # attendance row.  ``minutes`` conserva el pedido crudo; el
+                    # refrigerio y los minutos pagables viven en la valoración.
                     adjustment = HourAdjustment(
                         employee_id=payload.employee_id, adjustment_date=work_date,
                         minutes=row.additional_minutes, adjustment_type="OVERTIME",
@@ -643,6 +707,7 @@ class ManualAttendanceService:
                         adjustment.approval_snapshot_data = {
                             "id": str(adjustment.id), "version": adjustment.version,
                             "adjustment_date": work_date.isoformat(), "minutes": adjustment.minutes,
+                            "requested_minutes": row.additional_minutes,
                             "adjustment_type": adjustment.adjustment_type, "reason": adjustment.reason,
                             "status": ADJUSTMENT_PENDING, "valuation": estimate,
                         }
@@ -653,6 +718,9 @@ class ManualAttendanceService:
                         entity_type="adjustment", entity_id=adjustment.id,
                         action="multi_linked_kiosk_overtime", old_values=None,
                         new_values={"work_date": work_date.isoformat(), "minutes": adjustment.minutes,
+                                    "requested_minutes": row.additional_minutes,
+                                    "payable_minutes": int(estimate.get("minutes", row.additional_minutes)),
+                                    "break_minutes": int(estimate.get("break_minutes", 0)),
                                     "status": adjustment.status, "attendance_source": "KIOSK"},
                         reason=adjustment.reason, performed_by=actor_id, commit=False,
                     )
@@ -702,7 +770,7 @@ class ManualAttendanceService:
                     entity_type="manual_attendance_day", entity_id=item.id,
                     action="multi_versioned_update" if current is not None else "multi_created",
                     old_values=(json.loads(json.dumps(self.serialize(current), default=str)) if current is not None else None),
-                    new_values={"work_date": work_date.isoformat(), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes},
+                    new_values={"work_date": work_date.isoformat(), "worked_minutes_net": row.worked_minutes_net, "normal_minutes": row.normal_minutes, "additional_minutes": row.additional_minutes, "recovery_minutes": row.recovery_minutes, "requested_minutes": int(estimate.get("requested_minutes", row.additional_minutes)), "payable_minutes": int(estimate.get("minutes", row.additional_minutes)), "break_minutes": int(estimate.get("break_minutes", 0))},
                     reason=row.reason.strip(), performed_by=actor_id, commit=False,
                 )
                 created.append(item)
@@ -843,7 +911,11 @@ class ManualAttendanceService:
             if isinstance(exc.detail, dict) and exc.detail.get("code") == "REVIEWED_AMOUNT_BELOW_POLICY":
                 self._error("STALE_PREVIEW", "La configuración cambió; vuelva a previsualizar y corrija el importe", status.HTTP_409_CONFLICT)
             raise
-        estimate = self.estimate_payment(item.employee_id, item.work_date, item.additional_minutes, row)
+        estimate = self.estimate_payment(
+            item.employee_id, item.work_date, item.additional_minutes, row,
+            ordinary_minutes=row.normal_minutes,
+            ordinary_known_break_minutes=row.known_break_minutes,
+        )
         if {**estimate, "status": "PENDING"} != {**expected_snapshot, "status": "PENDING"}:
             self._error("STALE_PREVIEW", "La configuración cambió; vuelva a previsualizar y apruebe explícitamente", status.HTTP_409_CONFLICT)
         if estimate["status"] != "PENDING" or estimate.get("amount") is None: self._error("PAYMENT_REVIEW_REQUIRED", "El adicional no tiene una valoración aprobable", status.HTTP_409_CONFLICT)

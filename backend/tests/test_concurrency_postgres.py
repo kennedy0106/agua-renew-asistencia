@@ -28,6 +28,8 @@ from app.modules.attendance.manual_models import ManualAttendanceDay, ManualReco
 from app.modules.attendance.manual_schemas import ManualBatchIn, ManualDayIn, ManualUpdateIn, RecoveryAllocationIn
 from app.modules.attendance.manual_service import ManualAttendanceService
 from app.modules.attendance.manual_operations import lock_operation
+from app.modules.salary.models import SalarySetting
+from app.modules.schedules.models import WorkSchedule
 from app.modules.system_roles.models import SystemRole
 from app.modules.users.models import User
 
@@ -217,6 +219,84 @@ def test_hst01_d03_two_concurrent_creations_leave_one_active_day(pg_engine):
         _cleanup_payroll(check, period_id, record_id)
     finally:
         check.close()
+
+
+def test_overtime_approval_applies_one_daily_break_under_concurrency(pg_engine):
+    """Un solo refrigerio diario: dos sobretiempos simultáneos, uno gana con 60/240."""
+    factory = _two_factory(pg_engine)
+    setup = factory()
+    try:
+        employee_id, period_id, record_id = _seed_employee_and_period(setup)
+        actor_id = _manual_actor(setup)
+        setup.add(SalarySetting(
+            employee_id=employee_id, monthly_salary=Decimal("1500.00"),
+            overtime_enabled=True, effective_from=date(2026, 8, 1),
+        ))
+        setup.add(WorkSchedule(
+            employee_id=employee_id, effective_from=date(2026, 8, 1),
+            monday_minutes=300, tuesday_minutes=300, wednesday_minutes=300,
+            thursday_minutes=300, friday_minutes=300, saturday_minutes=300,
+            break_minutes=60, break_applies_after_minutes=360,
+        ))
+        setup.add(AttendanceRecord(
+            employee_id=employee_id, work_date=date(2026, 9, 10),
+            check_in_at=datetime(2026, 9, 10, 13, tzinfo=timezone.utc),
+            check_out_at=datetime(2026, 9, 10, 18, tzinfo=timezone.utc),
+            worked_minutes=300, status="COMPLETE",
+        ))
+        setup.commit()
+    finally:
+        setup.close()
+
+    work_date = date(2026, 9, 10)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+    created_ids: list[uuid.UUID] = []
+    lock = threading.Lock()
+
+    def create_overtime():
+        db = factory()
+        try:
+            barrier.wait(timeout=5)
+            adjustment = AdjustmentService(db).create(
+                employee_id=employee_id, adjustment_date=work_date, minutes=300,
+                adjustment_type="OVERTIME", reason="Sobretiempo concurrente",
+            )
+            with lock:
+                created_ids.append(adjustment.id)
+            outcomes.append(adjustment)
+        except HTTPException as exc:
+            db.rollback()
+            outcomes.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create_overtime), threading.Thread(target=create_overtime)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    # El lock por empleado serializa: exactamente una jornada gana y la otra
+    # recibe el 409 de "ya existe un ajuste de horas extra para la jornada".
+    assert len(created_ids) == 1
+    assert outcomes.count(409) == 1
+
+    approve = factory()
+    try:
+        approved = AdjustmentService(approve).approve(created_ids[0], actor_id)
+        valuation = (approved.approval_snapshot_data or {}).get("valuation") or {}
+        assert approved.minutes == 300
+        assert valuation["requested_minutes"] == 300
+        assert valuation["break_minutes"] == 60
+        assert valuation["minutes"] == 240
+        approve.execute(text("DELETE FROM adjustment_operation_receipts WHERE target_adjustment_id = :id"), {"id": created_ids[0]})
+        approve.execute(text("DELETE FROM hour_adjustments WHERE employee_id = :id"), {"id": employee_id})
+        approve.execute(text("DELETE FROM attendance_records WHERE employee_id = :id"), {"id": employee_id})
+        approve.execute(text("DELETE FROM work_schedules WHERE employee_id = :id"), {"id": employee_id})
+        approve.execute(text("DELETE FROM salary_settings WHERE employee_id = :id"), {"id": employee_id})
+        approve.commit()
+        _cleanup_payroll(approve, period_id, record_id)
+    finally:
+        approve.close()
 
 
 def test_hst01_a30_same_idempotency_key_has_one_effective_creation(pg_engine):

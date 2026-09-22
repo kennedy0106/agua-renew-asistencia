@@ -87,6 +87,8 @@ test("salarios muestra base por calendario y regularización, nunca cuota de dis
   await expect(page.getByText("Base del tramo (calendario + regularización)", { exact: true })).toBeVisible();
   await expect(page.getByText("S/ 325.05")).toBeVisible();
   await expect(page.getByText("S/ -0.05").first()).toBeVisible();
+  // El treintavo dominical ya vive en la base; el descanso trabajado se paga aparte.
+  await expect(page.getByText("El treintavo del domingo ya está incluido en la base por calendario", { exact: false })).toBeVisible();
 
   // Las columnas diarias son calendario + regularización; ya no hay cuota de reparto.
   const card = page.locator(".responsive-table-card").first();

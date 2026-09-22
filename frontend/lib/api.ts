@@ -908,7 +908,14 @@ export type ManualMultiPreview = {
     error_code?: string | null;
     message?: string | null;
     effective_row: ManualAttendanceRow;
-    payment_preview?: { status: string; amount: string | null; [key: string]: unknown } | null;
+    payment_preview?: {
+      status: string;
+      amount: string | null;
+      minutes?: number;
+      requested_minutes?: number;
+      break_minutes?: number;
+      [key: string]: unknown;
+    } | null;
   }>;
 };
 
@@ -987,6 +994,9 @@ export type WorkCalendarDay = {
   scheduled_minutes: number;
   attendance_obligation_minutes: number;
   reference_daily_minutes: number | null;
+  reference_source?: "SCHEDULE" | "RULE" | "NONE";
+  rule_reference_daily_minutes?: number | null;
+  reference_diverges_from_rule?: boolean;
   weekly_rest: boolean;
   holiday: { id: string; name: string; scope: string; day_kind: string; source: string; version: number } | null;
   holiday_unverified: boolean;
@@ -998,6 +1008,7 @@ export const workCalendarApi = {
     { cache: "no-store" },
   ),
   setWeeklyRestRule: (payload: { employee_id: string; weekly_rest_weekday: number; reference_daily_minutes: number; source: string; reason: string; effective_from: string }) => apiFetch<{ id: string; version: number }>("/api/v1/work-calendar/weekly-rest-rules", { method: "POST", body: JSON.stringify(payload) }),
+  correctWeeklyRestRule: (payload: { employee_id: string; weekly_rest_weekday: number; reference_daily_minutes: number; source: string; reason: string; effective_from: string; expected_version: number; idempotency_key: string }) => apiFetch<{ id: string; version: number }>("/api/v1/work-calendar/weekly-rest-rules/corrections", { method: "POST", body: JSON.stringify(payload) }),
   proposeSubstitution: (payload: { employee_id: string; original_date: string; origin_kind: "WEEKLY_REST" | "HOLIDAY"; substitute_start: string; substitute_end: string; reference: string; reason: string; idempotency_key: string }) => apiFetch<RestSubstitution>("/api/v1/work-calendar/rest-substitutions", { method: "POST", body: JSON.stringify(payload) }),
   substitutionAction: (id: string, action: "approve" | "verify" | "cancel", payload: { expected_version: number; reason: string; idempotency_key: string; evidence?: Record<string, string> }) => apiFetch<RestSubstitution>(`/api/v1/work-calendar/rest-substitutions/${id}/${action}`, { method: "POST", body: JSON.stringify(payload) }),
   previewValuation: (payload: { employee_id: string; work_date: string; source_kind?: "WEEKLY_REST" | "HOLIDAY" | "MAY_DAY_COINCIDENCE" }) => apiFetch<SpecialDayValuation>("/api/v1/work-calendar/valuations/preview", { method: "POST", body: JSON.stringify(payload) }),

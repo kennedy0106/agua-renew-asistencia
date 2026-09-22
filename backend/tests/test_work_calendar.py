@@ -4,8 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
+from app.modules.adjustments.models import HourAdjustment
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
+from app.modules.attendance.totals import special_day_known_minutes
+from app.modules.overtime.service import OvertimeService
 from app.modules.payroll.models import PayrollPeriod
 from app.modules.users.models import User
 from app.modules.work_calendar.models import SpecialDayValuation
@@ -460,6 +463,100 @@ def test_pending_valuation_recomputes_on_manual_attendance(client, db_session):
     assert row.preview_token is not None
 
 
+def test_weekly_rest_reference_correction_is_versioned_same_date(client, db_session):
+    """La corrección 480->300 es versionada, misma fecha y no muta la regla previa."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    rule = client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 6, "reference_daily_minutes": 480,
+        "source": "Contrato", "reason": "Referencia inicial", "effective_from": "2026-08-01",
+    })
+    assert rule.status_code == 201, rule.text
+    # Divergencia visible: la jornada real es 300, la regla dice 480.
+    day = client.get(f"/api/v1/work-calendar/employees/{employee_id}/days", params={
+        "date_from": "2026-08-02", "date_to": "2026-08-02",
+    }).json()[0]
+    assert day["reference_daily_minutes"] == 300
+    assert day["reference_diverges_from_rule"] is True
+
+    db_session.add(AttendanceRecord(
+        employee_id=employee_id, work_date=date(2026, 8, 2),
+        check_in_at=datetime(2026, 8, 2, 8, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 8, 2, 13, tzinfo=timezone.utc), worked_minutes=300, status="COMPLETE",
+    ))
+    db_session.commit()
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-08-02", "source_kind": "WEEKLY_REST",
+    })
+    payload = preview.json()
+    assert Decimal(str(payload["amount"])) == Decimal("43.33")
+    approve = client.post(f"/api/v1/work-calendar/valuations/{payload['id']}/approve", json={
+        "expected_version": payload["version"], "preview_token": payload["preview_token"],
+        "idempotency_key": "cal-reference-approve", "reason": "Aprobación previa",
+    })
+    assert approve.status_code == 200, approve.text
+
+    corrected = client.post("/api/v1/work-calendar/weekly-rest-rules/corrections", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 6, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Corrección a la jornada real",
+        "effective_from": "2026-08-01", "expected_version": 1, "idempotency_key": "cal-reference-correct",
+    })
+    assert corrected.status_code == 201, corrected.text
+    assert corrected.json()["version"] == 2
+    replay = client.post("/api/v1/work-calendar/weekly-rest-rules/corrections", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 6, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Corrección a la jornada real",
+        "effective_from": "2026-08-01", "expected_version": 1, "idempotency_key": "cal-reference-correct",
+    })
+    assert replay.status_code == 201 and replay.json() == corrected.json()
+
+    after = client.get(f"/api/v1/work-calendar/employees/{employee_id}/days", params={
+        "date_from": "2026-08-02", "date_to": "2026-08-02",
+    }).json()[0]
+    assert after["reference_daily_minutes"] == 300
+    assert after["reference_diverges_from_rule"] is False
+    stored = db_session.scalar(select(SpecialDayValuation).where(SpecialDayValuation.id == uuid.UUID(payload["id"])))
+    assert stored.status == "PENDING" and stored.version > payload["version"]
+
+
+def test_rest_day_overtime_excluded_and_folded_into_special_pay(client, db_session):
+    """Un adicional en descanso no se paga como HE; alimenta la valoración especial."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": str(employee_id), "weekly_rest_weekday": 6, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Descanso semanal", "effective_from": "2026-08-01",
+    })
+    created = client.post(f"/api/v1/employees/{employee_id}/adjustments", json={
+        "adjustment_date": "2026-08-02", "minutes": 300, "adjustment_type": "OVERTIME",
+        "reason": "Trabajo en descanso",
+    })
+    assert created.status_code == 201, created.text
+    pending = created.json()
+    approved = client.patch(f"/api/v1/adjustments/{pending['id']}/approve", json={
+        "expected_version": pending["version"], "expected_snapshot": pending["approval_snapshot"],
+        "idempotency_key": "cal-rest-ot-approve",
+    })
+    assert approved.status_code == 200, approved.text
+    # En un día de descanso la jornada es 0: el ajuste no se valora como HE
+    # ordinaria (quedaría sin importe); se paga vía la valoración especial.
+    before = OvertimeService(db_session).value(employee_id, date(2026, 8, 2), date(2026, 8, 2))
+    assert before["overtime_minutes"] == 300 and Decimal(str(before["value"])) == Decimal("0.00")
+
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": str(employee_id), "work_date": "2026-08-02", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    value = preview.json()
+    # No hay fila de asistencia: el adicional aprobado entra como minutos netos.
+    assert value["worked_minutes"] == 300
+    assert Decimal(str(value["amount"])) == Decimal("43.33")
+    # Con la valoración activa (aunque siga PENDING) se excluye de HE ordinaria.
+    after = OvertimeService(db_session).value(employee_id, date(2026, 8, 2), date(2026, 8, 2))
+    assert after["overtime_minutes"] == 0
+    assert Decimal(str(after["value"])) == Decimal("0.00")
+
+
 def test_notes_only_correction_keeps_approved_valuation_untouched(client, db_session):
     """Una corrección que no cambia el neto no renueva ni invalida la aprobación."""
     employee_id, record = _special_day_with_attendance(client, db_session)
@@ -480,3 +577,45 @@ def test_notes_only_correction_keeps_approved_valuation_untouched(client, db_ses
     assert row.worked_minutes == 300
     assert row.amount == original_amount
     assert row.approved_at is not None
+
+
+def test_special_day_known_minutes_dedups_rows_and_includes_orphan_overtime(client, db_session):
+    """No duplica asistencia/carga + OVERTIME y sí incorpora el ajuste sin fila."""
+    _login(client)
+    employee_id = _employee(client, db_session._test_job_roles["Operario"], "2026-01-01")
+    # Día con asistencia de kiosco y un OVERTIME aprobado el mismo día.
+    db_session.add(AttendanceRecord(
+        employee_id=employee_id, work_date=date(2026, 8, 10),
+        check_in_at=datetime(2026, 8, 10, 13, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 8, 10, 18, tzinfo=timezone.utc),
+        worked_minutes=300, status="COMPLETE",
+    ))
+    # Día con carga histórica pagable y un OVERTIME aprobado el mismo día.
+    db_session.add(ManualAttendanceDay(
+        employee_id=employee_id, work_date=date(2026, 8, 11), worked_minutes_net=300,
+        normal_minutes=300, additional_minutes=0, recovery_minutes=0, reason="Carga histórica",
+        payment_status="NOT_APPLICABLE", payment_snapshot={"break_minutes": 0}, version=1,
+        created_by_user_id=db_session.scalar(select(User).where(User.username == "admin")).id,
+    ))
+    # Cada ajuste aprobado publica sus minutos pagables en la valoración.
+    def overtime(work_date, payable, requested, brk):
+        db_session.add(HourAdjustment(
+            employee_id=employee_id, adjustment_date=work_date, minutes=requested,
+            adjustment_type="OVERTIME", status="APPROVED", reason="Sobretiempo aprobado", version=1,
+            approval_snapshot_data={"valuation": {
+                "minutes": payable, "requested_minutes": requested, "break_minutes": brk,
+            }},
+        ))
+
+    overtime(date(2026, 8, 10), 240, 300, 60)
+    overtime(date(2026, 8, 11), 240, 300, 60)
+    # Día sin fila de asistencia: sólo un OVERTIME aprobado.
+    overtime(date(2026, 8, 12), 240, 300, 60)
+    db_session.commit()
+
+    # Con fila de asistencia, el neto es el de la fila: el ajuste no se duplica.
+    assert special_day_known_minutes(db_session, employee_id, date(2026, 8, 10)) == 300
+    # Con carga histórica, el neto pagable de la fila manda: el ajuste no se duplica.
+    assert special_day_known_minutes(db_session, employee_id, date(2026, 8, 11)) == 300
+    # Sin fila alguna, se incorporan los minutos pagables del ajuste aprobado.
+    assert special_day_known_minutes(db_session, employee_id, date(2026, 8, 12)) == 240

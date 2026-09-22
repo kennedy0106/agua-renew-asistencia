@@ -90,6 +90,15 @@ function money(value: string | number | null | undefined) {
   return `S/ ${Number(value).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function paymentPreviewText(payment: ManualMultiPreview["items"][number]["payment_preview"]) {
+  if (!payment) return "";
+  const amount = payment.amount ? money(payment.amount) : "Sin importe calculado";
+  const breakMinutes = Number(payment.break_minutes ?? 0);
+  if (breakMinutes <= 0) return amount;
+  const payableMinutes = Number(payment.minutes ?? 0);
+  return `${formatMinutes(breakMinutes)} de refrigerio · ${formatMinutes(payableMinutes)} adicionales pagables · ${amount}`;
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("es-PE", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Lima" }).format(new Date(value));
 }
@@ -198,11 +207,24 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
   const referenceHours = Math.floor(referenceDuration / 60);
   const referenceRemainder = referenceDuration % 60;
   const calendarReasonForSave = calendarReason.trim().length >= 3 ? calendarReason.trim() : "Actualización desde el perfil del empleado";
+  // La referencia mostrada sale del horario vigente (300), no del valor por
+  // defecto obsoleto (480). `referenceMinutes` solo edita la regla en el diálogo.
+  const effectiveReferenceMinutes = focusedCalendar?.reference_daily_minutes
+    ?? (calendarDays.reduce((max, day) => Math.max(max, day.reference_daily_minutes ?? 0), 0)
+      || focused?.expected_minutes
+      || 0);
 
   function openCalendarDialog() {
     const firstRest = calendarDays.find((day) => day.weekly_rest);
     if (firstRest) setRestWeekday(String(calendarOffset(firstRest.work_date)));
+    // La duración se completa con la jornada real del horario (300) y nunca con
+    // una referencia almacenada obsoleta (480).
+    const scheduleReference = calendarDays.reduce(
+      (max, day) => Math.max(max, day.reference_daily_minutes ?? 0, day.scheduled_minutes ?? 0),
+      0,
+    );
     const suggested = focusedCalendar?.reference_daily_minutes
+      ?? (scheduleReference > 0 ? scheduleReference : null)
       ?? focusedCalendar?.scheduled_minutes
       ?? focused?.expected_minutes;
     if (suggested && suggested > 0) setReferenceMinutes(String(suggested));
@@ -628,6 +650,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
               <div><dt>Marcaciones</dt><dd>{focused.attendance.length || "Ninguna"}</dd></div>
               <div><dt>Carga administrativa</dt><dd>{focused.manual_day ? formatMinutes(focused.manual_day.worked_minutes_net) : "Ninguna"}</dd></div>
             </dl>
+            {focusedCalendar?.reference_diverges_from_rule && <p className="employee-day-entry" role="status">La regla de descanso guarda {formatMinutes(focusedCalendar.rule_reference_daily_minutes ?? 0)} pero la jornada real es {formatMinutes(focusedCalendar.reference_daily_minutes ?? 0)}. Corrija la regla para dejar constancia.</p>}
             {focused.attendance.map((item) => <p className="employee-day-entry" key={item.id}>{item.check_in_at.slice(11, 16)} → {item.check_out_at?.slice(11, 16) ?? "abierta"} · {item.worked_minutes === null ? "en curso" : formatMinutes(item.worked_minutes)}</p>)}
             {focusedCalendar?.holiday && <p className="employee-day-entry">{focusedCalendar.holiday.name} · {focusedCalendar.holiday.source}</p>}
             {focused.holiday && <p className="employee-day-entry">{focused.holiday.name} · {focused.holiday.source}</p>}
@@ -644,7 +667,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       <section className="employee-disclosure-card" aria-labelledby="work-calendar-title">
         <div>
           <h3 id="work-calendar-title">Descansos y feriados</h3>
-          <p>Descanso habitual: {weekdays[Number(restWeekday)] ?? "Sin definir"} · jornada usada para el cálculo: {formatMinutes(Number(referenceMinutes) || 0)}.</p>
+          <p>Descanso habitual: {weekdays[Number(restWeekday)] ?? "Sin definir"} · jornada usada para el cálculo: {formatMinutes(effectiveReferenceMinutes)}.</p>
         </div>
         <button type="button" className="btn btn-outline" onClick={openCalendarDialog}>Configurar descansos y feriados</button>
       </section>
@@ -686,7 +709,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
         {selectedDates.length > 0 && <div className="employee-batch-dates"><div className="employee-batch-date employee-batch-date--head"><span>Fecha</span><span>Horas</span><span>Min</span><span>Motivo / actividad específica</span></div>{selectedDates.map((date) => { const row = overrides[date]; return <div className="employee-batch-date" key={date}><strong>{date}</strong><input className="input" type="number" min="0" max="24" aria-label={`Horas del ${date}`} value={row?.hours ?? hours} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: event.target.value, minutes: row?.minutes ?? minutes, reason: row?.reason ?? reason, activity: row?.activity ?? activity } })); invalidatePreview(); }} /><input className="input" type="number" min="0" max="59" aria-label={`Minutos del ${date}`} value={row?.minutes ?? minutes} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: row?.hours ?? hours, minutes: event.target.value, reason: row?.reason ?? reason, activity: row?.activity ?? activity } })); invalidatePreview(); }} /><input className="input" aria-label={`Detalle del ${date}`} value={(treatment === "ADDITIONAL" || treatment === "MIXED") ? (row?.activity ?? activity) : (row?.reason ?? reason)} onChange={(event) => { setOverrides((current) => ({ ...current, [date]: { hours: row?.hours ?? hours, minutes: row?.minutes ?? minutes, reason: treatment === "NORMAL" || treatment === "RECOVERY" ? event.target.value : row?.reason ?? reason, activity: treatment === "ADDITIONAL" || treatment === "MIXED" ? event.target.value : row?.activity ?? activity } })); invalidatePreview(); }} /></div>; })}</div>}
 
         <div className="employee-batch-actions"><AsyncButton type="button" className="btn btn-outline" busy={previewing} busyLabel="Comprobando fechas…" disabled={!selectedDates.length || savingBatch} onClick={() => void runPreview()}>Previsualizar lote</AsyncButton>{preview && <AsyncButton type="button" busy={savingBatch} busyLabel="Guardando el mismo envío…" disabled={hasConflicts} onClick={() => void saveBatch()}>Guardar {preview.items.length} fechas</AsyncButton>}</div>
-        {preview && <div className="employee-batch-preview" aria-live="polite"><h4>Revisión antes de guardar</h4>{preview.items.map((item) => <div className={`employee-preview-row is-${item.status.toLowerCase()}`} key={item.work_date}><strong>{item.work_date}</strong><span>{item.status === "READY" ? `${formatMinutes(item.effective_row.worked_minutes_net)} listos para guardar` : previewIssue(item.message, item.error_code)}</span><span>{item.payment_preview?.amount ? money(item.payment_preview.amount) : ""}</span></div>)}</div>}
+        {preview && <div className="employee-batch-preview" aria-live="polite"><h4>Revisión antes de guardar</h4>{preview.items.map((item) => <div className={`employee-preview-row is-${item.status.toLowerCase()}`} key={item.work_date}><strong>{item.work_date}</strong><span>{item.status === "READY" ? `${formatMinutes(item.effective_row.worked_minutes_net)} informados` : previewIssue(item.message, item.error_code)}</span><span>{paymentPreviewText(item.payment_preview)}</span></div>)}</div>}
       </section>
       </AppDialog>}
 

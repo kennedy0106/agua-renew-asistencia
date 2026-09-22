@@ -6,13 +6,14 @@ import uuid
 
 import pytest
 
-from sqlalchemy import event
+from sqlalchemy import event, select
 
 from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance import agenda_service as agenda_module
 from app.modules.attendance.agenda_service import EmployeeAgendaService
 from app.modules.attendance.service import AttendanceService
+from app.modules.attendance.totals import special_day_known_minutes
 from app.modules.adjustments.models import HourAdjustment
 from app.modules.adjustments.service import AdjustmentService
 from app.modules.overtime.service import OvertimeService
@@ -248,6 +249,174 @@ def test_multi_additional_links_kiosk_and_versions_existing_hst(client, db_sessi
     agenda = client.get(f"/api/v1/employees/{employee}/attendance-agenda", params={"date_from": "2026-08-06", "date_to": "2026-08-06"}).json()
     assert agenda["days"][0]["worked_minutes"] == 480
     assert "OVERTIME_APPROVED" in agenda["days"][0]["statuses"]
+
+
+def test_kiosk_additional_activates_single_daily_break_from_total_presence(client, db_session):
+    """5 h ordinarias + 5 h adicionales activan 1 h de refrigerio diario."""
+    _login(client)
+    employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": "1500.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={
+        "effective_from": "2026-08-01", "thursday_minutes": 300,
+        "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+
+    employee_uuid = uuid.UUID(employee)
+    work_date = date(2026, 8, 6)
+    record = AttendanceRecord(
+        employee_id=employee_uuid, work_date=work_date,
+        check_in_at=datetime(2026, 8, 6, 13, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 8, 6, 18, tzinfo=timezone.utc),
+        worked_minutes=300, status="COMPLETE",
+    )
+    db_session.add(record)
+    db_session.commit()
+    assert AttendanceService(db_session)._recompute_day(employee_uuid, work_date) == 300
+
+    payload = _multi(employee, ("2026-08-06",), "agenda-kiosk-break-total")
+    payload["template"].update({
+        "worked_minutes_net": 300, "normal_minutes": 0, "additional_minutes": 300,
+        "payment_method": "OVERTIME", "reason": "Cinco horas adicionales",
+    })
+    preview = client.post("/api/v1/attendance/manual-days/multi/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    item = preview.json()["items"][0]
+    assert item["operation"] == "LINKED_OVERTIME"
+    assert item["payment"]["requested_minutes"] == 300
+    assert item["payment"]["break_minutes"] == 60
+    assert item["payment"]["minutes"] == 240
+
+    payload["preview_token"] = preview.json()["preview_token"]
+    saved = client.post("/api/v1/attendance/manual-days/multi", json=payload)
+    assert saved.status_code == 200, saved.text
+
+    pending = client.get(f"/api/v1/employees/{employee}/adjustments").json()[0]
+    assert pending["status"] == "PENDING"
+    assert pending["minutes"] == 300
+    assert pending["approval_snapshot"]["valuation"]["minutes"] == 240
+    approved = client.patch(f"/api/v1/adjustments/{pending['id']}/approve", json={
+        "expected_version": pending["version"],
+        "expected_snapshot": pending["approval_snapshot"],
+        "idempotency_key": "agenda-kiosk-break-approve",
+    })
+    assert approved.status_code == 200, approved.text
+    # El pedido crudo se conserva; el pagable vive en la valoración inmutable.
+    assert approved.json()["minutes"] == 300
+    assert approved.json()["approval_snapshot"]["valuation"]["minutes"] == 240
+    assert approved.json()["approval_snapshot"]["valuation"]["requested_minutes"] == 300
+    assert approved.json()["approval_snapshot"]["valuation"]["break_minutes"] == 60
+
+    value = OvertimeService(db_session).value(employee_uuid, work_date, work_date)
+    assert value["overtime_minutes"] == 240
+    assert value["breakdown"][0]["requested_minutes"] == 300
+    assert value["breakdown"][0]["break_minutes"] == 60
+    assert value["breakdown"][0]["minutes"] == 240
+
+
+def test_hst_manual_ordinary_plus_overtime_activates_single_daily_break(client, db_session):
+    """Carga histórica 300 ordinarios + 300 adicionales => 60 de refrigerio, 240 pagables."""
+    _login(client)
+    employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": "1500.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={
+        "effective_from": "2026-08-01", "thursday_minutes": 300,
+        "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+
+    payload = _multi(employee, ("2026-08-06",), "agenda-hst-break-total")
+    payload["template"].update({
+        "worked_minutes_net": 600, "normal_minutes": 300, "additional_minutes": 300,
+        "payment_method": "OVERTIME", "reason": "Ordinario más adicional",
+    })
+    payload["approve_additional"] = True
+    preview = client.post("/api/v1/attendance/manual-days/multi/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    item = preview.json()["items"][0]
+    assert item["operation"] == "CREATE_HST"
+    assert item["payment"]["requested_minutes"] == 300
+    assert item["payment"]["break_minutes"] == 60
+    assert item["payment"]["minutes"] == 240
+
+    payload["preview_token"] = preview.json()["preview_token"]
+    assert client.post("/api/v1/attendance/manual-days/multi", json=payload).status_code == 200
+    row = db_session.scalars(select(ManualAttendanceDay).where(
+        ManualAttendanceDay.employee_id == uuid.UUID(employee)
+    )).one()
+    # El pedido crudo se conserva en la fila y el pagable en el snapshot.
+    assert row.additional_minutes == 300
+    assert row.payment_snapshot["requested_minutes"] == 300
+    assert row.payment_snapshot["break_minutes"] == 60
+    assert row.payment_snapshot["minutes"] == 240
+
+    value = OvertimeService(db_session).value(uuid.UUID(employee), date(2026, 8, 6), date(2026, 8, 6))
+    assert value["overtime_minutes"] == 240
+    assert value["breakdown"][0]["requested_minutes"] == 300
+    assert value["breakdown"][0]["break_minutes"] == 60
+
+
+def test_already_broken_day_has_zero_incremental_break(client, db_session):
+    """Si el ordinario ya cruzó el umbral, el adicional no vuelve a descontar refrigerio."""
+    _login(client)
+    employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": "1500.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={
+        "effective_from": "2026-08-01", "thursday_minutes": 480,
+        "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+    employee_uuid = uuid.UUID(employee)
+    work_date = date(2026, 8, 6)
+    record = AttendanceRecord(
+        employee_id=employee_uuid, work_date=work_date,
+        check_in_at=datetime(2026, 8, 6, 13, tzinfo=timezone.utc),
+        check_out_at=datetime(2026, 8, 6, 22, tzinfo=timezone.utc),
+        worked_minutes=480, status="COMPLETE",
+    )
+    db_session.add(record)
+    db_session.commit()
+    AttendanceService(db_session)._recompute_day(employee_uuid, work_date)
+
+    payload = _multi(employee, ("2026-08-06",), "agenda-break-no-double")
+    payload["template"].update({
+        "worked_minutes_net": 300, "normal_minutes": 0, "additional_minutes": 300,
+        "payment_method": "OVERTIME", "reason": "Adicional sin doble refrigerio",
+    })
+    preview = client.post("/api/v1/attendance/manual-days/multi/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    payment = preview.json()["items"][0]["payment"]
+    assert payment["break_minutes"] == 0
+    assert payment["minutes"] == 300
+
+
+def test_reviewed_floor_uses_break_aware_ordinary_minimum(client, db_session):
+    """El mínimo REVIEWED se compara contra el pagable tras el refrigerio."""
+    _login(client)
+    employee = _employee(client, db_session)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": "1500.00", "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={
+        "effective_from": "2026-08-01", "thursday_minutes": 300,
+        "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+
+    payload = _multi(employee, ("2026-08-06",), "agenda-reviewed-floor")
+    payload["template"].update({
+        "worked_minutes_net": 600, "normal_minutes": 300, "additional_minutes": 300,
+        "payment_method": "REVIEWED", "payment_concept": "Acuerdo",
+        "source_reference": "ACTA-01", "reviewed_additional_amount": "10.00",
+        "reason": "Acuerdo de pago revisado",
+    })
+    preview = client.post("/api/v1/attendance/manual-days/multi/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    item = preview.json()["items"][0]
+    assert item["status"] == "CONFLICT"
+    assert item["error_code"] == "REVIEWED_AMOUNT_BELOW_POLICY"
 
 
 def test_accrual_uses_payroll_proration_without_creating_period(client, db_session):
@@ -631,3 +800,96 @@ def test_accrual_exposes_calculated_monetary_adjustment_once_and_recovery_agenda
     by_date = {item["work_date"]: item for item in agenda["days"]}
     assert "PERMISSION" in by_date["2026-08-01"]["statuses"]
     assert "RECOVERY" in by_date["2026-08-05"]["statuses"]
+
+
+def _weekly_rest_employee(client, db, *, monthly_salary="650.00"):
+    employee = _employee(client, db)
+    assert client.post(f"/api/v1/employees/{employee}/salary-settings", json={
+        "effective_from": "2026-08-01", "monthly_salary": monthly_salary, "overtime_enabled": True,
+    }).status_code == 201
+    assert client.post(f"/api/v1/employees/{employee}/schedule", json={
+        "effective_from": "2026-08-01", "monday_minutes": 300, "tuesday_minutes": 300,
+        "wednesday_minutes": 300, "thursday_minutes": 300, "friday_minutes": 300,
+        "saturday_minutes": 300, "break_minutes": 60, "break_applies_after_minutes": 360,
+    }).status_code == 201
+    assert client.post("/api/v1/work-calendar/weekly-rest-rules", json={
+        "employee_id": employee, "weekly_rest_weekday": 6, "reference_daily_minutes": 300,
+        "source": "Contrato", "reason": "Descanso dominical", "effective_from": "2026-08-01",
+    }).status_code == 201
+    return employee
+
+
+def test_daily_break_plan_scopes_isolated_overtime_to_non_working_days(client, db_session):
+    """Un ajuste aislado es presencia sólo en días sin jornada programada."""
+    _login(client)
+    employee = _weekly_rest_employee(client, db_session)
+    employee_uuid = uuid.UUID(employee)
+    service = AttendanceService(db_session)
+
+    # Domingo sin jornada: el ajuste aislado representa la presencia del día.
+    sunday = service.daily_break_plan(employee_uuid, date(2026, 9, 13), additional_minutes=510)
+    assert sunday["scheduled_day_minutes"] == 0
+    assert sunday["requested_minutes"] == 510
+    assert sunday["break_minutes"] == 60
+    assert sunday["payable_minutes"] == 450
+
+    # Lunes laborable con presencia ordinaria registrada: un único refrigerio.
+    for requested, payable in ((420, 360), (300, 240), (210, 150)):
+        plan = service.daily_break_plan(
+            employee_uuid, date(2026, 9, 14), additional_minutes=requested, ordinary_minutes=300
+        )
+        assert plan["break_minutes"] == 60
+        assert plan["payable_minutes"] == payable
+
+    # Lunes laborable sin presencia registrada: no se infiere presencia ausente.
+    isolated = service.daily_break_plan(employee_uuid, date(2026, 9, 14), additional_minutes=360)
+    assert isolated["scheduled_day_minutes"] == 300
+    assert isolated["break_minutes"] == 0
+    assert isolated["payable_minutes"] == 360
+
+
+def test_isolated_sunday_overtime_activates_single_break_and_feeds_special_day(client, db_session):
+    """Daniel 2026-09-13: ajuste aislado 510 -> 60 de refrigerio, 450 pagables."""
+    _login(client)
+    employee = _weekly_rest_employee(client, db_session)
+    employee_uuid = uuid.UUID(employee)
+    work_date = date(2026, 9, 13)
+
+    created = client.post(f"/api/v1/employees/{employee}/adjustments", json={
+        "adjustment_date": "2026-09-13", "minutes": 510, "adjustment_type": "OVERTIME",
+        "reason": "Trabajo en descanso dominical",
+    })
+    assert created.status_code == 201, created.text
+    pending = created.json()
+    valuation = pending["approval_snapshot"]["valuation"]
+    assert pending["minutes"] == 510
+    assert valuation["requested_minutes"] == 510
+    assert valuation["break_minutes"] == 60
+    assert valuation["minutes"] == 450
+
+    approved = client.patch(f"/api/v1/adjustments/{pending['id']}/approve", json={
+        "expected_version": pending["version"], "expected_snapshot": pending["approval_snapshot"],
+        "idempotency_key": "agenda-sunday-isolated-break",
+    })
+    assert approved.status_code == 200, approved.text
+    # El pedido crudo permanece inmutable; el pagable vive en el snapshot.
+    assert approved.json()["minutes"] == 510
+    assert approved.json()["approval_snapshot"]["valuation"]["minutes"] == 450
+
+    # Sin fila de asistencia, el día especial consume los 450 pagables del snapshot.
+    assert special_day_known_minutes(db_session, employee_uuid, work_date) == 450
+    # No se paga además como HE ordinaria (sin 25/35%): importe cero.
+    before = OvertimeService(db_session).value(employee_uuid, work_date, work_date)
+    assert Decimal(str(before["value"])) == Decimal("0.00")
+
+    preview = client.post("/api/v1/work-calendar/valuations/preview", json={
+        "employee_id": employee, "work_date": "2026-09-13", "source_kind": "WEEKLY_REST",
+    })
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()
+    assert payload["worked_minutes"] == 450
+    assert Decimal(str(payload["amount"])) == Decimal("65.00")
+    # Con la valoración activa, el ajuste deja de contarse como HE ordinaria.
+    after = OvertimeService(db_session).value(employee_uuid, work_date, work_date)
+    assert after["overtime_minutes"] == 0
+    assert Decimal(str(after["value"])) == Decimal("0.00")

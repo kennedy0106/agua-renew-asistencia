@@ -51,7 +51,7 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
       calls.push({ path, body });
       const dates = body.work_dates as string[];
       await new Promise((resolve) => setTimeout(resolve, 180));
-      return route.fulfill({ json: { preview_token: "p".repeat(64), expires_at: "2026-09-17T20:00:00Z", items: dates.map((work_date) => ({ work_date, status: "READY", effective_row: { ...(body.template as object), employee_id: employee.id }, payment_preview: { status: "PENDING", amount: "31.50" } })) } });
+      return route.fulfill({ json: { preview_token: "p".repeat(64), expires_at: "2026-09-17T20:00:00Z", items: dates.map((work_date) => ({ work_date, status: "READY", effective_row: { ...(body.template as object), employee_id: employee.id }, payment_preview: { status: "PENDING", amount: "31.50", requested_minutes: 300, break_minutes: 60, minutes: 240 } })) } });
     }
     if (path.endsWith("/manual-days/multi")) {
       calls.push({ path, body });
@@ -91,6 +91,7 @@ test("perfil selecciona fechas, previsualiza y guarda un adicional con un único
   await page.getByRole("button", { name: "Previsualizar lote" }).click();
   await expect(page.getByRole("button", { name: "Comprobando fechas…" })).toBeDisabled();
   await expect(page.getByText("Revisión antes de guardar")).toBeVisible();
+  await expect(page.getByText("1 h 00 de refrigerio · 4 h 00 adicionales pagables · S/ 31.50").first()).toBeVisible();
   await page.getByRole("button", { name: "Guardar 2 fechas" }).click();
   await expect(page.getByText("2 fechas guardadas. La agenda y el acumulado ya están actualizados.")).toBeVisible();
 
@@ -183,6 +184,57 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
   await expect.poll(() => reducedDialog.evaluate((element) => getComputedStyle(element).transform)).toBe("none");
   await page.keyboard.press("Escape");
   await expect(reducedDialog).toBeHidden();
+});
+
+test("el calendario usa la jornada real (300) y avisa la divergencia, nunca el 480 obsoleto", async ({ page }) => {
+  await page.addInitScript((sessionUser) => sessionStorage.setItem(
+    "agua-renew-admin-session-hint",
+    JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser }),
+  ), user);
+  const dates = Array.from({ length: 30 }, (_, index) => `2026-09-${String(index + 1).padStart(2, "0")}`);
+  const isRest = (workDate: string) => new Date(`${workDate}T00:00:00Z`).getUTCDay() === 0;
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
+    if (path.includes("/attendance-agenda")) return route.fulfill({ json: {
+      employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30",
+      days: dates.map((work_date) => ({
+        work_date, expected_minutes: isRest(work_date) ? 0 : 300,
+        statuses: isRest(work_date) ? ["REST"] : ["NO_RECORD"], attendance: [], manual_day: null,
+        adjustments: [], recovery_commitments: [],
+      })),
+    } });
+    if (path.includes("/work-calendar/employees/employee-1/days")) return route.fulfill({ json: dates.map((work_date) => ({
+      employee_id: employee.id, work_date, scheduled_minutes: isRest(work_date) ? 0 : 300,
+      attendance_obligation_minutes: isRest(work_date) ? 0 : 300, reference_daily_minutes: 300,
+      reference_source: "SCHEDULE", rule_reference_daily_minutes: 480,
+      reference_diverges_from_rule: true, weekly_rest: isRest(work_date),
+      holiday: null, holiday_unverified: false,
+    })) });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: {
+      employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17",
+      base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667",
+      approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00",
+      estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [],
+    } });
+    if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
+    if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
+    if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
+    if (path.includes("/overtime/")) return route.fulfill({ json: path.endsWith("/value") ? { overtime_minutes: 0, value: "0.00" } : [] });
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/admin/employees/employee-1");
+  await expect(page.getByText("Duración usada para calcular descansos y feriados")).toBeVisible();
+  await expect(page.getByText("jornada usada para el cálculo: 5 h 00", { exact: false })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "La regla de descanso guarda 8 h 00 pero la jornada real es 5 h 00." })).toBeVisible();
+
+  await page.getByRole("button", { name: "Configurar descansos y feriados" }).click();
+  const modal = page.getByRole("dialog", { name: "Descansos y feriados" });
+  await expect(modal).toBeVisible();
+  await expect(modal.getByLabel("Horas")).toHaveValue("5");
+  await expect(modal.getByLabel("Minutos")).toHaveValue("0");
 });
 
 test("agenda no genera desborde horizontal en móvil", async ({ page }) => {

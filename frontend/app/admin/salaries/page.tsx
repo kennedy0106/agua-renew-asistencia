@@ -447,7 +447,9 @@ function FragmentRow({
                 <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.5rem" }}>
                   Cada fecha del tramo aporta su treintavo legal (sueldo vigente ÷ 30), incluso descansos. La base por
                   calendario más la regularización de cierre suman la base del tramo. La base reconocida valora la
-                  asistencia al mismo valor día y no es el sueldo total devengado.
+                  asistencia al mismo valor día y no es el sueldo total devengado. El treintavo del domingo ya está
+                  incluido en la base por calendario: si ese descanso se trabaja, la valoración especial se paga aparte y
+                  no reemplaza ni duplica el treintavo.
                 </p>
               </div>
             )}

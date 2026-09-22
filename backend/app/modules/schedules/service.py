@@ -42,6 +42,24 @@ class ScheduleService:
             return 0
         return getattr(schedule, _DAY_FIELDS[day.weekday()])
 
+    @staticmethod
+    def journey_from_schedule(schedule) -> int:
+        """Jornada ordinaria de referencia derivada de la propia jornada.
+
+        Toma los días laborables de lunes a sábado; si no hubiera ninguno con
+        minutos, cae al máximo de la semana.  Es la referencia que debe usar el
+        cálculo de descansos y feriados en lugar de un valor almacenado obsoleto.
+        """
+        if schedule is None:
+            return 0
+        working = max(getattr(schedule, field) for field in _DAY_FIELDS[:6])
+        if working > 0:
+            return working
+        return max(getattr(schedule, field) for field in _DAY_FIELDS)
+
+    def ordinary_journey_minutes(self, employee_id: uuid.UUID, day: date) -> int:
+        return self.journey_from_schedule(self.repo.get_for_date(employee_id, day))
+
     def expected_minutes_for_days(
         self, employee_days: dict[uuid.UUID, Iterable[date]]
     ) -> dict[tuple[uuid.UUID, date], int]:

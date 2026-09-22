@@ -41,6 +41,7 @@ class AdjustmentRepository:
         status: str | None = None,
         adjustment_type: str | None = None,
         exclude_approved_special_days: bool = False,
+        exclude_active_special_days: bool = False,
     ) -> list[HourAdjustment]:
         """Ajustes activos del rango, sin cargar el historial completo."""
         query = (
@@ -57,13 +58,23 @@ class AdjustmentRepository:
             query = query.where(HourAdjustment.status == status)
         if adjustment_type is not None:
             query = query.where(HourAdjustment.adjustment_type == adjustment_type)
-        if exclude_approved_special_days:
-            from app.modules.work_calendar.models import SpecialDayValuation, VALUATION_APPROVED
+        if exclude_approved_special_days or exclude_active_special_days:
+            from app.modules.work_calendar.models import (
+                SpecialDayValuation,
+                VALUATION_APPROVED,
+                VALUATION_PENDING,
+                VALUATION_REVIEW_REQUIRED,
+            )
+            statuses = (
+                (VALUATION_APPROVED,)
+                if exclude_approved_special_days and not exclude_active_special_days
+                else (VALUATION_APPROVED, VALUATION_PENDING, VALUATION_REVIEW_REQUIRED)
+            )
             special_dates = select(SpecialDayValuation.work_date).where(
                 SpecialDayValuation.employee_id == employee_id,
                 SpecialDayValuation.work_date >= date_from,
                 SpecialDayValuation.work_date <= date_to,
-                SpecialDayValuation.status == VALUATION_APPROVED,
+                SpecialDayValuation.status.in_(statuses),
                 SpecialDayValuation.voided_at.is_(None),
             )
             query = query.where(HourAdjustment.adjustment_date.not_in(special_dates))

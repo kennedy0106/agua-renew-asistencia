@@ -1150,6 +1150,99 @@ class AttendanceService:
             return min(schedule.break_minutes, gross), "SCHEDULE", None, False
         return 0, "NONE", None, False
 
+    def daily_break_plan(
+        self,
+        employee_id: uuid.UUID,
+        work_date: date,
+        *,
+        additional_minutes: int = 0,
+        ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        """Cálculo canónico de la presencia diaria y su único refrigerio.
+
+        Combina las sesiones de kiosco completadas del día, la parte ordinaria
+        de una carga histórica vigente (o la fila candidata que se está
+        previsualizando) y el tiempo adicional solicitado.  La jornada sólo
+        aplica **un** refrigerio: si la presencia ordinaria ya lo activó, el
+        incremental es cero y el adicional se paga completo.
+        """
+        requested = max(0, int(additional_minutes))
+        override = self._break_override(employee_id, work_date)
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        records = [
+            item
+            for item in self.repo.list_records(
+                employee_id=employee_id, date_from=work_date, date_to=work_date
+            )
+            if item.status == "COMPLETE" and item.check_out_at is not None
+        ]
+        if ordinary_minutes is not None:
+            ordinary_gross = max(0, int(ordinary_minutes)) + max(
+                0, int(ordinary_known_break_minutes or 0)
+            )
+            presence_source = "MANUAL"
+        elif records:
+            ordinary_gross = self._gross_for_records(records)
+            presence_source = "KIOSK"
+        else:
+            manual = self.db.scalar(
+                select(ManualAttendanceDay).where(
+                    ManualAttendanceDay.employee_id == employee_id,
+                    ManualAttendanceDay.work_date == work_date,
+                    ManualAttendanceDay.voided_at.is_(None),
+                )
+            )
+            if manual is not None:
+                ordinary_gross = int(manual.normal_minutes) + int(manual.known_break_minutes or 0)
+                presence_source = "MANUAL"
+            else:
+                ordinary_gross = 0
+                presence_source = "NONE"
+        break_before, _source_before, _requested_before, _limited_before = self._break_details_from_values(
+            override, schedule, ordinary_gross
+        )
+        break_after, source_after, _requested_after, _limited_after = self._break_details_from_values(
+            override, schedule, ordinary_gross + requested
+        )
+        scheduled_day_minutes = (
+            getattr(
+                schedule,
+                ("monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes",
+                 "friday_minutes", "saturday_minutes", "sunday_minutes")[work_date.weekday()],
+            )
+            if schedule
+            else 0
+        )
+        if ordinary_gross > 0:
+            # Hay presencia ordinaria registrada: el refrigerio incremental nace
+            # de ella y el adicional se paga completo si el día ya lo activó.
+            incremental = min(requested, max(0, break_after - break_before))
+        elif scheduled_day_minutes <= 0 and requested > 0:
+            # Día sin jornada programada (descanso semanal o feriado) cuyo único
+            # registro es un ajuste OVERTIME: sus minutos representan toda la
+            # presencia del día y activan un único refrigerio al alcanzar el
+            # umbral (Daniel 2026-09-13: 510 -> 60 de refrigerio, 450 pagables).
+            incremental = min(requested, break_after)
+        else:
+            # Día laborable: el ajuste es tiempo adicional sobre una jornada
+            # programada; no se infiere presencia ordinaria ausente ni se
+            # inventa un refrigerio.
+            incremental = 0
+        return {
+            "requested_minutes": requested,
+            "ordinary_gross_minutes": ordinary_gross,
+            "break_before_minutes": break_before,
+            "break_after_minutes": break_after,
+            "break_minutes": incremental,
+            "payable_minutes": requested - incremental,
+            "break_source": source_after,
+            "presence_source": presence_source,
+            "scheduled_day_minutes": scheduled_day_minutes,
+            "schedule_break_minutes": schedule.break_minutes if schedule else 0,
+            "break_applies_after_minutes": schedule.break_applies_after_minutes if schedule else 0,
+        }
+
     def _break_overrides_for_days(
         self, employee_days: dict[uuid.UUID, set[date]]
     ) -> dict[tuple[uuid.UUID, date], AttendanceBreakOverride]:

@@ -122,8 +122,12 @@ class AdjustmentService:
         if adjustment.adjustment_type == "OVERTIME":
             # El importe y sus entradas de valoración forman parte de la
             # decisión. Un cambio de sueldo/jornada/política invalida el hash.
+            # El cálculo canónico aplica el único refrigerio del día sobre la
+            # presencia combinada (kiosco + ordinario histórico).  ``minutes``
+            # del ajuste conserva el pedido crudo; la valoración publica
+            # requested/break/payable.
             snapshot["valuation"] = ManualAttendanceService(self.db).estimate_payment(
-                adjustment.employee_id, adjustment.adjustment_date, adjustment.minutes
+                adjustment.employee_id, adjustment.adjustment_date, adjustment.minutes,
             )
         return snapshot
 
@@ -348,12 +352,33 @@ class AdjustmentService:
         # Persist exactly the reviewed content and valuation before changing
         # status.  A later salary/schedule/policy change cannot silently
         # reprice this approved decision.
-        adjustment.approval_snapshot_data = self.approval_snapshot(adjustment)
+        approval_snapshot = self.approval_snapshot(adjustment)
+        adjustment.approval_snapshot_data = approval_snapshot
+        # ``adjustment.minutes`` NUNCA se reescribe: es el pedido crudo.  Los
+        # minutos pagables y el refrigerio quedan en la valoración inmutable.
+        requested_minutes = adjustment.minutes
+        payable_minutes = adjustment.minutes
+        break_minutes = 0
+        if adjustment.adjustment_type == "OVERTIME":
+            valuation = approval_snapshot.get("valuation") or {}
+            requested_minutes = int(valuation.get("requested_minutes", adjustment.minutes))
+            payable_minutes = int(valuation.get("minutes", adjustment.minutes))
+            break_minutes = int(valuation.get("break_minutes", 0))
         adjustment.status = ADJUSTMENT_APPROVED
         adjustment.approved_by = actor_id
         adjustment.approved_at = lima_now()
         ManualAttendanceService(self.db)._invalidate_calculated_periods(adjustment.adjustment_date)
-        AuditRepository(self.db).create(entity_type="adjustment", entity_id=adjustment.id, action="approve", old_values={"status": ADJUSTMENT_PENDING}, new_values={"status": ADJUSTMENT_APPROVED, "minutes": adjustment.minutes}, reason=f"Aprobación del ajuste de {adjustment.minutes} min ({adjustment.adjustment_type})", performed_by=actor_id, commit=False)
+        AuditRepository(self.db).create(
+            entity_type="adjustment", entity_id=adjustment.id, action="approve",
+            old_values={"status": ADJUSTMENT_PENDING},
+            new_values={
+                "status": ADJUSTMENT_APPROVED, "minutes": adjustment.minutes,
+                "requested_minutes": requested_minutes,
+                "payable_minutes": payable_minutes, "break_minutes": break_minutes,
+            },
+            reason=f"Aprobación del ajuste de {adjustment.minutes} min ({adjustment.adjustment_type})",
+            performed_by=actor_id, commit=False,
+        )
         self._store_receipt(key=idempotency_key, payload=payload, actor_id=actor_id, operation_type="APPROVE", target_id=adjustment_id, result_id=adjustment.id)
         self.db.commit()
         return adjustment
@@ -400,13 +425,22 @@ class AdjustmentService:
             )
         if adjustment.adjustment_type == "OVERTIME":
             self._reject_manual_additional(adjustment.employee_id, adjustment.adjustment_date)
+        # Unificar con la ruta versionada: todo OVERTIME nuevo aprobado debe
+        # llevar una valoración inmutable con requested/break/payable.
+        snapshot = self.approval_snapshot(adjustment)
+        adjustment.approval_snapshot_data = snapshot
         saved = self.repo.set_status(adjustment, status=ADJUSTMENT_APPROVED, approved_by=approver_id)
         AuditRepository(self.db).create(
             entity_type="adjustment",
             entity_id=adjustment_id,
             action="approve",
             old_values={"status": ADJUSTMENT_PENDING},
-            new_values={"status": ADJUSTMENT_APPROVED, "minutes": adjustment.minutes},
+            new_values={
+                "status": ADJUSTMENT_APPROVED, "minutes": adjustment.minutes,
+                "requested_minutes": int((snapshot.get("valuation") or {}).get("requested_minutes", adjustment.minutes)),
+                "payable_minutes": int((snapshot.get("valuation") or {}).get("minutes", adjustment.minutes)),
+                "break_minutes": int((snapshot.get("valuation") or {}).get("break_minutes", 0)),
+            },
             reason=f"Aprobación del ajuste de {adjustment.minutes} min ({adjustment.adjustment_type})",
             performed_by=approver_id,
         )

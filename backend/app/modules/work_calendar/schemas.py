@@ -21,6 +21,22 @@ class WeeklyRestRuleCreate(BaseModel):
         return require_visible_text(value, field="motivo")
 
 
+class WeeklyRestRuleCorrect(BaseModel):
+    employee_id: uuid.UUID
+    weekly_rest_weekday: int = Field(ge=0, le=6)
+    reference_daily_minutes: int = Field(gt=0, le=1440)
+    source: str = Field(min_length=3, max_length=80)
+    reason: str = Field(min_length=3, max_length=500)
+    effective_from: date
+    expected_version: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+    @field_validator("source", "reason")
+    @classmethod
+    def visible(cls, value: str) -> str:
+        return require_visible_text(value, field="motivo")
+
+
 class RestSubstitutionCreate(BaseModel):
     employee_id: uuid.UUID
     original_date: date

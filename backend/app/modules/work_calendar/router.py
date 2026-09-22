@@ -9,7 +9,8 @@ from app.db.session import get_db
 from app.modules.users.models import User
 from app.modules.work_calendar.schemas import (
     HolidayCalendarCreate, RestSubstitutionCreate, SpecialDayApprovalRequest,
-    SpecialDayPreviewRequest, SpecialDayReconcileRequest, SubstitutionAction, WeeklyRestRuleCreate,
+    SpecialDayPreviewRequest, SpecialDayReconcileRequest, SubstitutionAction,
+    WeeklyRestRuleCorrect, WeeklyRestRuleCreate,
 )
 from app.modules.work_calendar.service import SpecialDayValuationService, WorkCalendarService
 
@@ -36,6 +37,11 @@ def set_weekly_rest_rule(payload: WeeklyRestRuleCreate, db: Session = Depends(ge
     item = WorkCalendarService(db).set_weekly_rest_rule(payload, user.id)
     return {"id": str(item.id), "employee_id": str(item.employee_id), "weekly_rest_weekday": item.weekly_rest_weekday,
         "reference_daily_minutes": item.reference_daily_minutes, "effective_from": item.effective_from, "version": item.version}
+
+
+@router.post("/weekly-rest-rules/corrections", status_code=status.HTTP_201_CREATED)
+def correct_weekly_rest_rule(payload: WeeklyRestRuleCorrect, db: Session = Depends(get_db), user: User = Depends(_manage)):
+    return WorkCalendarService(db).correct_weekly_rest_rule(payload, user.id)
 
 
 @router.post("/holidays", status_code=status.HTTP_201_CREATED)
