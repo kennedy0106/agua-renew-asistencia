@@ -76,8 +76,8 @@ export default function OvertimePolicyPage() {
 
   return (
     <AdminShell
-      title="Horas extra"
-      subtitle="Política general de la empresa (mínimos legales: 25% / 35%)"
+      title="Reglas de horas extra"
+      subtitle="Cómo se calcula el recargo por horas extra. Los porcentajes son mínimos legales (25% / 35%), no un tope."
     >
       {error && (
         <p className="alert alert-error" role="alert">

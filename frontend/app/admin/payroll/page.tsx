@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
@@ -9,7 +10,7 @@ import DateField from "@/components/DateField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
-import { ApiError, PayrollPeriod, PayrollReadiness, PayrollRecord, payrollApi } from "@/lib/api";
+import { ApiError, PayrollPeriod, PayrollReadiness, PayrollRecord, PayrollSummary, payrollApi } from "@/lib/api";
 
 const MANAGE_ROLES = ["ADMIN", "BOSS"];
 
@@ -27,6 +28,17 @@ function formatMinutes(minutes: number): string {
   return `${h} h ${m.toString().padStart(2, "0")}`;
 }
 
+/** Rango en lenguaje cotidiano: "1 sep 2026 → 30 sep 2026". */
+function formatRange(start: string, end: string): string {
+  const format = (value: string) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return value;
+    const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+    return new Intl.DateTimeFormat("es-PE", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(date);
+  };
+  return `${format(start)} → ${format(end)}`;
+}
+
 export default function AdminPayrollPage() {
   const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
@@ -38,6 +50,10 @@ export default function AdminPayrollPage() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [readiness, setReadiness] = useState<PayrollReadiness | null>(null);
+  const [closing, setClosing] = useState<PayrollPeriod | null>(null);
+  const [closingSummary, setClosingSummary] = useState<PayrollSummary | null>(null);
+  const [closingReadiness, setClosingReadiness] = useState<PayrollReadiness | null>(null);
+  const [closingLoading, setClosingLoading] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", start_date: "", end_date: "", period_kind: "MONTHLY" as "MONTHLY" | "FIRST_HALF" | "SECOND_HALF", payroll_month: "" });
@@ -76,6 +92,19 @@ export default function AdminPayrollPage() {
   }, [rectifyingId]);
 
   const selected = periods.find((p) => p.id === selectedId) ?? null;
+  // El paso resaltado refleja el estado real: preparar si algo está abierto,
+  // revisar si ya se calculó, consultar cuando todo está cerrado.
+  const activeStep: number = periods.length === 0
+    ? 1
+    : periods.some((period) => period.status === "OPEN")
+      ? 1
+      : periods.some((period) => period.status === "CALCULATED")
+        ? 2
+        : 4;
+  // Los pasos anteriores al actual se marcan como completados: el recorrido
+  // muestra dónde está la persona, no solo un paso activo aislado.
+  const stepClass = (step: number) =>
+    `flow-step${activeStep === step ? " is-active" : activeStep > step ? " is-done" : ""}`;
 
   async function loadRecords(periodId: string) {
     setRecordsLoading(true);
@@ -192,6 +221,41 @@ export default function AdminPayrollPage() {
     }
   }
 
+  async function openCloseDialog(period: PayrollPeriod) {
+    setClosing(period);
+    setClosingSummary(null);
+    setClosingReadiness(null);
+    setClosingLoading(true);
+    setError(null);
+    try {
+      const [check, summary] = await Promise.all([
+        payrollApi.readiness(period.id),
+        payrollApi.summary(period.id),
+      ]);
+      setClosingReadiness(check);
+      setClosingSummary(summary);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo revisar el periodo antes de cerrar");
+    } finally {
+      setClosingLoading(false);
+    }
+  }
+
+  function closeCloseDialog() {
+    if (busy) return;
+    setClosing(null);
+    setClosingSummary(null);
+    setClosingReadiness(null);
+  }
+
+  async function confirmClose() {
+    if (!closing) return;
+    await handleConfirm(closing.id);
+    setClosing(null);
+    setClosingSummary(null);
+    setClosingReadiness(null);
+  }
+
   function closeRectification() {
     if (busy) return;
     setRectifyingId(null);
@@ -227,7 +291,10 @@ export default function AdminPayrollPage() {
   }
 
   return (
-    <AdminShell title="Cálculo de pago" subtitle="Calcular → revisar → ajustar con motivo → cerrar (inmutable)">
+    <AdminShell
+      title="Planilla del periodo"
+      subtitle="Prepara el cálculo, revísalo y ciérralo. Al cerrar, el periodo queda bloqueado y solo se puede rectificar."
+    >
       {!canManage && (
         <p className="alert alert-error" role="alert">
           <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
@@ -235,10 +302,31 @@ export default function AdminPayrollPage() {
         </p>
       )}
 
+      {canManage && (
+        <ol className="flow-steps" aria-label="Pasos para cerrar la planilla">
+          <li className={stepClass(1)}>
+            <span className="flow-step-index">1</span>
+            <span className="flow-step-copy"><strong>Preparar</strong><small>Crea el periodo y calcula</small></span>
+          </li>
+          <li className={stepClass(2)}>
+            <span className="flow-step-index">2</span>
+            <span className="flow-step-copy"><strong>Revisar</strong><small>Ajusta con un motivo</small></span>
+          </li>
+          <li className={stepClass(3)}>
+            <span className="flow-step-index">3</span>
+            <span className="flow-step-copy"><strong>Cerrar</strong><small>Valida y confirma</small></span>
+          </li>
+          <li className={stepClass(4)}>
+            <span className="flow-step-index">4</span>
+            <span className="flow-step-copy"><strong>Consultar</strong><small><Link href="/admin/salaries">Ver sueldos</Link></small></span>
+          </li>
+        </ol>
+      )}
+
       <div className="toolbar">
         <span className="spacer" />
-        {canManage && (
-          <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+        {canManage && (periods.length > 0 || showForm) && (
+          <button className="btn btn-outline" onClick={() => setShowForm((v) => !v)}>
             {showForm ? (
               <>
                 <X size={15} /> Cancelar
@@ -325,13 +413,9 @@ export default function AdminPayrollPage() {
           </div>
         )}
         {periods.map((period) => (
-          <div
-            key={period.id}
-            className="card card-pad"
-            style={selectedId === period.id ? { borderColor: "var(--secondary-blue)", boxShadow: "0 0 0 3px rgba(0,123,255,0.12)" } : undefined}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
-              <p style={{ fontWeight: 600 }}>{period.name}</p>
+          <div key={period.id} className={`card card-pad period-card${selectedId === period.id ? " is-selected" : ""}`}>
+            <div className="period-card-head">
+              <p className="period-card-name">{period.name}</p>
               {period.status === "CLOSED" ? (
                 <span className="badge badge-neutral">Cerrado</span>
               ) : period.status === "CALCULATED" ? (
@@ -340,38 +424,59 @@ export default function AdminPayrollPage() {
                 <span className="badge badge-amber">Abierto</span>
               )}
             </div>
-            <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.2rem" }}>
-              {period.start_date} → {period.end_date} · versión {period.version}
+            <p className="period-card-range">{formatRange(period.start_date, period.end_date)} · versión {period.version}</p>
+            <p className="period-card-hint">
+              {period.status === "OPEN"
+                ? "Aún no se calcula. Al calcular se estima el pago con la asistencia y los ajustes del periodo."
+                : period.status === "CALCULATED"
+                  ? "Listo para revisar y cerrar. Revisa los registros y ajusta lo necesario antes de confirmar."
+                  : "Cerrado y bloqueado. Si necesitas cambiar algo, crea una rectificación."}
             </p>
-            <div className="period-actions">
-              <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
-                Registros
-              </button>
-              {period.status !== "CLOSED" && (
+            <div className="period-card-actions">
+              {period.status === "OPEN" && (
                 <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
                   {actionKey === `calculate:${period.id}` && <Spinner />}
-                  {actionKey === `calculate:${period.id}` ? "Calculando…" : period.status === "OPEN" ? "Calcular" : "Recalcular"}
+                  {actionKey === `calculate:${period.id}` ? "Calculando…" : "Calcular pago"}
                 </button>
               )}
               {period.status === "CALCULATED" && (
-                <>
-                  <button className="btn btn-outline btn-sm" onClick={() => handleReadiness(period.id)} disabled={busy}>
-                    {actionKey === `validate:${period.id}` && <Spinner />}
-                    {actionKey === `validate:${period.id}` ? "Validando…" : "Validar cierre"}
-                  </button>
-                  <button className="btn btn-green btn-sm" onClick={() => handleConfirm(period.id)} disabled={busy}>
-                    {actionKey === `close:${period.id}` && <Spinner />}
-                    {actionKey === `close:${period.id}` ? "Cerrando…" : "Confirmar y cerrar"}
-                  </button>
-                </>
+                <button className="btn btn-green btn-sm" onClick={() => void openCloseDialog(period)} disabled={busy}>
+                  {actionKey === `close:${period.id}` && <Spinner />}
+                  {actionKey === `close:${period.id}` ? "Cerrando…" : "Cerrar planilla"}
+                </button>
               )}
               {period.status === "CLOSED" && (
-                <button className="btn btn-outline btn-sm" onClick={(event) => { rectificationTriggerRef.current = event.currentTarget; setRectifyingId(period.id); setRectificationReason(""); setRectificationError(null); }} disabled={busy}>
-                  {actionKey === `rectify:${period.id}` && <Spinner />}
-                  {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
+                <button className="btn btn-outline btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
+                  Ver registros
                 </button>
               )}
             </div>
+            <details className="period-more">
+              <summary>Más acciones</summary>
+              <div className="period-more-list">
+                <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
+                  Ver registros
+                </button>
+                {period.status === "CALCULATED" && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
+                    {actionKey === `calculate:${period.id}` && <Spinner />}
+                    {actionKey === `calculate:${period.id}` ? "Calculando…" : "Recalcular"}
+                  </button>
+                )}
+                {period.status === "CALCULATED" && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleReadiness(period.id)} disabled={busy}>
+                    {actionKey === `validate:${period.id}` && <Spinner />}
+                    {actionKey === `validate:${period.id}` ? "Validando…" : "Validar cierre"}
+                  </button>
+                )}
+                {period.status === "CLOSED" && (
+                  <button className="btn btn-ghost btn-sm" onClick={(event) => { rectificationTriggerRef.current = event.currentTarget; setRectifyingId(period.id); setRectificationReason(""); setRectificationError(null); }} disabled={busy}>
+                    {actionKey === `rectify:${period.id}` && <Spinner />}
+                    {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
+                  </button>
+                )}
+              </div>
+            </details>
           </div>
         ))}
       </div>
@@ -392,6 +497,53 @@ export default function AdminPayrollPage() {
         </AppDialog>
       )}
 
+      {closing && (
+        <AppDialog labelledBy="close-payroll-title" describedBy="close-payroll-description" onClose={closeCloseDialog} dismissible={!busy} className="payroll-close-dialog">
+          <h2 id="close-payroll-title" className="card-title">¿Cerrar la planilla de {closing.name}?</h2>
+          <p id="close-payroll-description" className="card-sub">Revisa el resumen antes de confirmar. Al cerrar, este periodo queda bloqueado.</p>
+          {closingLoading ? (
+            <p className="muted" role="status"><Spinner /> Revisando el periodo…</p>
+          ) : (
+            <>
+              <dl className="payroll-close-summary">
+                <div><dt>Periodo</dt><dd>{formatRange(closing.start_date, closing.end_date)}</dd></div>
+                <div><dt>Empleados incluidos</dt><dd>{closingSummary ? closingSummary.employee_count : "—"}</dd></div>
+                <div><dt>Monto estimado</dt><dd>{closingSummary ? formatMoney(closingSummary.total) : "—"}</dd></div>
+                <div><dt>Incidencias pendientes</dt><dd>{closingReadiness ? closingReadiness.blockers.length : "—"}</dd></div>
+              </dl>
+              {closingReadiness && !closingReadiness.ready && (
+                <div className="alert alert-error" role="alert">
+                  <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                  <span>No se puede cerrar todavía: {closingReadiness.blockers.map((issue) => issue.message).join(" · ")}</span>
+                </div>
+              )}
+              {closingReadiness && closingReadiness.ready && closingReadiness.warnings.length > 0 && (
+                <div className="alert" role="status">
+                  <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                  <span>{closingReadiness.warnings.length} advertencia(s): {closingReadiness.warnings.map((issue) => issue.message).join(" · ")}</span>
+                </div>
+              )}
+              <p className="payroll-close-lock">
+                Al cerrar, este periodo no se podrá editar. Si más adelante necesitas un cambio, se creará una nueva versión (rectificación).
+              </p>
+            </>
+          )}
+          <div className="app-dialog-actions">
+            <AppDialogCloseButton className="btn btn-outline" disabled={busy}>Cancelar</AppDialogCloseButton>
+            <button
+              className="btn btn-green"
+              type="button"
+              disabled={busy || closingLoading || !closingReadiness?.ready}
+              aria-busy={busy}
+              onClick={() => void confirmClose()}
+            >
+              {busy && <Spinner />}
+              {busy ? "Cerrando…" : "Cerrar planilla"}
+            </button>
+          </div>
+        </AppDialog>
+      )}
+
       {selected && (
         <div className="card">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.85rem 1.1rem", borderBottom: "1px solid var(--border)" }}>
@@ -403,12 +555,12 @@ export default function AdminPayrollPage() {
             </p>
             {selected.status !== "CLOSED" && (
               <span className="muted" style={{ fontSize: "0.76rem" }}>
-                Los totales son provisionales hasta cerrar el periodo.
+                Los montos son una estimación hasta cerrar el periodo.
               </span>
             )}
           </div>
-          <div className="table-wrap" style={{ border: "none", borderRadius: 0 }} aria-busy={recordsLoading}>
-            <table className="table">
+          <div className="table-wrap salaries-responsive-wrap" style={{ border: "none", borderRadius: 0 }} aria-busy={recordsLoading}>
+            <table className="table salaries-responsive-table">
               <thead>
                 <tr>
                   <th>Empleado</th>
@@ -416,7 +568,7 @@ export default function AdminPayrollPage() {
                   <th style={{ textAlign: "right" }}>Trabajado</th>
                   <th style={{ textAlign: "right" }}>Esperado</th>
                   <th style={{ textAlign: "right" }}>Horas extra</th>
-                  <th style={{ textAlign: "right" }}>Ajuste manual</th>
+                  <th style={{ textAlign: "right" }}>Ajuste del periodo</th>
                   <th style={{ textAlign: "right" }}>Total</th>
                 </tr>
               </thead>
@@ -425,14 +577,14 @@ export default function AdminPayrollPage() {
                   <tr>
                     <td colSpan={7} className="empty">
                       <Receipt size={26} />
-                      Sin registros. Usa «Calcular» para generar el preview.
+                      Sin registros todavía. Usa «Calcular pago» para estimar el pago del periodo.
                     </td>
                   </tr>
                 )}
                 {recordsLoading && <TableSkeleton rows={4} cols={7} />}
                 {recordsPagination.pageItems.map((record) => (
                   <tr key={record.id} style={record.payable === false ? { opacity: 0.65 } : undefined}>
-                    <td style={{ fontWeight: 600 }}>
+                    <td data-label="Empleado" style={{ fontWeight: 600 }}>
                       {record.employee_name ?? "—"}
                       {record.payable === false && (
                         <div className="muted" style={{ fontWeight: 400, fontSize: "0.78rem" }}>
@@ -440,16 +592,16 @@ export default function AdminPayrollPage() {
                         </div>
                       )}
                     </td>
-                    <td className="num" style={{ textAlign: "right" }}>
+                    <td className="num" data-label="Sueldo" style={{ textAlign: "right" }}>
                       {formatMoney(record.base_salary)}
                     </td>
-                    <td className="num" style={{ textAlign: "right" }}>
+                    <td className="num" data-label="Trabajado" style={{ textAlign: "right" }}>
                       {formatMinutes(record.worked_minutes)}
                     </td>
-                    <td className="num" style={{ textAlign: "right" }}>
+                    <td className="num" data-label="Jornada esperada" style={{ textAlign: "right" }}>
                       {formatMinutes(record.expected_minutes)}
                     </td>
-                    <td className="num" style={{ textAlign: "right" }}>
+                    <td className="num" data-label="Horas extra" style={{ textAlign: "right" }}>
                       {record.overtime_minutes > 0 ? (
                         <>
                           {formatMinutes(record.overtime_minutes)}
@@ -461,13 +613,12 @@ export default function AdminPayrollPage() {
                         "—"
                       )}
                     </td>
-                    <td className="num" style={{ textAlign: "right" }}>
+                    <td className="num" data-label="Ajuste del periodo" style={{ textAlign: "right" }}>
                       {adjustingId === record.id && selected.status !== "CLOSED" ? (
                         <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
                           <input type="number" step={0.01} className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={adjustAmount} onChange={(e) => setAdjustAmount(e.target.value)} />
                           <input type="text" className="input" style={{ width: 110, padding: "0.3rem 0.5rem" }} value={adjustNotes} onChange={(e) => setAdjustNotes(e.target.value)} placeholder="motivo" />
                           <button className="btn btn-primary btn-sm" onClick={() => handleSaveAdjustment(record.id)} disabled={busy || adjustNotes.trim().length < 3}>
-                            {actionKey === `adjust:${record.id}` && <Spinner />}
                             {actionKey === `adjust:${record.id}` && <Spinner />}
                             {actionKey === `adjust:${record.id}` ? "Guardando ajuste…" : "Guardar"}
                           </button>
@@ -500,7 +651,7 @@ export default function AdminPayrollPage() {
                         </>
                       )}
                     </td>
-                    <td className="num" style={{ textAlign: "right", fontWeight: 700 }}>
+                    <td className="num" data-label="Total" style={{ textAlign: "right", fontWeight: 700 }}>
                       {formatMoney(record.total)}
                     </td>
                   </tr>

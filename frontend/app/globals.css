@@ -4355,3 +4355,565 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
     display: none;
   }
 }
+
+/* ============================================================
+   Simplificación administrativa (2026-09): navegación por tareas,
+   pasos guiados, ayuda contextual, auditoría legible y jerarquía
+   móvil. Solo presentación; no altera rutas ni contratos.
+   ============================================================ */
+
+/* --- Navegación agrupada por tarea --- */
+.nav-group + .nav-group {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(21, 67, 153, 0.08);
+}
+.nav-hint {
+  margin: -0.2rem 0.42rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.63rem;
+  font-weight: 640;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+}
+
+/* Acceso secundario a la marcación pública: menos peso que una acción primaria. */
+.topbar-action--secondary {
+  font-weight: 620;
+  color: var(--brand-muted);
+}
+
+/* --- Pasos guiados (planilla y carga histórica) --- */
+.flow-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1.1rem;
+  padding: 0;
+  list-style: none;
+}
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: 1 1 11rem;
+  min-width: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(21, 67, 153, 0.12);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.6);
+}
+.flow-step.is-active {
+  border-color: rgba(0, 102, 204, 0.32);
+  background: rgba(244, 251, 255, 0.9);
+  box-shadow: 0 14px 26px -26px rgba(0, 79, 170, 0.8);
+}
+.flow-step-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 999px;
+  background: rgba(0, 102, 204, 0.12);
+  color: var(--brand-blue);
+  font-size: 0.8rem;
+  font-weight: 760;
+}
+.flow-step.is-active .flow-step-index {
+  background: var(--brand-blue);
+  color: #fff;
+}
+/* Pasos ya completados: se distinguen del actual y de los pendientes. */
+.flow-step.is-done {
+  border-color: rgba(0, 160, 71, 0.28);
+  background: rgba(240, 253, 246, 0.7);
+}
+.flow-step.is-done .flow-step-index {
+  background: rgba(0, 200, 83, 0.16);
+  color: var(--dark-green);
+}
+.flow-step-copy {
+  display: grid;
+  min-width: 0;
+}
+.flow-step-copy strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.flow-step-copy small {
+  color: var(--muted);
+  font-size: 0.71rem;
+  line-height: 1.3;
+}
+.flow-step-copy a {
+  color: var(--brand-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* --- Ayuda contextual de términos (asistencia) --- */
+.term-help {
+  margin-bottom: 1rem;
+  border: 1px solid rgba(21, 67, 153, 0.14);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.6);
+}
+.term-help > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  list-style: none;
+}
+.term-help > summary::-webkit-details-marker { display: none; }
+.term-help > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--brand-blue);
+  font-weight: 760;
+}
+.term-help[open] > summary::after { content: "−"; }
+.term-help > summary span {
+  display: grid;
+}
+.term-help > summary strong {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.term-help > summary small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.term-help-grid {
+  display: grid;
+  gap: 0.5rem 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  margin: 0;
+  padding: 0 0.9rem 0.9rem;
+}
+.term-help-grid dt {
+  font-size: 0.76rem;
+  font-weight: 720;
+  color: var(--brand-blue);
+}
+.term-help-grid dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--brand-muted);
+}
+
+/* --- Encabezados de sección con explicación breve --- */
+.section-heading {
+  margin: 0.9rem 0 0.55rem;
+}
+.section-heading .card-title { margin: 0; }
+.section-heading .card-sub { margin: 0.15rem 0 0; }
+
+/* --- Tarjetas de periodo de planilla (una acción principal) --- */
+.period-card {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+}
+.period-card.is-selected {
+  border-color: var(--secondary-blue);
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.12);
+}
+.period-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.period-card-name {
+  font-weight: 700;
+  color: var(--text);
+}
+.period-card-range {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.period-card-hint {
+  margin: 0.15rem 0 0;
+  color: var(--brand-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+.period-card-actions {
+  margin-top: 0.55rem;
+}
+.period-card-actions .btn { width: 100%; }
+.period-more {
+  margin-top: 0.35rem;
+}
+.period-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.2rem;
+  color: var(--brand-blue);
+  font-size: 0.78rem;
+  font-weight: 680;
+  cursor: pointer;
+  list-style: none;
+}
+.period-more > summary::-webkit-details-marker { display: none; }
+.period-more > summary::before { content: "⋯"; font-size: 1rem; line-height: 1; }
+.period-more[open] > summary::before { content: "▾"; }
+.period-more-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
+}
+.period-more-list .btn { flex: 1 1 auto; }
+
+/* --- Auditoría legible --- */
+.audit-intro {
+  margin: 0 0 1rem;
+  color: var(--brand-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+.audit-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+.audit-event {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--ink-border);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow-panel);
+}
+.audit-event-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem 1rem;
+}
+.audit-event-sentence {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+.audit-event-sentence strong { font-weight: 720; }
+.audit-event-entity {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.audit-event-time {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.audit-event-reason {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: var(--brand-muted);
+}
+.audit-event-reason span { font-weight: 700; color: var(--text); }
+.audit-changes {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.audit-changes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+.audit-change-label {
+  font-weight: 700;
+  color: var(--text);
+}
+.audit-change-from {
+  color: #9a5b00;
+  text-decoration: line-through;
+  text-decoration-color: #e8c27a;
+}
+.audit-change-arrow { color: var(--muted); }
+.audit-change-to { color: var(--dark-green); font-weight: 650; }
+.audit-tech {
+  margin-top: 0.55rem;
+  border-top: 1px solid rgba(21, 67, 153, 0.08);
+  padding-top: 0.4rem;
+}
+.audit-tech > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--brand-blue);
+  font-size: 0.76rem;
+  font-weight: 680;
+  cursor: pointer;
+}
+.audit-tech-grid {
+  display: grid;
+  gap: 0.35rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  margin: 0.4rem 0 0;
+}
+.audit-tech-grid dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.audit-tech-grid dd {
+  margin: 0.05rem 0 0;
+  font-size: 0.78rem;
+  word-break: break-word;
+}
+.audit-json {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0.7rem;
+  max-height: 16rem;
+  overflow: auto;
+  border-radius: var(--radius-control);
+  background: rgba(21, 67, 153, 0.06);
+  color: var(--brand-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Búsqueda de empleados en Sueldos --- */
+.salary-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  width: 100%;
+}
+.salary-search > svg {
+  position: absolute;
+  left: 0.6rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+.salary-search .input {
+  padding-left: 2rem;
+  padding-right: 2.9rem;
+}
+.salary-search-clear {
+  position: absolute;
+  right: 0.2rem;
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.salary-search-clear:hover { background: rgba(0, 102, 204, 0.08); color: var(--text); }
+
+@media (max-width: 700px) {
+  .flow-step { flex: 1 1 100%; }
+  .period-card-actions .btn,
+  .period-more-list .btn { min-height: 2.75rem; }
+  .salaries-summary {
+    display: flex;
+    gap: 0.6rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    scroll-snap-type: x proximity;
+  }
+  .salaries-summary .stat-card {
+    flex: 0 0 auto;
+    min-width: 9.5rem;
+    padding: 0.7rem 0.85rem;
+    scroll-snap-align: start;
+  }
+  .salaries-summary .stat-value { font-size: 1.3rem; }
+}
+
+/* --- Resumen previo al cierre de planilla --- */
+.payroll-close-summary {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  margin: 0.4rem 0 0.8rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(21, 67, 153, 0.12);
+  border-radius: var(--radius-panel);
+  background: rgba(244, 251, 255, 0.7);
+}
+.payroll-close-summary dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.payroll-close-summary dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--text);
+}
+.payroll-close-lock {
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--brand-blue);
+  border-radius: var(--radius-control);
+  background: rgba(0, 102, 204, 0.06);
+  color: var(--brand-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.payroll-close-dialog { max-width: 34rem; }
+
+/* La edición de ajuste debe caber dentro de la tarjeta en pantallas estrechas,
+   y las acciones de las tarjetas de tabla cumplen el objetivo táctil de 44 px. */
+@media (max-width: 1439px) {
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Detalle"] .btn,
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Ajuste del periodo"] .btn {
+    min-height: 2.75rem;
+  }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Ajuste del periodo"] > span {
+    display: flex !important;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.35rem;
+  }
+  .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td[data-label="Ajuste del periodo"] > span > .input {
+    flex: 1 1 7rem;
+    min-width: 0;
+    width: auto !important;
+    min-height: 2.75rem;
+  }
+}
+
+/* --- Empleados: vista de tarjetas legible en móvil (<= 640px) ---
+   La tabla de escritorio se conserva; en pantallas estrechas cada fila
+   se convierte en una tarjeta con las mismas acciones y permisos. */
+.employee-stack-wrap { overflow: visible; }
+
+@media (max-width: 640px) {
+  .employee-stack-wrap {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .employee-stack-table,
+  .employee-stack-table > tbody,
+  .employee-stack-table > tbody > tr,
+  .employee-stack-table > tbody > tr > td { display: block; width: 100%; }
+  .employee-stack-table > thead { display: none; }
+  .employee-stack-table > tbody { display: grid; gap: 0.7rem; }
+  .employee-stack-table > tbody > tr {
+    overflow: hidden;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--line-subtle);
+    border-radius: var(--radius-panel);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+  .employee-stack-table > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 38%) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.45rem 0;
+    border: 0;
+    text-align: right !important;
+  }
+  .employee-stack-table > tbody > tr > td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: .055em;
+    line-height: 1.2;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .employee-stack-table > tbody > tr > td[data-label="Empleado"] { text-align: left !important; }
+  .employee-stack-table > tbody > tr > td[data-label="Empleado"] a { overflow-wrap: anywhere; }
+  .employee-stack-table > tbody > tr > td[data-label="Acciones"] > div { justify-content: flex-end; flex-wrap: wrap; }
+  .employee-stack-table > tbody > tr > td[data-label="Acciones"] .btn { min-height: 2.75rem; }
+  /* Celdas sin etiqueta (estado vacío o esqueletos de carga) ocupan todo el ancho. */
+  .employee-stack-table > tbody > tr > td:not([data-label]) { display: block; text-align: center !important; }
+  .employee-stack-table > tbody > tr > td:not([data-label])::before { content: none; }
+}
+
+/* --- Detalle de Sueldos: divulgación progresiva del cálculo legal --- */
+.salary-calc {
+  margin-top: 1rem;
+  border: 1px solid rgba(21, 67, 153, 0.12);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.6);
+}
+.salary-calc > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding: 0.6rem 0.9rem;
+  color: var(--brand-blue);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+.salary-calc > summary::-webkit-details-marker { display: none; }
+.salary-calc > summary::after {
+  content: "+";
+  margin-left: auto;
+  font-weight: 760;
+}
+.salary-calc[open] > summary::after { content: "−"; }
+.salary-calc-body { padding: 0 0.9rem 0.9rem; }
+.salary-daily { margin-top: 1rem; }
+
+/* ============================================================
+   Ergonomía móvil (360–430 px): evita auto-zoom de iOS, destello
+   táctil y que el teclado tape los botones de los diálogos.
+   ============================================================ */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS Safari amplía la página al enfocar controles con fuente < 16px. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea,
+  .input,
+  .select {
+    font-size: 16px;
+  }
+}
+
+.app-dialog {
+  overscroll-behavior: contain;
+}
+.app-dialog-actions {
+  padding-bottom: max(1.25rem, calc(0.5rem + env(safe-area-inset-bottom)));
+}

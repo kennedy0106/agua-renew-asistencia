@@ -6,6 +6,7 @@ import AdminShell from "@/components/AdminShell";
 import { AsyncButton } from "@/components/AsyncButton";
 import { InlineLoading } from "@/components/Loading";
 import { ArrowLeft, Clock, Info } from "@/components/Icons";
+import { formatOperationalDate } from "@/lib/dates";
 import {
   ApiError,
   authApi,
@@ -270,6 +271,11 @@ export default function HistoricalAttendancePage() {
     () => drafts.filter((draft) => draft.selected),
     [drafts],
   );
+  // Guía real: fecha → personas → tratamiento → revisión.
+  const activeStep = !workDate ? 1 : selected.length === 0 ? 2 : preview ? 4 : 3;
+  // Los pasos ya recorridos se marcan como completados.
+  const stepClass = (step: number) =>
+    `flow-step${activeStep === step ? " is-active" : activeStep > step ? " is-done" : ""}`;
   const update = (index: number, patch: Partial<Draft>) => {
     previewRequest.current += 1;
     setPreview(null);
@@ -776,7 +782,7 @@ export default function HistoricalAttendancePage() {
   return (
     <AdminShell
       title="Cargar horas anteriores"
-      subtitle="Registro administrativo: no genera marcaciones de kiosco ni fotografías."
+      subtitle="Registra horas de días anteriores al sistema. No crea marcaciones de kiosco ni fotos."
     >
       <div className="historical-page">
       <div className="page-actions historical-back-row">
@@ -785,6 +791,24 @@ export default function HistoricalAttendancePage() {
           Volver a asistencia
         </Link>
       </div>
+      <ol className="flow-steps" aria-label="Pasos para cargar horas anteriores">
+        <li className={stepClass(1)}>
+          <span className="flow-step-index">1</span>
+          <span className="flow-step-copy"><strong>Fecha y personas</strong><small>Elige el día y marca a quién aplica</small></span>
+        </li>
+        <li className={stepClass(2)}>
+          <span className="flow-step-index">2</span>
+          <span className="flow-step-copy"><strong>Registrar horas</strong><small>Horas y minutos netos trabajados</small></span>
+        </li>
+        <li className={stepClass(3)}>
+          <span className="flow-step-index">3</span>
+          <span className="flow-step-copy"><strong>Tratamiento</strong><small>Solo si hay adicionales o recuperación</small></span>
+        </li>
+        <li className={stepClass(4)}>
+          <span className="flow-step-index">4</span>
+          <span className="flow-step-copy"><strong>Revisar y guardar</strong><small>Previsualiza antes de confirmar</small></span>
+        </li>
+      </ol>
       <section className="panel historical-compose">
         <div className="historical-compose-head">
           <label className="historical-date-field">
@@ -1313,7 +1337,7 @@ export default function HistoricalAttendancePage() {
                       <td>
                         <strong>Carga histórica administrativa</strong>
                         <br />
-                        {item.work_date}
+                        {formatOperationalDate(item.work_date)}
                         <br />
                         <small>
                           {employee

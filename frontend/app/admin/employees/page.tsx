@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useAdminUser } from "@/components/AdminSession";
 import { useNotifications } from "@/components/Notifications";
 import DateField from "@/components/DateField";
@@ -43,6 +44,7 @@ export default function AdminEmployeesPage() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edit, setEdit] = useState<Employee | null>(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState<Employee | null>(null);
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
   const { success } = useNotifications();
@@ -169,6 +171,13 @@ export default function AdminEmployeesPage() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo actualizar el empleado");
     }
+  }
+
+  async function confirmDeactivation() {
+    if (!confirmDeactivate) return;
+    const target = confirmDeactivate;
+    setConfirmDeactivate(null);
+    await handleToggleActive(target);
   }
 
   return (
@@ -309,8 +318,8 @@ export default function AdminEmployeesPage() {
         </form>
       )}
 
-      <div className="table-wrap">
-        <table className="table">
+      <div className="table-wrap employee-stack-wrap">
+        <table className="table employee-stack-table">
           <thead>
             <tr>
               <th>Empleado</th>
@@ -344,17 +353,17 @@ export default function AdminEmployeesPage() {
               <tr key={employee.id} style={employee.active ? undefined : { opacity: 0.62 }}>
                 {editingId === employee.id && edit ? (
                   <>
-                    <td>
+                    <td data-label="Nombre">
                       <div style={{ display: "grid", gap: "0.3rem" }}>
                         <input type="text" className="input" style={{ padding: "0.3rem 0.5rem" }} value={edit.first_name} onChange={(e) => setEdit({ ...edit, first_name: e.target.value })} />
                         <input type="text" className="input" style={{ padding: "0.3rem 0.5rem" }} value={edit.last_name} onChange={(e) => setEdit({ ...edit, last_name: e.target.value })} />
                       </div>
                     </td>
-                    <td>
+                    <td data-label="DNI">
                       <input type="text" className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={edit.dni} onChange={(e) => setEdit({ ...edit, dni: e.target.value })} />
                     </td>
-                    <td className="num">{employee.employee_code}</td>
-                    <td>
+                    <td className="num" data-label="Código">{employee.employee_code}</td>
+                    <td data-label="Cargo">
                       <Select value={edit.job_role_id} onValueChange={(v) => setEdit({ ...edit, job_role_id: v })}>
                         <SelectTrigger aria-label="Cargo" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
                           <SelectValue />
@@ -368,10 +377,10 @@ export default function AdminEmployeesPage() {
                         </SelectContent>
                       </Select>
                     </td>
-                    <td>
+                    <td data-label="Estado">
                       <span className="badge badge-neutral">{employee.active ? "Activo" : "Inactivo"}</span>
                     </td>
-                    <td style={{ textAlign: "right" }}>
+                    <td data-label="Acciones" style={{ textAlign: "right" }}>
                       <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
                         <button className="btn btn-green btn-sm" onClick={handleSaveEdit}>
                           Guardar
@@ -390,15 +399,15 @@ export default function AdminEmployeesPage() {
                   </>
                 ) : (
                   <>
-                    <td>
+                    <td data-label="Empleado">
                       <Link href={`/admin/employees/${employee.id}`} style={{ fontWeight: 600 }}>
                         {employee.first_name} {employee.last_name}
                       </Link>
                     </td>
-                    <td className="num">{employee.dni}</td>
-                    <td className="num">{employee.employee_code}</td>
-                    <td>{employee.job_role_name ?? "—"}</td>
-                    <td>
+                    <td className="num" data-label="DNI">{employee.dni}</td>
+                    <td className="num" data-label="Código">{employee.employee_code}</td>
+                    <td data-label="Cargo">{employee.job_role_name ?? "—"}</td>
+                    <td data-label="Estado">
                       {employee.active ? (
                         <span className="badge badge-green">Activo</span>
                       ) : (
@@ -406,18 +415,21 @@ export default function AdminEmployeesPage() {
                       )}
                     </td>
                     {canManage && (
-                      <td style={{ textAlign: "right" }}>
+                      <td data-label="Acciones" style={{ textAlign: "right" }}>
                         <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
                           <button className="btn btn-ghost btn-sm" onClick={() => startEdit(employee)}>
                             <Pencil size={13} />
                             Editar
                           </button>
-                          <button
-                            className={`btn btn-sm ${employee.active ? "btn-danger" : "btn-green"}`}
-                            onClick={() => handleToggleActive(employee)}
-                          >
-                            {employee.active ? "Desactivar" : "Activar"}
-                          </button>
+                          {employee.active ? (
+                            <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDeactivate(employee)}>
+                              Desactivar
+                            </button>
+                          ) : (
+                            <button className="btn btn-green btn-sm" onClick={() => handleToggleActive(employee)}>
+                              Activar
+                            </button>
+                          )}
                         </div>
                       </td>
                     )}
@@ -429,6 +441,24 @@ export default function AdminEmployeesPage() {
         </table>
       </div>
       <TablePagination {...pagination} />
+
+      {confirmDeactivate && (
+        <AppDialog labelledBy="deactivate-employee-title" onClose={() => setConfirmDeactivate(null)}>
+          <h2 id="deactivate-employee-title" className="card-title">
+            ¿Desactivar a {confirmDeactivate.first_name} {confirmDeactivate.last_name}?
+          </h2>
+          <p className="card-sub">
+            Deja de contar como empleado activo, pero su historial de asistencia y sueldos se conserva. Puedes
+            reactivarlo cuando quieras.
+          </p>
+          <div className="app-dialog-actions">
+            <AppDialogCloseButton className="btn btn-outline">Cancelar</AppDialogCloseButton>
+            <button className="btn btn-danger" type="button" onClick={() => void confirmDeactivation()}>
+              Sí, desactivar
+            </button>
+          </div>
+        </AppDialog>
+      )}
     </AdminShell>
   );
 }

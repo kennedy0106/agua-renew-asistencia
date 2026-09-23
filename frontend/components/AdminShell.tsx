@@ -23,17 +23,48 @@ import {
   Zap,
 } from "./Icons";
 
-const NAV = [
-  { href: "/admin/dashboard", label: "Resumen", icon: Home, roles: null },
-  { href: "/admin/attendance", label: "Asistencia", icon: ClipboardCheck, roles: null },
-  { href: "/admin/employees", label: "Empleados", icon: Users, roles: null },
-  { href: "/admin/roles", label: "Cargos", icon: Briefcase, roles: null },
-  { href: "/admin/payroll", label: "Planilla", icon: Receipt, roles: ["ADMIN", "BOSS"] },
-  { href: "/admin/overtime-policy", label: "Horas extra", icon: Zap, roles: ["ADMIN", "BOSS"] },
-  { href: "/admin/salaries", label: "Sueldos", icon: Coins, roles: ["ADMIN", "BOSS"] },
-  { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"] },
-  { href: "/admin/devices", label: "Terminales", icon: Key, roles: ["ADMIN"] },
-  { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"] },
+// La navegación se agrupa por el trabajo que hace la persona, no por módulos
+// internos: primero la jornada diaria, luego el ciclo de pagos (en el orden en
+// que se usa) y al final la configuración que se toca de vez en cuando.
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number }>;
+  roles: string[] | null;
+  help: string;
+};
+type NavGroup = { id: string; label: string; hint?: string; items: NavItem[] };
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "operacion",
+    label: "Operación diaria",
+    items: [
+      { href: "/admin/dashboard", label: "Hoy", icon: Home, roles: null, help: "Lo que pasó hoy y lo que necesita tu atención." },
+      { href: "/admin/attendance", label: "Asistencia", icon: ClipboardCheck, roles: null, help: "Revisa y corrige las marcaciones. Compara lo trabajado con la jornada pactada." },
+      { href: "/admin/employees", label: "Empleados", icon: Users, roles: null, help: "Datos de cada persona. Un cesado se desactiva, no se elimina." },
+      { href: "/admin/roles", label: "Cargos", icon: Briefcase, roles: null, help: "Puestos de trabajo. No son permisos de acceso." },
+    ],
+  },
+  {
+    id: "pagos",
+    label: "Pagos y planilla",
+    hint: "Preparar → Revisar → Cerrar → Consultar",
+    items: [
+      { href: "/admin/payroll", label: "Planilla", icon: Receipt, roles: ["ADMIN", "BOSS"], help: "Prepara el periodo, revísalo y ciérralo. Al cerrar, queda bloqueado." },
+      { href: "/admin/salaries", label: "Sueldos", icon: Coins, roles: ["ADMIN", "BOSS"], help: "Consulta cuánto corresponde a cada persona en un periodo." },
+      { href: "/admin/overtime-policy", label: "Reglas de horas extra", icon: Zap, roles: ["ADMIN", "BOSS"], help: "Cómo se calcula el recargo de horas extra en la empresa." },
+    ],
+  },
+  {
+    id: "configuracion",
+    label: "Configuración",
+    items: [
+      { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"], help: "Accesos al sistema. Un empleado no necesita usuario." },
+      { href: "/admin/devices", label: "Tablets y terminales", icon: Key, roles: ["ADMIN"], help: "Tablets autorizadas para marcar asistencia." },
+      { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"], help: "Quién cambió qué y por qué." },
+    ],
+  },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -164,12 +195,16 @@ export default function AdminShell({
     );
   }
 
-  const visibleNav = NAV.filter((item) => !item.roles || (user && item.roles.includes(user.role)));
+  const isVisible = (item: NavItem) => !item.roles || Boolean(user && item.roles.includes(user.role));
+  const visibleGroups = NAV_GROUPS
+    .map((group) => ({ ...group, items: group.items.filter(isVisible) }))
+    .filter((group) => group.items.length > 0);
+  const visibleNav = visibleGroups.flatMap((group) => group.items);
   const current = visibleNav.find((item) =>
     item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href),
   );
   const sectionTitle = title ?? current?.label ?? "Panel";
-  const sectionSub = subtitle ?? (user ? `Sesión de ${user.username}` : "");
+  const sectionSub = subtitle ?? current?.help ?? (user ? `Sesión de ${user.username}` : "");
 
   return (
     <div className="app-shell">
@@ -212,13 +247,14 @@ export default function AdminShell({
           </IntentLink>
         </div>
         <nav className="sidebar-nav" aria-label="Principal">
-          <p className="nav-label">Operación</p>
-          {visibleNav.slice(0, 4).map((item) => (
-            <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
-          ))}
-          {visibleNav.length > 4 && <p className="nav-label">Remuneraciones</p>}
-          {visibleNav.slice(4).map((item) => (
-            <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
+          {visibleGroups.map((group) => (
+            <div className="nav-group" key={group.id}>
+              <p className="nav-label">{group.label}</p>
+              {group.hint && <p className="nav-hint">{group.hint}</p>}
+              {group.items.map((item) => (
+                <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
+              ))}
+            </div>
           ))}
         </nav>
         {user && (
@@ -258,7 +294,8 @@ export default function AdminShell({
               href="/asistencia"
               target="_blank"
               rel="noreferrer"
-              className="btn btn-primary topbar-action"
+              className="btn btn-outline btn-sm topbar-action topbar-action--secondary"
+              title="Abre el marcador público para la tablet de entrada"
             >
               <Chart size={15} /> <span>Marcación pública</span>
             </IntentLink>
@@ -275,7 +312,7 @@ function NavLink({
   active,
   onNavigate,
 }: {
-  item: { href: string; label: string; icon: React.ComponentType<{ size?: number }> };
+  item: NavItem;
   active: boolean;
   onNavigate: (isCurrent: boolean) => void;
 }) {

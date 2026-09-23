@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
-import { Alert, Coins, Download, Receipt, Refresh } from "@/components/Icons";
+import { Alert, Coins, Download, Receipt, Refresh, Search, X } from "@/components/Icons";
 import { Skeleton, Spinner, StatSkeleton, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -69,6 +69,8 @@ export default function AdminSalariesPage() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const dailyReportRequestInFlight = useRef(false);
   const queuedDailyReportPeriodId = useRef<string | null>(null);
   const runDailyReportRefresh = useRef<(periodId: string) => Promise<void>>(async () => {});
@@ -76,7 +78,15 @@ export default function AdminSalariesPage() {
 
   const canView = user ? MANAGE_ROLES.includes(user.role) : false;
   const orderedRecords = [...records.filter((record) => record.payable !== false), ...records.filter((record) => record.payable === false)];
-  const pagination = useTablePagination(orderedRecords, `${selectedId}:${orderedRecords.length}`);
+  const visibleRecords = debouncedSearch
+    ? orderedRecords.filter((record) => (record.employee_name ?? "").toLocaleLowerCase("es-PE").includes(debouncedSearch))
+    : orderedRecords;
+  const pagination = useTablePagination(visibleRecords, `${selectedId}:${debouncedSearch}:${visibleRecords.length}`);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim().toLocaleLowerCase("es-PE")), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   const load = useCallback(async () => {
     try {
@@ -182,7 +192,7 @@ export default function AdminSalariesPage() {
   return (
     <AdminShell
       title="Sueldos por periodo"
-      subtitle="Vista de liquidaciones · los totales los calcula el backend"
+      subtitle="Consulta cuánto se pagará a cada persona. Los totales se actualizan solos con la asistencia y los ajustes del periodo."
     >
       {!canView && (
         <p className="alert alert-error" role="alert">
@@ -204,6 +214,24 @@ export default function AdminSalariesPage() {
             ))}
           </SelectContent>
         </Select>
+        {selectedId && (
+          <div className="salary-search">
+            <Search size={15} aria-hidden />
+            <input
+              type="search"
+              className="input"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Buscar empleado…"
+              aria-label="Buscar empleado en el periodo"
+            />
+            {search && (
+              <button type="button" className="salary-search-clear" onClick={() => setSearch("")} aria-label="Limpiar búsqueda">
+                <X size={14} />
+              </button>
+            )}
+          </div>
+        )}
         <span className="spacer" />
         {selectedId && (
           <div className="toolbar-status" role="status" aria-live="polite">
@@ -226,7 +254,7 @@ export default function AdminSalariesPage() {
             onClick={() => window.open(`${API_URL}/api/v1/exports/salaries.csv?period_id=${selectedId}`)}
           >
             <Download size={15} />
-            Exportar CSV
+            Descargar para Excel (CSV)
           </button>
         )}
       </div>
@@ -284,6 +312,14 @@ export default function AdminSalariesPage() {
                 <td colSpan={6} className="empty">
                   <Coins size={26} />
                   Sin registros para este periodo.
+                </td>
+              </tr>
+            )}
+            {!loading && !detailsLoading && records.length > 0 && visibleRecords.length === 0 && (
+              <tr>
+                <td colSpan={6} className="empty">
+                  Sin coincidencias para «{search.trim()}».{" "}
+                  <button className="btn btn-ghost btn-sm" type="button" onClick={() => setSearch("")}>Limpiar búsqueda</button>
                 </td>
               </tr>
             )}
@@ -404,9 +440,9 @@ function FragmentRow({
               className="btn btn-ghost btn-sm"
               href={`/admin/employees/${record.employee_id}`}
               style={{ fontSize: "0.78rem" }}
-              title="Editar sueldo y jornada"
+              title="Ver la ficha contractual del empleado (sueldo base y jornada)"
             >
-              Editar
+              Ver ficha
             </Link>
             <button className="btn btn-outline btn-sm" onClick={onToggle}>
               {expanded ? "Ocultar" : "Ver detalle"}
@@ -445,9 +481,20 @@ function FragmentRow({
                 </div>
               )}
             </div>
+            {Number(record.manual_adjustment) !== 0 && (
+              <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.65rem" }}>
+                Ajuste manual del periodo: {formatMoney(record.manual_adjustment)}. No se asigna a un día porque aún no tiene fecha propia.
+              </p>
+            )}
+            <details className="salary-calc">
+              <summary>Cómo se calculó</summary>
+              <div className="salary-calc-body">
             {employeeSummary && (
-              <div style={{ marginTop: "1rem" }}>
+              <div>
                 <p className="label" style={{ marginBottom: "0.55rem" }}>Resumen informativo a la fecha</p>
+                <p className="muted" style={{ fontSize: "0.8rem", marginBottom: "0.55rem" }}>
+                  Cada día del periodo aporta 1/30 del sueldo, incluidos descansos.
+                </p>
                 <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", fontSize: "0.84rem" }}>
                   <div><p className="muted">Valor día legal (sueldo ÷ 30)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.legal_daily_value)}</p></div>
                   <div><p className="muted">Base por calendario (treintavos)</p><p style={{ fontWeight: 700 }}>{formatMoney(employeeSummary.calendar_base_amount)}</p></div>
@@ -469,7 +516,7 @@ function FragmentRow({
                 </p>
               </div>
             )}
-            <div style={{ marginTop: "1rem" }}>
+            <div className="salary-daily">
               <p className="label" style={{ marginBottom: "0.55rem" }}>Desglose diario del periodo</p>
               <p className="muted" style={{ fontSize: "0.76rem", marginBottom: "0.45rem" }}>
                 Todas las fechas calendario del tramo aparecen, incluso descansos o días sin jornada. Cada fecha aporta su
@@ -553,12 +600,9 @@ function FragmentRow({
                   </div>
                 </>
               )}
-              {Number(record.manual_adjustment) !== 0 && (
-                <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.65rem" }}>
-                  Ajuste manual del periodo: {formatMoney(record.manual_adjustment)}. No se asigna a un día porque aún no tiene fecha propia.
-                </p>
-              )}
             </div>
+              </div>
+            </details>
           </td>
         </tr>
       )}

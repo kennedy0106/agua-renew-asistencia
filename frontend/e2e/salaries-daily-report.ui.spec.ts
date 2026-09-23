@@ -88,6 +88,11 @@ test("salarios muestra base por calendario, descanso y total atribuible por fech
   await expect(page.getByRole("heading", { name: "Sueldos por periodo" })).toBeVisible();
   await page.getByRole("button", { name: "Ver detalle" }).click();
 
+  // El cálculo legal vive en el disclosure «Cómo se calculó», cerrado por defecto.
+  const calc = page.locator("summary").filter({ hasText: "Cómo se calculó" });
+  await expect(calc).toBeVisible();
+  await calc.click();
+
   // El resumen distingue valor día, base por calendario, regularización y base del tramo.
   await expect(page.getByText("Valor día legal (sueldo ÷ 30)", { exact: true })).toBeVisible();
   await expect(page.getByText("Base por calendario (treintavos)", { exact: true })).toBeVisible();

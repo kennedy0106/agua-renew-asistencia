@@ -7,7 +7,7 @@ import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
-import { Alert, Camera, Download, Pencil, X } from "@/components/Icons";
+import { Alert, Camera, Clock, Download, Pencil, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -74,6 +74,26 @@ function formatIncidentCode(code: string): string {
   if (labels[code]) return labels[code];
   const fallback = code.replace(/[_-]+/g, " ").trim().toLocaleLowerCase("es-PE");
   return fallback ? `${fallback.charAt(0).toLocaleUpperCase("es-PE")}${fallback.slice(1)}` : "Incidencia sin detalle";
+}
+
+/** Estado de un intento de kiosco en lenguaje cotidiano (evita jerga interna). */
+function kioskAttemptStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    UNKNOWN: "sin datos suficientes para revisarlo",
+    CANCELLED: "cancelado sin crear marcación",
+    REVIEWED: "revisado y confirmado",
+    CONFIRMED: "confirmado en la tablet",
+    CONFIRMED_WINDOW_ELAPSED: "confirmado, pero fuera del plazo de revisión",
+    INCONSISTENT: "inconsistente: requiere soporte técnico",
+    EVIDENCE_ONLY: "solo tiene evidencia, sin marcación registrada",
+  };
+  return labels[state] ?? "en un estado no reconocido";
+}
+
+function kioskActionLabel(action: string | null): string | null {
+  if (action === "CHECK_IN") return "Entrada";
+  if (action === "CHECK_OUT") return "Salida";
+  return null;
 }
 
 function toLocalDateAndTime(iso: string | null): { date: string; time: string } {
@@ -340,15 +360,13 @@ export default function AdminAttendancePage() {
     setError(null);
     try {
       const inspected = await attendanceAdminApi.inspectAttempt(attemptNonce.trim());
-      setAttemptLookup(
-        [
-          inspected.state,
-          inspected.employee_name ?? inspected.employee_id,
-          inspected.action ?? "sin acción",
-          inspected.automatable ? "revisable" : "no automatizable",
-          inspected.record?.id ? `evento ${inspected.record.id}` : "sin evento",
-        ].join(" · "),
-      );
+      const persona = inspected.employee_name ?? inspected.employee_id;
+      const accion = kioskActionLabel(inspected.action);
+      const estado = kioskAttemptStateLabel(inspected.state);
+      const siguiente = inspected.automatable
+        ? "Puedes revisarlo y habilitar la tablet."
+        : "No se puede resolver desde aquí; pide apoyo a soporte.";
+      setAttemptLookup(`${persona}${accion ? ` · ${accion}` : ""}: ${estado}. ${siguiente}`);
     } catch (err) {
       setAttemptLookup(null);
       setError(err instanceof ApiError ? err.message : "No se encontró el intento");
@@ -366,7 +384,8 @@ export default function AdminAttendancePage() {
       await attendanceAdminApi.reviewAttempt(attemptNonce.trim(), attemptReason.trim());
       setAttemptReason("");
       const inspected = await attendanceAdminApi.inspectAttempt(attemptNonce.trim());
-      setAttemptLookup(`Revisado · ${inspected.state} · el registro original no se modificó`);
+      const persona = inspected.employee_name ?? inspected.employee_id;
+      setAttemptLookup(`${persona}: revisión registrada (${kioskAttemptStateLabel(inspected.state)}). El registro original no se modificó.`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo revisar el intento");
     } finally {
@@ -385,7 +404,10 @@ export default function AdminAttendancePage() {
   }
 
   return (
-    <AdminShell title="Asistencia" subtitle={`${records.length} registro(s) · esperado = jornada pactada`}>
+    <AdminShell
+      title="Asistencia"
+      subtitle={`${records.length} marcación(es) en el rango · revisa el día, corrige registros o ajusta el refrigerio.`}
+    >
       {error && (
         <p className="alert alert-error" role="alert">
           <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
@@ -393,8 +415,25 @@ export default function AdminAttendancePage() {
         </p>
       )}
 
+      <details className="term-help">
+        <summary>
+          <span><strong>¿Qué significa cada columna?</strong><small>Tiempo presente, efectivo, jornada esperada y saldo del día</small></span>
+        </summary>
+        <dl className="term-help-grid">
+          <div><dt>Tiempo presente</dt><dd>Desde la primera entrada hasta la última salida, sin descontar el refrigerio.</dd></div>
+          <div><dt>Tiempo efectivo</dt><dd>Tiempo presente menos el refrigerio. Es el tiempo que cuenta para el pago.</dd></div>
+          <div><dt>Jornada esperada</dt><dd>Lo que la persona debía trabajar ese día según su horario.</dd></div>
+          <div><dt>Saldo del día</dt><dd>Tiempo efectivo menos jornada esperada. En ámbar faltó tiempo; en verde trabajó de más.</dd></div>
+          <div><dt>Incidencias</dt><dd>Situaciones a revisar, como entrada tardía, salida faltante u horas extra.</dd></div>
+        </dl>
+      </details>
+
       <div className="toolbar">
-        {canManage && <Link className="btn btn-outline btn-sm" href="/admin/attendance/history">Cargar horas anteriores</Link>}
+        {canManage && (
+          <Link className="btn btn-outline btn-sm" href="/admin/attendance/history" title="Registra horas de días anteriores al inicio del sistema">
+            <Clock size={15} /> Cargar horas anteriores
+          </Link>
+        )}
         <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
           <SelectTrigger aria-label="Empleado" style={{ maxWidth: 220 }}>
             <SelectValue placeholder="Todos los empleados" />
@@ -417,8 +456,8 @@ export default function AdminAttendancePage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all">Todos los estados</SelectItem>
-            <SelectItem value="OPEN">Entrada abierta</SelectItem>
-            <SelectItem value="COMPLETE">Completado</SelectItem>
+            <SelectItem value="OPEN">Sin salida registrada</SelectItem>
+            <SelectItem value="COMPLETE">Jornada completada</SelectItem>
           </SelectContent>
         </Select>
         {(employeeFilter || dateFrom || dateTo || statusFilter) && (
@@ -428,9 +467,9 @@ export default function AdminAttendancePage() {
         )}
         {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
-        <button className="btn btn-outline btn-sm" onClick={exportCsv}>
+        <button className="btn btn-outline btn-sm" onClick={exportCsv} title="Descarga un archivo CSV para abrirlo en Excel">
           <Download size={15} />
-          Exportar CSV
+          Descargar para Excel
         </button>
       </div>
 
@@ -438,26 +477,26 @@ export default function AdminAttendancePage() {
         <details className="recovery-panel">
           <summary>
             <span>
-              <strong>Recuperar un intento de kiosco</strong>
+              <strong>Recuperar un intento de la tablet</strong>
               <small>Solo si la tablet muestra una referencia de recuperación.</small>
             </span>
             <span className="recovery-panel-action">Abrir revisión</span>
           </summary>
           <form className="card card-pad recovery-panel-form" onSubmit={reviewKioskAttempt}>
             <p className="muted recovery-panel-copy">
-              Use la referencia mostrada en la tablet. Conserva el evento original; no corrige horas ni borra fotos.
+              Escribe el código que aparece en la pantalla de la tablet. Conserva el evento original; no corrige horas ni borra fotos.
             </p>
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
               <div>
                 <label className="label" htmlFor="kiosk-attempt-nonce">
-                  Referencia del intento
+                  Código de incidente de la tablet
                 </label>
                 <input
                   id="kiosk-attempt-nonce"
                   className="input"
                   value={attemptNonce}
                   onChange={(e) => setAttemptNonce(e.target.value)}
-                  placeholder="nonce del kiosco"
+                  placeholder="Ej. A1B2C3"
                   data-testid="admin-attempt-nonce"
                 />
               </div>
@@ -491,7 +530,7 @@ export default function AdminAttendancePage() {
               </button>
               <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
                 {reviewingAttempt && <Spinner />}
-                {reviewingAttempt ? "Guardando revisión…" : "Revisar y liberar kiosco"}
+                {reviewingAttempt ? "Guardando revisión…" : "Revisar y habilitar tablet"}
               </button>
             </div>
           </form>
@@ -584,7 +623,10 @@ export default function AdminAttendancePage() {
         </AppDialog>
       )}
 
-      <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Resumen diario consolidado</h2>
+      <div className="section-heading">
+        <h2 className="card-title">Resumen diario del equipo</h2>
+        <p className="card-sub">Una fila por persona y día. Úsalo para detectar diferencias antes de cerrar la planilla.</p>
+      </div>
       <div className="table-wrap attendance-responsive-wrap" style={{ marginBottom: "1rem" }}>
         <table className={`table attendance-daily-table${canManage ? " has-actions" : ""}`}>
           <colgroup>
@@ -595,8 +637,8 @@ export default function AdminAttendancePage() {
           </colgroup>
           <thead>
             <tr>
-              <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Presencia</th>
-              <th>Refrigerio</th><th>Neto</th><th>Esperado</th><th>Diferencia</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
+              <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Tiempo presente</th>
+              <th>Refrigerio (descanso)</th><th>Tiempo efectivo</th><th>Jornada esperada</th><th>Saldo del día</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
             </tr>
           </thead>
           <tbody>
@@ -613,13 +655,13 @@ export default function AdminAttendancePage() {
                 <td className="num table-cell-nowrap">{formatMinutes(day.expected_minutes)}</td>
                 <td className="num table-cell-nowrap">{formatDifference(day.difference_minutes)}</td>
                 <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
-                {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></td>}
+                {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></td>}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <div className="responsive-table-cards" aria-label="Resumen diario consolidado">
+      <div className="responsive-table-cards" aria-label="Resumen diario del equipo">
         {loading && <ResponsiveCardsSkeleton label="Cargando resumen diario" />}
         {!loading && daily.length === 0 && <p className="empty">Sin jornadas en el rango.</p>}
         {dailyPagination.pageItems.map((day) => (
@@ -627,14 +669,14 @@ export default function AdminAttendancePage() {
             <div className="responsive-table-card__heading"><span className="responsive-table-card__name">{day.employee_name ?? "—"}</span><time className="responsive-table-card__date" dateTime={day.work_date}>{formatOperationalDate(day.work_date)}</time></div>
             <dl className="responsive-table-card__grid">
               <div className="responsive-table-card__item"><dt>Sesiones</dt><dd>{day.session_count}</dd></div>
-              <div className="responsive-table-card__item"><dt>Presencia</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Refrigerio</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
-              <div className="responsive-table-card__item"><dt>Neto</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Esperado</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Diferencia</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Tiempo presente</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Refrigerio (descanso)</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
+              <div className="responsive-table-card__item"><dt>Tiempo efectivo</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
               <div className="responsive-table-card__item"><dt>Incidencias</dt><dd>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</dd></div>
             </dl>
-            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Ajustar refrigerio</button></div>}
+            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></div>}
           </article>
         ))}
       </div>
@@ -643,7 +685,7 @@ export default function AdminAttendancePage() {
       {adjustingBreak && (
         <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog} dismissible={!savingBreak}>
           <form onSubmit={saveBreak}>
-          <h2 id="break-dialog-title">Ajustar refrigerio</h2>
+          <h2 id="break-dialog-title">Editar refrigerio del día</h2>
           <p id="break-dialog-description" className="muted">{adjustingBreak.employee_name} · {formatOperationalDate(adjustingBreak.work_date)}. Presencia: {formatMinutes(adjustingBreak.gross_minutes)}. El valor real sustituye solo este día.</p>
           {breakError && <p className="alert alert-error" role="alert" aria-live="assertive">{breakError}</p>}
           <label className="label" htmlFor="daily-break-minutes">Refrigerio real (minutos)</label>
@@ -660,7 +702,10 @@ export default function AdminAttendancePage() {
         </AppDialog>
       )}
 
-      <h2 className="card-title" style={{ margin: "0.9rem 0 0.55rem" }}>Detalle de marcaciones</h2>
+      <div className="section-heading">
+        <h2 className="card-title">Detalle de marcaciones</h2>
+        <p className="card-sub">Cada entrada y salida registrada. Desde aquí puedes ver las fotos y corregir un registro.</p>
+      </div>
       <div className="table-wrap attendance-responsive-wrap">
         <table className={`table attendance-records-table${canManage ? " has-actions" : ""}`}>
           <colgroup>
@@ -675,8 +720,8 @@ export default function AdminAttendancePage() {
               <th>Entrada</th>
               <th>Salida</th>
               <th>Trabajado</th>
-              <th>Esperado</th>
-              <th>Diferencia</th>
+              <th>Jornada esperada</th>
+              <th>Saldo del día</th>
               <th>Estado</th>
               {canManage && <th className="table-cell-action">Acciones</th>}
             </tr>
@@ -722,9 +767,9 @@ export default function AdminAttendancePage() {
                 </td>
                 <td>
                   {record.status === "OPEN" ? (
-                    <span className="badge badge-amber">Abierta</span>
+                    <span className="badge badge-amber">Sin salida</span>
                   ) : (
-                    <span className="badge badge-green">Completado</span>
+                    <span className="badge badge-green">Completada</span>
                   )}
                 </td>
                 {canManage && (
@@ -754,9 +799,9 @@ export default function AdminAttendancePage() {
               <div className="responsive-table-card__item"><dt>Entrada</dt><dd>{formatClock(record.check_in_at)}</dd></div>
               <div className="responsive-table-card__item"><dt>Salida</dt><dd>{formatClock(record.check_out_at)}</dd></div>
               <div className="responsive-table-card__item"><dt>Trabajado</dt><dd>{formatMinutes(record.worked_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Esperado</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Diferencia</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Abierta</span> : <span className="badge badge-green">Completado</span>}</dd></div>
+              <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
+              <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Sin salida</span> : <span className="badge badge-green">Completada</span>}</dd></div>
             </dl>
             {canManage && <div className="responsive-table-card__footer attendance-record-actions"><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos"><Camera size={18} /></button><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro"><Pencil size={18} /></button></div>}
           </article>

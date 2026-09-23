@@ -35,8 +35,8 @@ export default function AdminDevicesPage() {
 
   if (user && user.role !== "ADMIN") {
     return (
-      <AdminShell title="Terminales">
-        <p className="alert alert-error">Solo un administrador puede enrolar tablets.</p>
+      <AdminShell title="Tablets y terminales">
+        <p className="alert alert-error">Solo un administrador puede autorizar tablets.</p>
       </AdminShell>
     );
   }
@@ -73,7 +73,7 @@ export default function AdminDevicesPage() {
   }
 
   return (
-    <AdminShell title="Terminales" subtitle="Código de emparejamiento de un solo uso para cada tablet">
+    <AdminShell title="Tablets y terminales" subtitle="Cada tablet se autoriza con un código de un solo uso.">
       {error && (
         <p className="alert alert-error" role="alert">
           <Alert size={15} /> {error}
