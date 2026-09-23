@@ -1233,6 +1233,10 @@ export type PayrollDailyReportItem = {
   overtime_minutes: number;
   overtime_amount: string;
   recognized_overtime_amount: string;
+  /** Pago total del día por descanso semanal o feriado trabajado (incluye pendientes). */
+  special_day_amount: string;
+  /** Parte reconocida del pago por descanso/feriado (0 si aún no es exigible). */
+  recognized_special_day_amount: string;
   approved_adjustment_minutes: number;
   approved_adjustment_amount: string;
   recognized_total_amount: string;

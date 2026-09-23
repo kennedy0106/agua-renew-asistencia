@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 const user = {
   id: "admin-1", username: "admin", role: "ADMIN", active: true,
@@ -16,28 +16,36 @@ const record = {
   id: "record-1", payroll_period_id: period.id, employee_id: "employee-1", employee_name: "LEGAL TREINTA",
   monthly_salary: "650.00", worked_minutes: 3900, expected_minutes: 3900, overtime_minutes: 0,
   overtime_amount: "0.00", adjustment_minutes: 0, adjustment_amount: "0.00", base_salary: "325.00",
-  manual_adjustment: "0.00", missing_salary_days: 0, total: "325.00", status: "PREVIEW", payable: true,
+  special_day_amount: "65.00",
+  manual_adjustment: "0.00", missing_salary_days: 0, total: "390.00", status: "PREVIEW", payable: true,
   notes: null, created_at: "2026-09-15T00:00:00Z", updated_at: "2026-09-15T00:00:00Z",
 };
 
-// Setiembre 2026 (1–15): 13 jornadas Lun–Sáb + 2 domingos de descanso. Cada
-// fecha aporta su treintavo (650/30 = 21.67). La base del tramo concilia 325.00
-// con una regularización visible de -0.05; ninguna fecha vale 25.00.
+// Setiembre 2026 (1–15): 12 jornadas Lun–Sáb, el domingo 06 sin trabajar y el
+// domingo 13 trabajado como descanso. Cada fecha aporta su treintavo
+// (650/30 = 21.67), incluso los descansos: el 06 muestra 21.67 (no 0.00) y el 13
+// suma 65.00 de descanso trabajado para un total atribuible de 86.67. La base
+// del tramo concilia 325.00 con una regularización visible de -0.05.
 const daily = Array.from({ length: 15 }, (_, index) => {
   const day = index + 1;
   const workDate = `2026-09-${String(day).padStart(2, "0")}`;
   const isSunday = new Date(`${workDate}T00:00:00Z`).getUTCDay() === 0;
+  const workedRest = workDate === "2026-09-13";
   return {
     employee_id: "employee-1", employee_name: "LEGAL TREINTA", work_date: workDate,
-    worked_minutes: isSunday ? 0 : 300, expected_minutes: isSunday ? 0 : 300,
-    recognized_minutes: isSunday ? 0 : 300, status: isSunday ? "NO_SCHEDULE" : "RECOGNIZED",
+    worked_minutes: workedRest ? 450 : isSunday ? 0 : 300,
+    expected_minutes: isSunday ? 0 : 300,
+    recognized_minutes: workedRest ? 450 : isSunday ? 0 : 300,
+    status: workedRest ? "RECOGNIZED" : isSunday ? "NO_SCHEDULE" : "RECOGNIZED",
     base_amount: "21.67", legal_daily_value: "21.6667", legal_base_amount: isSunday ? "0.00" : "21.67",
     regularization_amount: day === 15 ? "-0.05" : "0.00",
     recognized_base_amount: isSunday ? "0.00" : "21.67",
     overtime_minutes: 0, overtime_amount: "0.00", recognized_overtime_amount: "0.00",
-    special_day_amount: "0.00", recognized_special_day_amount: "0.00",
+    special_day_amount: workedRest ? "65.00" : "0.00",
+    recognized_special_day_amount: workedRest ? "65.00" : "0.00",
     approved_adjustment_minutes: 0, approved_adjustment_amount: "0.00",
-    recognized_total_amount: isSunday ? "0.00" : "21.67", review_difference_amount: "0.00",
+    recognized_total_amount: workedRest ? "65.00" : isSunday ? "0.00" : "21.67",
+    review_difference_amount: "0.00",
   };
 });
 
@@ -47,15 +55,15 @@ const dailyReport = {
   employees: [{
     employee_id: "employee-1", employee_name: "LEGAL TREINTA", worked_minutes: 3900, ordinary_minutes: 3900,
     expected_minutes: 3900, programmed_base_amount: "325.00", calendar_base_amount: "325.05",
-    regularization_amount: "-0.05", legal_daily_value: "21.6667", recognized_base_amount: "281.71",
-    unattributed_base_amount: "43.29", overtime_minutes: 0, recognized_overtime_amount: "0.00",
-    special_day_amount: "0.00", recognized_special_day_amount: "0.00", approved_adjustment_minutes: 0,
-    approved_adjustment_amount: "0.00", recognized_total_amount: "281.71", future_pending_base_amount: "0.00",
+    regularization_amount: "-0.05", legal_daily_value: "21.6667", recognized_base_amount: "260.04",
+    unattributed_base_amount: "64.96", overtime_minutes: 0, recognized_overtime_amount: "0.00",
+    special_day_amount: "65.00", recognized_special_day_amount: "65.00", approved_adjustment_minutes: 0,
+    approved_adjustment_amount: "0.00", recognized_total_amount: "325.04", future_pending_base_amount: "0.00",
     review_difference_amount: "0.00", manual_adjustment: "0.00", official_total_snapshot: "325.00",
   }],
 };
 
-test("salarios muestra base por calendario y regularización, nunca cuota de distribución", async ({ page }) => {
+test("salarios muestra base por calendario, descanso y total atribuible por fecha", async ({ page }) => {
   await page.addInitScript((sessionUser) => sessionStorage.setItem(
     "agua-renew-admin-session-hint",
     JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser }),
@@ -69,7 +77,7 @@ test("salarios muestra base por calendario y regularización, nunca cuota de dis
     if (path === `/api/v1/payroll/periods/${period.id}/summary`) return route.fulfill({ json: {
       period_id: period.id, name: period.name, start_date: period.start_date, end_date: period.end_date,
       status: period.status, employee_count: 1, total_base: "325.00", total_overtime: "0.00",
-      total_special_day: "0.00", total_manual: "0.00", total: "325.00",
+      total_special_day: "65.00", total_manual: "0.00", total: "390.00",
     } });
     if (path === `/api/v1/payroll/periods/${period.id}/records`) return route.fulfill({ json: [record] });
     if (path === `/api/v1/payroll/periods/${period.id}/daily-report`) return route.fulfill({ json: dailyReport });
@@ -89,15 +97,34 @@ test("salarios muestra base por calendario y regularización, nunca cuota de dis
   await expect(page.getByText("S/ -0.05").first()).toBeVisible();
   // El treintavo dominical ya vive en la base; el descanso trabajado se paga aparte.
   await expect(page.getByText("El treintavo del domingo ya está incluido en la base por calendario", { exact: false })).toBeVisible();
+  // El total del día no es el reconocimiento de asistencia.
+  await expect(page.getByText("no es el reconocimiento de asistencia", { exact: false })).toBeVisible();
 
-  // Las columnas diarias son calendario + regularización; ya no hay cuota de reparto.
-  const card = page.locator(".responsive-table-card").first();
-  await expect(card.getByText("Base por calendario", { exact: true })).toBeVisible();
-  await expect(card.getByText("Regularización", { exact: true })).toBeVisible();
+  // La fila del empleado y el resumen incluyen el descanso trabajado (325.00 + 65.00 = 390.00).
+  await expect(page.locator(".stat-card").filter({ hasText: "Monto estimado a pagar" }).getByText("S/ 390.00")).toBeVisible();
+  await expect(page.locator('td[data-label="Total"]').getByText("S/ 390.00")).toBeVisible();
+
+  const cards = page.locator(".responsive-table-cards");
+  const cardItem = (card: Locator, label: string) =>
+    card.locator(".responsive-table-card__item").filter({ hasText: label });
+
+  // Descanso semanal NO trabajado (06/09): incluye su base 21.67 y total 21.67, no 0.00.
+  const restCard = cards.locator(".responsive-table-card").filter({ hasText: "06/09/2026" });
+  await expect(restCard).toBeVisible();
+  await expect(cardItem(restCard, "Base por calendario").getByText("S/ 21.67")).toBeVisible();
+  await expect(cardItem(restCard, "Total del día (atribuible)").getByText("S/ 21.67")).toBeVisible();
+  await expect(cardItem(restCard, "Descanso/Feriado").getByText("—")).toBeVisible();
+
+  // Segunda página: descanso trabajado (13/09) con 21.67 de base, 65.00 de
+  // descanso y 86.67 de total atribuible.
+  await cards.getByRole("button", { name: "Página siguiente" }).click();
+  const workedCard = cards.locator(".responsive-table-card").filter({ hasText: "13/09/2026" });
+  await expect(workedCard).toBeVisible();
+  await expect(cardItem(workedCard, "Base por calendario").getByText("S/ 21.67")).toBeVisible();
+  await expect(cardItem(workedCard, "Descanso/Feriado").getByText("S/ 65.00")).toBeVisible();
+  await expect(cardItem(workedCard, "Total del día (atribuible)").getByText("S/ 86.67")).toBeVisible();
+
+  // Las columnas diarias son calendario + regularización; no hay cuota de reparto.
   await expect(page.getByText("Cuota de distribución")).toHaveCount(0);
-
-  // 15 fechas calendario (1–15), sin ningún 25.00 derivado de 325/13.
-  await expect(page.locator(".responsive-table-cards").getByText("1–10 de 15")).toBeVisible();
-  await expect(card.getByText("S/ 21.67").first()).toBeVisible();
   await expect(page.getByText("S/ 25.00")).toHaveCount(0);
 });
