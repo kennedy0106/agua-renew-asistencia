@@ -143,13 +143,19 @@ test("al fallar otra quincena no conserva el importe del periodo anterior", asyn
 });
 
 test("las acciones secundarias del perfil se abren en diálogos y Escape las cierra", async ({ page }) => {
+  const createdAdjustments: Array<Record<string, unknown>> = [];
   await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
   await page.route("**/api/v1/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
     if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
     if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
     if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: [] } });
     if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.endsWith("/employees/employee-1/adjustments") && request.method() === "POST") {
+      createdAdjustments.push(request.postDataJSON() as Record<string, unknown>);
+      return route.fulfill({ status: 201, json: {} });
+    }
     if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
     if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
     if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
@@ -184,6 +190,28 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
   await expect.poll(() => reducedDialog.evaluate((element) => getComputedStyle(element).transform)).toBe("none");
   await page.keyboard.press("Escape");
   await expect(reducedDialog).toBeHidden();
+
+  await page.setViewportSize({ width: 976, height: 494 });
+  await page.getByRole("button", { name: "Nuevo ajuste" }).click();
+  const adjustmentForm = page.getByRole("dialog", { name: "Nuevo ajuste" });
+  await adjustmentForm.getByLabel("Fecha del ajuste").click();
+  const calendar = page.getByRole("dialog", { name: "Calendario: Fecha del ajuste" });
+  await expect(calendar).toBeVisible();
+  await expect.poll(() => calendar.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return bounds.top >= 0 && bounds.left >= 0 && bounds.right <= window.innerWidth && bounds.bottom <= window.innerHeight;
+  })).toBe(true);
+  await calendar.getByRole("button", { name: "Hoy" }).click();
+
+  await adjustmentForm.getByLabel("Tipo de ajuste").click();
+  await page.getByRole("option", { name: "Permiso" }).click();
+  await expect(adjustmentForm.getByLabel("Tipo de ajuste")).toHaveText(/Permiso/);
+  await adjustmentForm.getByLabel("Tiempo a sumar o descontar (minutos)").fill("-420");
+  await expect(adjustmentForm.getByLabel("Tiempo a sumar o descontar (minutos)")).toHaveValue("-420");
+  await adjustmentForm.getByLabel("Motivo").fill("Permiso autorizado");
+  await adjustmentForm.getByRole("button", { name: "Crear ajuste (pendiente)" }).click();
+  await expect.poll(() => createdAdjustments.length).toBe(1);
+  expect(createdAdjustments[0]).toMatchObject({ minutes: -420, adjustment_type: "PERMISO", reason: "Permiso autorizado" });
 });
 
 test("el calendario usa la jornada real (300) y avisa la divergencia, nunca el 480 obsoleto", async ({ page }) => {

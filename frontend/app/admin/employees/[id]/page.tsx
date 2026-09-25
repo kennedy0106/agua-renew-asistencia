@@ -146,7 +146,7 @@ export default function EmployeeDetailPage() {
   const [showAdjForm, setShowAdjForm] = useState(false);
   const [adjForm, setAdjForm] = useState({
     adjustment_date: new Date().toISOString().slice(0, 10),
-    minutes: 0,
+    minutes: "0",
     adjustment_type: "RECUPERACION" as HourAdjustment["adjustment_type"],
     reason: "",
   });
@@ -420,14 +420,20 @@ export default function EmployeeDetailPage() {
 
   async function handleCreateAdjustment(event: React.FormEvent) {
     event.preventDefault();
+    const minutes = Number(adjForm.minutes);
+    const minutesAreValid = /^-?\d+$/.test(adjForm.minutes.trim()) && Number.isInteger(minutes) && minutes >= -1440 && minutes <= 1440;
+    if (!minutesAreValid) {
+      setError("Ingresa minutos enteros entre -1440 y 1440. Usa el signo menos para descontar tiempo.");
+      return;
+    }
     setSavingAdj(true);
     setError(null);
     try {
-      await adjustmentsApi.create(employeeId, adjForm);
+      await adjustmentsApi.create(employeeId, { ...adjForm, minutes });
       setShowAdjForm(false);
       setAdjForm({
         adjustment_date: new Date().toISOString().slice(0, 10),
-        minutes: 0,
+        minutes: "0",
         adjustment_type: "RECUPERACION",
         reason: "",
       });
@@ -1041,20 +1047,22 @@ export default function EmployeeDetailPage() {
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
                 <label className="label">Fecha</label>
-                <DateField value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
+                <DateField aria-label="Fecha del ajuste" value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
               </div>
               <div>
-                <label className="label">Tiempo a sumar o descontar (minutos)</label>
+                <label className="label" htmlFor="adjustment-minutes">Tiempo a sumar o descontar (minutos)</label>
                 <input
+                  id="adjustment-minutes"
                   type="number"
                   min={-1440}
                   max={1440}
+                  step={1}
                   className="input"
                   value={adjForm.minutes}
-                  onChange={(e) => setAdjForm({ ...adjForm, minutes: Number(e.target.value) })}
+                  onChange={(e) => setAdjForm({ ...adjForm, minutes: e.target.value })}
                   required
                 />
-                <small className="muted">Use un número positivo para sumar tiempo y uno negativo para descontarlo.</small>
+                <small className="muted">Ejemplo: 420 suma 7 horas; -420 descuenta 7 horas.</small>
               </div>
               <div>
                 <label className="label">Tipo</label>
@@ -1071,8 +1079,9 @@ export default function EmployeeDetailPage() {
                 </Select>
               </div>
               <div>
-                <label className="label">Motivo</label>
+                <label className="label" htmlFor="adjustment-reason">Motivo</label>
                 <input
+                  id="adjustment-reason"
                   type="text"
                   className="input"
                   value={adjForm.reason}
@@ -1083,7 +1092,7 @@ export default function EmployeeDetailPage() {
                 />
               </div>
             </div>
-            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingAdj}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3}>
+            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingAdj}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3 || !/^-?\d+$/.test(adjForm.minutes.trim()) || Number(adjForm.minutes) < -1440 || Number(adjForm.minutes) > 1440}>
               <Plus size={15} />
               {savingAdj && <Spinner />}
               {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}

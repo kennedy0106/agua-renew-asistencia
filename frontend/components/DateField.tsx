@@ -4,7 +4,8 @@
 // Semana Lu..Do, español, hoy con anillo, día elegido en azul sólido,
 // trigger 2.75rem glass, panel de vidrio con blur. Fechas en America/Lima.
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Calendar } from "./Icons";
 
 const WEEKDAYS = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"];
@@ -52,12 +53,14 @@ export default function DateField({
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const dayRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const dialogId = useId();
-  const [alignEnd, setAlignEnd] = useState(false);
+  const [panelPosition, setPanelPosition] = useState<{ left: number; top: number; width: number } | null>(null);
 
   function closeCalendar({ returnFocus = true }: { returnFocus?: boolean } = {}) {
     setOpen(false);
+    setPanelPosition(null);
     if (returnFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
   }
 
@@ -78,7 +81,8 @@ export default function DateField({
   useEffect(() => {
     if (!open) return;
     function onDoc(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (!rootRef.current?.contains(target) && !panelRef.current?.contains(target)) {
         closeCalendar({ returnFocus: false });
       }
     }
@@ -86,17 +90,41 @@ export default function DateField({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
-      const root = rootRef.current;
-      if (!root) return;
-      setAlignEnd(root.getBoundingClientRect().left + Math.min(292, window.innerWidth - 16) > window.innerWidth - 8);
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger || !panel) return;
+
+      const margin = 8;
+      const gap = 6;
+      const triggerRect = trigger.getBoundingClientRect();
+      const width = Math.min(292, window.innerWidth - margin * 2);
+      const height = panel.offsetHeight;
+      const left = Math.min(
+        Math.max(margin, triggerRect.left),
+        Math.max(margin, window.innerWidth - width - margin),
+      );
+      const below = triggerRect.bottom + gap;
+      const above = triggerRect.top - gap - height;
+      const top = below + height <= window.innerHeight - margin
+        ? below
+        : above >= margin
+          ? above
+          : Math.max(margin, Math.min(below, window.innerHeight - height - margin));
+
+      setPanelPosition({ left, top, width });
     };
-    place();
+    const frame = window.requestAnimationFrame(place);
     window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [open]);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, view]);
 
   const days = useMemo(() => {
     const first = new Date(view.getFullYear(), view.getMonth(), 1);
@@ -172,7 +200,14 @@ export default function DateField({
         type="button"
         data-required={required || undefined}
         className="datefield-trigger"
-        onClick={() => !disabled && (open ? closeCalendar({ returnFocus: false }) : setOpen(true))}
+        onClick={() => {
+          if (disabled) return;
+          if (open) closeCalendar({ returnFocus: false });
+          else {
+            setPanelPosition(null);
+            setOpen(true);
+          }
+        }}
         disabled={disabled}
         aria-label={ariaLabel ?? placeholder}
         aria-haspopup="dialog"
@@ -183,13 +218,25 @@ export default function DateField({
         <span className={value ? "" : "datefield-placeholder"}>{label}</span>
       </button>
 
-      {open && !disabled && (
-        <div className={`datefield-panel${alignEnd ? " is-end-aligned" : ""}`} id={dialogId} role="dialog" aria-label={`Calendario: ${ariaLabel ?? placeholder}`} onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            closeCalendar();
-          }
-        }}>
+      {open && !disabled && createPortal(
+        <div
+          ref={panelRef}
+          className="datefield-panel is-portaled"
+          id={dialogId}
+          role="dialog"
+          aria-label={`Calendario: ${ariaLabel ?? placeholder}`}
+          style={{
+            left: panelPosition?.left ?? 0,
+            top: panelPosition?.top ?? 0,
+            width: panelPosition?.width ?? Math.min(292, typeof window === "undefined" ? 292 : window.innerWidth - 16),
+            visibility: panelPosition ? "visible" : "hidden",
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeCalendar();
+            }
+          }}>
           <div className="datefield-head">
             <button type="button" className="datefield-nav" onClick={() => shiftMonth(-1)} aria-label="Mes anterior">
               ‹
@@ -243,7 +290,8 @@ export default function DateField({
               Hoy
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

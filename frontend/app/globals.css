@@ -414,7 +414,7 @@ textarea {
   border: 1px solid rgba(21, 67, 153, 0.18);
   border-radius: var(--radius-panel);
   box-shadow: 0 20px 40px -20px rgba(0, 102, 204, 0.45);
-  z-index: 60;
+  z-index: 140;
   overflow: hidden;
   min-width: var(--radix-select-trigger-width);
 }
@@ -1515,6 +1515,13 @@ textarea {
   animation: datefield-open 200ms ease;
 }
 .datefield-panel.is-end-aligned { right: 0; left: auto; }
+.datefield-panel.is-portaled {
+  position: fixed;
+  right: auto;
+  z-index: 140;
+  max-height: calc(100dvh - 1rem);
+  overflow-y: auto;
+}
 
 .dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 1rem; background: rgba(21, 67, 153, 0.28); opacity: 1; transition: opacity 220ms var(--ease-water); }
 .app-dialog { width: min(100%, 31rem); display: grid; gap: 0.8rem; padding: 1.25rem; border: 1px solid var(--glass-border); border-radius: var(--radius-panel); background: #fff; box-shadow: var(--shadow-panel); opacity: 1; transform: translateY(0) scale(1); transform-origin: center; transition: opacity 220ms var(--ease-water), transform 220ms var(--ease-water); will-change: opacity, transform; }
