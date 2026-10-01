@@ -7,6 +7,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { clearAdminSessionHint, useAdminSession } from "./AdminSession";
 import AppDialog, { AppDialogCloseButton } from "./AppDialog";
 import IntentLink from "./IntentLink";
+import { Spinner } from "./Loading";
 import {
   Briefcase,
   Chart,
@@ -319,6 +320,15 @@ export default function AdminShell({
             </div>
           </div>
           <div className="topbar-actions">
+            <span
+              className={`route-loading${navigating ? " is-active" : ""}`}
+              role="status"
+              aria-live="polite"
+              aria-busy={navigating}
+            >
+              <Spinner size={16} />
+              <span className="sr-only">{navigating ? "Cargando sección…" : ""}</span>
+            </span>
             <span className="topbar-date">
               <Clock size={15} />
               <span>{todayLabel}</span>
@@ -340,7 +350,6 @@ export default function AdminShell({
               </span>
             )}
           </div>
-          <span className={`topbar-progress${navigating ? " is-active" : ""}`} aria-hidden />
         </header>
         <main className="page">{children}</main>
       </div>

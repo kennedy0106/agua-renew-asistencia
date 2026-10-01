@@ -1,8 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminLoginPage from "@/pages/AdminLoginPage";
+import { preloadRouteWhenIdle } from "@/lib/routePreload";
+
+vi.mock("@/lib/routePreload", () => ({ preloadRouteWhenIdle: vi.fn() }));
 
 const HINT_KEY = "agua-renew-admin-session-hint";
 const LOGIN_URL = "http://localhost:8000/api/v1/auth/login";
@@ -46,7 +49,19 @@ async function fillAndSubmit(username = "ana.torres", password = "secreta-123") 
   await user.click(screen.getByRole("button", { name: /Ingresar al sistema/i }));
 }
 
+const preloadMock = vi.mocked(preloadRouteWhenIdle);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
 describe("AdminLoginPage", () => {
+  it("precarga el dashboard en reposo mientras el usuario está en login", () => {
+    renderLogin();
+
+    expect(preloadMock).toHaveBeenCalledWith("/admin/dashboard");
+  });
+
   it("alterna la visibilidad de la contraseña", async () => {
     const user = userEvent.setup();
     renderLogin();

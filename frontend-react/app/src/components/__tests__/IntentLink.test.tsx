@@ -1,17 +1,30 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import IntentLink from "@/components/IntentLink";
+import { preloadRoute } from "@/lib/routePreload";
 
-function renderLink(onNavigate: () => void, onClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void) {
+vi.mock("@/lib/routePreload", () => ({ preloadRoute: vi.fn() }));
+
+function renderLink(
+  onNavigate: () => void,
+  onClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void,
+  target?: string,
+) {
   return render(
     <MemoryRouter>
-      <IntentLink href="/admin/dashboard" onNavigate={onNavigate} onClick={onClick}>
+      <IntentLink href="/admin/dashboard" onNavigate={onNavigate} onClick={onClick} target={target}>
         Panel
       </IntentLink>
     </MemoryRouter>,
   );
 }
+
+const preloadMock = vi.mocked(preloadRoute);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("IntentLink — intención de navegación", () => {
   it("notifica onNavigate en un clic primario sin modificadores", () => {
@@ -53,5 +66,66 @@ describe("IntentLink — intención de navegación", () => {
     fireEvent.click(screen.getByRole("link", { name: "Panel" }), { button: 0 });
 
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe("IntentLink — precarga de chunk", () => {
+  it("precarga al recibir foco (navegación con teclado)", () => {
+    renderLink(vi.fn());
+    const link = screen.getByRole("link", { name: "Panel" });
+
+    fireEvent.focusIn(link);
+    expect(preloadMock).toHaveBeenCalledWith("/admin/dashboard");
+  });
+
+  it("precarga en hover solo tras el retardo de intención", () => {
+    vi.useFakeTimers();
+    renderLink(vi.fn());
+    const link = screen.getByRole("link", { name: "Panel" });
+
+    fireEvent.mouseEnter(link);
+    expect(preloadMock).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(80);
+    expect(preloadMock).toHaveBeenCalledWith("/admin/dashboard");
+    vi.useRealTimers();
+  });
+
+  it("precarga en pointerdown y en el clic primario", () => {
+    renderLink(vi.fn());
+    const link = screen.getByRole("link", { name: "Panel" });
+
+    fireEvent.pointerDown(link);
+    fireEvent.click(link, { button: 0 });
+
+    expect(preloadMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("no precarga pointerdown con modificadores ni con botón no primario", () => {
+    renderLink(vi.fn());
+    const link = screen.getByRole("link", { name: "Panel" });
+
+    fireEvent.pointerDown(link, { button: 2 });
+    fireEvent.pointerDown(link, { button: 0, ctrlKey: true });
+
+    expect(preloadMock).not.toHaveBeenCalled();
+  });
+
+  it("no precarga un clic con modificadores", () => {
+    renderLink(vi.fn());
+
+    fireEvent.click(screen.getByRole("link", { name: "Panel" }), { button: 0, ctrlKey: true });
+
+    expect(preloadMock).not.toHaveBeenCalled();
+  });
+
+  it("no precarga un enlace que abre en otra pestaña", () => {
+    renderLink(vi.fn(), undefined, "_blank");
+    const link = screen.getByRole("link", { name: "Panel" });
+
+    fireEvent.focusIn(link);
+    fireEvent.click(link, { button: 0 });
+
+    expect(preloadMock).not.toHaveBeenCalled();
   });
 });

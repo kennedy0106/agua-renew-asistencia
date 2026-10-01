@@ -3,10 +3,12 @@ import { Route, Routes } from "react-router-dom";
 import { Notifications } from "@/components/Notifications";
 import RouteFallback from "@/components/RouteFallback";
 import AdminLayout from "@/layouts/AdminLayout";
+import { routeLoaders } from "@/lib/routePreload";
 import HomePage from "@/pages/HomePage";
 import NotFoundPage from "@/pages/NotFoundPage";
 import AdminLoginPage from "@/pages/AdminLoginPage";
 import AdminChangePasswordPage from "@/pages/AdminChangePasswordPage";
+import AsistenciaPage from "@/pages/AsistenciaPage";
 
 /**
  * Rutas migradas del frontend Next (17 destinos). El área /admin usa routing
@@ -14,24 +16,25 @@ import AdminChangePasswordPage from "@/pages/AdminChangePasswordPage";
  * provee su propio `AdminShell` (salvo login y cambio de contraseña, que en
  * Next tampoco lo usaban).
  *
- * Las pantallas pesadas se cargan con `React.lazy` para que el bundle inicial
- * no incluya todo el panel; la portada y el flujo de login quedan eager para
- * que el primer render (y el kiosco) sea inmediato.
+ * Las pantallas pesadas se cargan con `React.lazy`, pero sus loaders viven en
+ * `lib/routePreload` para que `IntentLink` pueda precargar el mismo chunk por
+ * intención y la promesa se reutilice. El kiosco público (`/asistencia`) queda
+ * eager: es entrada directa en tablets y su chunk es pequeño, así que cargarlo
+ * por adelantado evita el salto de Suspense en el destino más medido.
  */
-const AsistenciaPage = lazy(() => import("@/pages/AsistenciaPage"));
-const AdminDashboardPage = lazy(() => import("@/pages/AdminDashboardPage"));
-const AdminAccountPage = lazy(() => import("@/pages/AdminAccountPage"));
-const AdminAttendancePage = lazy(() => import("@/pages/AdminAttendancePage"));
-const AdminAttendanceHistoryPage = lazy(() => import("@/pages/AdminAttendanceHistoryPage"));
-const AdminAuditPage = lazy(() => import("@/pages/AdminAuditPage"));
-const AdminDevicesPage = lazy(() => import("@/pages/AdminDevicesPage"));
-const AdminEmployeesPage = lazy(() => import("@/pages/AdminEmployeesPage"));
-const AdminEmployeeDetailPage = lazy(() => import("@/pages/AdminEmployeeDetailPage"));
-const AdminOvertimePolicyPage = lazy(() => import("@/pages/AdminOvertimePolicyPage"));
-const AdminPayrollPage = lazy(() => import("@/pages/AdminPayrollPage"));
-const AdminRolesPage = lazy(() => import("@/pages/AdminRolesPage"));
-const AdminSalariesPage = lazy(() => import("@/pages/AdminSalariesPage"));
-const AdminUsersPage = lazy(() => import("@/pages/AdminUsersPage"));
+const AdminDashboardPage = lazy(routeLoaders["/admin/dashboard"]);
+const AdminAccountPage = lazy(routeLoaders["/admin/account"]);
+const AdminAttendancePage = lazy(routeLoaders["/admin/attendance"]);
+const AdminAttendanceHistoryPage = lazy(routeLoaders["/admin/attendance/history"]);
+const AdminAuditPage = lazy(routeLoaders["/admin/audit"]);
+const AdminDevicesPage = lazy(routeLoaders["/admin/devices"]);
+const AdminEmployeesPage = lazy(routeLoaders["/admin/employees"]);
+const AdminEmployeeDetailPage = lazy(routeLoaders["/admin/employees/:id"]);
+const AdminOvertimePolicyPage = lazy(routeLoaders["/admin/overtime-policy"]);
+const AdminPayrollPage = lazy(routeLoaders["/admin/payroll"]);
+const AdminRolesPage = lazy(routeLoaders["/admin/roles"]);
+const AdminSalariesPage = lazy(routeLoaders["/admin/salaries"]);
+const AdminUsersPage = lazy(routeLoaders["/admin/users"]);
 
 export default function App() {
   return (

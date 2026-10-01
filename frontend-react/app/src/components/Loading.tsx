@@ -45,13 +45,21 @@ export function StatSkeleton({ count = 5 }: { count?: number }) {
   );
 }
 
-/** Botón con indicador de carga (spinner SVG + texto). */
+/**
+ * Botón con indicador de carga (spinner SVG + texto).
+ *
+ * La rotación se aplica al wrapper `.spin` (no al `<svg>`): animar el propio SVG
+ * obliga al navegador a repintar/recalcular su caja y es el patrón que la guía
+ * de rendimiento desaconseja. El SVG interior queda estático y aporta el arco.
+ */
 export function Spinner({ size = 15 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden className="spin">
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-    </svg>
+    <span className="spin" aria-hidden>
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+        <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+      </svg>
+    </span>
   );
 }
 

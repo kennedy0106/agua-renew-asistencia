@@ -1431,13 +1431,29 @@ textarea {
   100% { transform: translateY(0); opacity: 1; }
 }
 
-/* Spinner: se reemplaza por un fade+pulse muy suave. Sin arco iris. */
+/* Spinner: rotación real y lineal acelerada por transform (feedback de avance).
+   `fade-pulse` se conserva para la variante gentil de movimiento reducido. */
+@keyframes spin-rotate {
+  to { transform: rotate(360deg); }
+}
 @keyframes fade-pulse {
-  0%, 100% { opacity: 0.4; }
+  0%, 100% { opacity: 0.45; }
   50%      { opacity: 1; }
 }
+/* El wrapper rota (no el SVG): menos trabajo de pintura y sin recalcular el
+   dibujo del arco en cada frame. El SVG interior permanece estático. */
 .spin {
-  animation: fade-pulse 1.2s ease-in-out infinite;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 0;
+  transform-origin: center;
+  will-change: transform;
+  animation: spin-rotate 0.8s linear infinite;
+}
+.spin > svg {
+  display: block;
 }
 
 /* Skeletons: GUIA-DISENO.md prohíbe parpadeos constantes. UNA sola
@@ -1486,8 +1502,14 @@ textarea {
   .water-orb,
   .kiosk-countdown,
   .btn-primary::after,
-  .btn-green::after,
+  .btn-green::after {
+    animation: none !important;
+  }
+  /* El spinner conserva feedback de estado: pulso suave, sin rotación. */
   .spin {
+    animation: fade-pulse 1.6s ease-in-out infinite !important;
+  }
+  .route-loading:not(.is-active) .spin {
     animation: none !important;
   }
   /* Popovers: aparecen sin desplazarse ni escalar. */
@@ -1526,13 +1548,6 @@ textarea {
   }
   .sidebar-scrim {
     transition: opacity 120ms ease !important;
-  }
-  /* El progreso de ruta no se anima: muestra su estado de forma estática. */
-  .topbar-progress {
-    transition: none !important;
-  }
-  .topbar-progress.is-active {
-    transform: scaleX(1) !important;
   }
 }
 
@@ -2248,25 +2263,94 @@ textarea {
   padding: 0.4rem 2.25rem 3rem;
 }
 
-/* Progressive route hint: a real element (not ::after, which paints the topbar
-   fade) so it can transition finitely instead of looping with an ease-out. */
-.topbar-progress {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  pointer-events: none;
-  transform: scaleX(0);
-  transform-origin: left center;
+/* Indicador de navegación dentro de la interfaz: un spinner circular compacto
+   y accesible que reemplaza la barra superior tipo navegador. No bloquea: vive
+   en la barra de acciones, no captura punteros y solo se muestra al navegar. */
+.route-loading {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  color: var(--brand-blue);
   opacity: 0;
-  background: linear-gradient(90deg, var(--brand-green), var(--brand-blue));
-  transition: transform 180ms var(--ease-out), opacity 160ms var(--ease-out);
+  visibility: hidden;
+  transform: scale(0.9);
+  pointer-events: none;
+  transition:
+    opacity 150ms var(--ease-out),
+    transform 150ms var(--ease-out),
+    visibility 0s linear 150ms;
 }
-.topbar-progress.is-active {
-  transform: scaleX(0.9);
+.route-loading.is-active {
   opacity: 1;
-  transition: transform 900ms linear, opacity 120ms linear;
+  visibility: visible;
+  transform: scale(1);
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 120ms var(--ease-out),
+    visibility 0s;
+}
+.route-loading:not(.is-active) .spin {
+  animation-play-state: paused;
+}
+
+/* Fallback de Suspense: marca circular + estado, sin estilos inline para que la
+   variante de movimiento reducido se controle desde CSS. */
+.route-fallback {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  padding: 2rem 1.25rem;
+  color: var(--brand-muted);
+  text-align: center;
+}
+.route-fallback-badge {
+  display: grid;
+  place-items: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 50%;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(103, 195, 243, 0.3));
+  box-shadow: 0 16px 30px -22px rgba(0, 102, 204, 0.8), inset 0 1px 0 #fff;
+}
+.route-fallback-badge img {
+  width: 1.55rem;
+  height: auto;
+}
+.route-fallback .spin {
+  color: var(--brand-blue);
+}
+.route-fallback-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* Entrada de contenido muy corta: evita el salto brusco entre páginas. Solo
+   opacidad y desplazamiento; se reproduce al montar el shell de cada página. */
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes page-enter-reduced {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.page {
+  animation: page-enter 180ms var(--ease-out) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page {
+    animation: page-enter-reduced 120ms ease both;
+  }
+  .route-loading,
+  .route-loading.is-active {
+    transform: none !important;
+    transition: opacity 120ms ease !important;
+  }
 }
 
 .dashboard-section-head {

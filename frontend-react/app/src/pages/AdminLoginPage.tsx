@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, authApi } from "@/lib/api";
+import { preloadRouteWhenIdle } from "@/lib/routePreload";
 import { clearAdminSessionHint, writeAdminSessionHint } from "@/components/AdminSession";
 import { Check, ChevronRight, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
@@ -19,6 +20,11 @@ export default function AdminLoginPage() {
   // una sesión que ya no aplica. No altera el tema ni el markup.
   useEffect(() => {
     clearAdminSessionHint();
+    // El dashboard es el destino casi seguro tras autenticar: se precarga en
+    // reposo para que el chunk ya esté listo al enviar el formulario y no haya
+    // salto de Suspense. Si el cambio de contraseña es obligatorio, la ruta se
+    // resuelve igualmente sin penalización perceptible.
+    preloadRouteWhenIdle("/admin/dashboard");
   }, []);
 
   const [password, setPassword] = useState("");

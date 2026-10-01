@@ -10,7 +10,7 @@ const user = {
   created_at: "2026-01-01T00:00:00Z",
 };
 
-test("el dashboard no precarga las rutas de la barra lateral al abrirse", async ({ page }) => {
+test("el dashboard precarga solo la ruta que revela intención de navegación", async ({ page }) => {
   await page.addInitScript((sessionUser) => {
     sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({
       version: 1,
@@ -35,19 +35,34 @@ test("el dashboard no precarga las rutas de la barra lateral al abrirse", async 
     await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
   });
 
-  const prefetchedRoutes: string[] = [];
+  const routeChunks: string[] = [];
   page.on("request", (request) => {
     const url = request.url();
-    if (url.includes("_rsc=") && /\/admin\/(attendance|employees|payroll|audit|users|devices|salaries|roles|overtime-policy)/.test(url)) {
-      prefetchedRoutes.push(url);
+    if (/\/assets\/Admin[A-Za-z]+Page-[^/]+\.js$/.test(url)) {
+      routeChunks.push(url);
     }
   });
 
   await page.goto("/admin/dashboard");
   await expect(page.getByRole("heading", { name: "El equipo, de un vistazo." })).toBeVisible();
-  await page.waitForTimeout(750);
+  await page.waitForTimeout(250);
 
-  expect(prefetchedRoutes).toEqual([]);
+  expect(routeChunks.some((url) => url.includes("AdminDashboardPage-"))).toBe(true);
+  expect(routeChunks.some((url) => url.includes("AdminAttendancePage-"))).toBe(false);
+  expect(routeChunks.some((url) => url.includes("AdminEmployeesPage-"))).toBe(false);
+
+  const attendanceChunk = page.waitForRequest((request) =>
+    request.url().includes("/assets/AdminAttendancePage-"),
+  );
+  await page.getByRole("link", { name: "Asistencia" }).hover();
+  await attendanceChunk;
+
+  expect(routeChunks.filter((url) => url.includes("AdminAttendancePage-"))).toHaveLength(1);
+
+  await page.getByRole("link", { name: "Asistencia" }).click();
+  await expect(page.getByRole("heading", { name: "Asistencia", exact: true })).toBeVisible();
+
+  expect(routeChunks.filter((url) => url.includes("AdminAttendancePage-"))).toHaveLength(1);
 });
 
 test("la navegación privada conserva la sesión y asistencia acota la carga al mes de Lima", async ({ page }) => {
