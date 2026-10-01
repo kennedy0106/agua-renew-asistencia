@@ -1,0 +1,1051 @@
+
+import { Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import AdminShell from "@/components/AdminShell";
+import { useAdminSession } from "@/components/AdminSession";
+import { Alert, Coins, Download, Receipt, Refresh, Search, X } from "@/components/Icons";
+import { Skeleton, Spinner, StatSkeleton } from "@/components/Loading";
+import { TablePagination, useTablePagination } from "@/components/Pagination";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatOperationalDate } from "@/lib/dates";
+import {
+  API_URL,
+  ApiError,
+  PayrollDailyReport,
+  PayrollPeriod,
+  PayrollRecord,
+  PayrollSummary,
+  payrollApi,
+} from "@/lib/api";
+
+const MANAGE_ROLES = ["ADMIN", "BOSS"];
+
+function formatMoney(value: string): string {
+  return `S/ ${Number(value).toLocaleString("es-PE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatMinutes(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m} min`;
+  return `${h} h ${m.toString().padStart(2, "0")}`;
+}
+
+function periodStatusLabel(status: PayrollPeriod["status"]) {
+  return status === "CLOSED" ? "Cerrado" : status === "CALCULATED" ? "Calculado" : "Abierto";
+}
+
+/**
+ * Total del día atribuible: base de calendario + regularización de cierre +
+ * HE reconocida + descanso/feriado reconocido (+ ajuste monetario aprobado con
+ * fecha). Es una lectura de lo devengado por esa fecha, NO el reconocimiento de
+ * asistencia (que se conserva en "Total reconocido (asistencia)").
+ */
+function dailyAttributableTotal(item: PayrollDailyReport["daily"][number]): string {
+  const total =
+    Number(item.base_amount) +
+    Number(item.regularization_amount) +
+    Number(item.recognized_overtime_amount) +
+    Number(item.recognized_special_day_amount ?? 0) +
+    Number(item.approved_adjustment_amount ?? 0);
+  return String(Math.round(total * 100) / 100);
+}
+
+function SalariesTableSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <tr key={`salary-skeleton-${i}`} className="salaries-skeleton-row" aria-hidden="true">
+          <td data-label="Empleado">
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <Skeleton width="65%" height={15} />
+              <Skeleton width="40%" height={11} />
+            </div>
+          </td>
+          <td className="num" data-label="Sueldo base" style={{ textAlign: "right" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Skeleton width="55%" height={15} />
+            </div>
+          </td>
+          <td className="num" data-label="Horas extra" style={{ textAlign: "right" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Skeleton width="45%" height={15} />
+            </div>
+          </td>
+          <td className="num" data-label="Ajuste manual" style={{ textAlign: "right" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Skeleton width="40%" height={15} />
+            </div>
+          </td>
+          <td className="num" data-label="Total" style={{ textAlign: "right" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <Skeleton width="60%" height={15} />
+            </div>
+          </td>
+          <td data-label="Detalle" style={{ textAlign: "right" }}>
+            <div
+              style={{
+                display: "inline-flex",
+                gap: "0.5rem",
+                justifyContent: "flex-end",
+                width: "100%",
+              }}
+            >
+              <div style={{ width: 64, height: 28, overflow: "hidden", borderRadius: "var(--radius-sm, 6px)" }}>
+                <Skeleton width="100%" height={28} />
+              </div>
+              <div style={{ width: 78, height: 28, overflow: "hidden", borderRadius: "var(--radius-sm, 6px)" }}>
+                <Skeleton width="100%" height={28} />
+              </div>
+            </div>
+          </td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+export default function AdminSalariesPage() {
+  const { user, ready } = useAdminSession();
+  const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
+  const [selectedId, setSelectedId] = useState<string>("");
+  const [summary, setSummary] = useState<PayrollSummary | null>(null);
+  const [records, setRecords] = useState<PayrollRecord[]>([]);
+  const [dailyReport, setDailyReport] = useState<PayrollDailyReport | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [dailyReportError, setDailyReportError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  const activePeriodRequestId = useRef(0);
+  const canView = user ? MANAGE_ROLES.includes(user.role) : false;
+
+  const orderedRecords = [
+    ...records.filter((record) => record.payable !== false),
+    ...records.filter((record) => record.payable === false),
+  ];
+  const visibleRecords = debouncedSearch
+    ? orderedRecords.filter((record) =>
+        (record.employee_name ?? "").toLocaleLowerCase("es-PE").includes(debouncedSearch),
+      )
+    : orderedRecords;
+  const pagination = useTablePagination(
+    visibleRecords,
+    `${selectedId}:${debouncedSearch}:${visibleRecords.length}`,
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setDebouncedSearch(search.trim().toLocaleLowerCase("es-PE")),
+      250,
+    );
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  /**
+   * Refresca juntos KPI (summary), tabla (records) y desglose (dailyReport).
+   * - silent = false: Limpia datos del periodo previo y muestra skeleton para evitar persistencia obsoleta.
+   * - silent = true: Mantiene los datos en pantalla y actualiza en segundo plano con spinner en toolbar.
+   */
+  const fetchPeriodData = useCallback(
+    async (periodId: string, options?: { silent?: boolean }) => {
+      if (!periodId || !canView) return;
+      const requestId = ++activePeriodRequestId.current;
+      const isSilent = options?.silent ?? false;
+
+      if (!isSilent) {
+        setDetailsLoading(true);
+        // Limpiar inmediatamente registros del periodo anterior para evitar solapamiento visual
+        setRecords([]);
+        setSummary(null);
+        setDailyReport(null);
+      } else {
+        setIsRefreshing(true);
+      }
+
+      try {
+        const [sumResult, recsResult, dailyResult] = await Promise.allSettled([
+          payrollApi.summary(periodId),
+          payrollApi.records(periodId),
+          payrollApi.dailyReport(periodId),
+        ]);
+
+        if (requestId !== activePeriodRequestId.current) return;
+
+        let hasMainError = false;
+        let mainErrorMessage = "";
+
+        if (sumResult.status === "fulfilled") {
+          setSummary(sumResult.value);
+        } else {
+          hasMainError = true;
+          mainErrorMessage =
+            sumResult.reason instanceof ApiError
+              ? sumResult.reason.message
+              : "Error al cargar el resumen de sueldos";
+        }
+
+        if (recsResult.status === "fulfilled") {
+          setRecords(recsResult.value);
+        } else {
+          hasMainError = true;
+          mainErrorMessage =
+            recsResult.reason instanceof ApiError
+              ? recsResult.reason.message
+              : "Error al cargar los registros de sueldos";
+        }
+
+        if (dailyResult.status === "fulfilled") {
+          setDailyReport(dailyResult.value);
+          setDailyReportError(null);
+        } else {
+          setDailyReportError(
+            dailyResult.reason instanceof ApiError
+              ? dailyResult.reason.message
+              : "No se pudo cargar el desglose diario.",
+          );
+        }
+
+        if (hasMainError) {
+          if (!isSilent) {
+            setError(mainErrorMessage);
+          }
+        } else {
+          setError(null);
+          setLastUpdatedAt(new Date());
+        }
+      } catch (err) {
+        if (requestId !== activePeriodRequestId.current) return;
+        if (!isSilent) {
+          setError(
+            err instanceof ApiError ? err.message : "Error de conexión con el servidor",
+          );
+        }
+      } finally {
+        if (requestId === activePeriodRequestId.current) {
+          setDetailsLoading(false);
+          setIsRefreshing(false);
+        }
+      }
+    },
+    [canView],
+  );
+
+  const loadPeriods = useCallback(async () => {
+    if (!canView) return;
+    try {
+      setError(null);
+      const list = await payrollApi.periods();
+      setPeriods(list);
+      setSelectedId((current) => {
+        if (current && list.some((p) => p.id === current)) {
+          return current;
+        }
+        return list[0]?.id || "";
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
+    } finally {
+      setLoading(false);
+    }
+  }, [canView]);
+
+  useEffect(() => {
+    if (ready && canView) {
+      void loadPeriods();
+    } else if (ready && !canView) {
+      setLoading(false);
+    }
+  }, [ready, canView, loadPeriods]);
+
+  useEffect(() => {
+    if (!selectedId || !canView) return;
+    void fetchPeriodData(selectedId, { silent: false });
+  }, [selectedId, canView, fetchPeriodData]);
+
+  const handlePeriodChange = useCallback(
+    (newId: string) => {
+      if (newId === selectedId) return;
+      setSelectedId(newId);
+      setExpanded(null);
+    },
+    [selectedId],
+  );
+
+  /**
+   * Reintenta efectivamente la carga de periodos y datos de sueldos (KPI, tabla y desglose).
+   */
+  const handleRetry = useCallback(async () => {
+    setError(null);
+    if (periods.length === 0) {
+      setLoading(true);
+      try {
+        const list = await payrollApi.periods();
+        setPeriods(list);
+        const nextId = list[0]?.id || "";
+        setSelectedId(nextId);
+        if (nextId) {
+          await fetchPeriodData(nextId, { silent: false });
+        }
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
+      } finally {
+        setLoading(false);
+      }
+    } else if (selectedId) {
+      await fetchPeriodData(selectedId, { silent: false });
+    }
+  }, [periods.length, selectedId, fetchPeriodData]);
+
+  /**
+   * Refresco manual desde la barra de herramientas que sincroniza KPI, tabla y desglose.
+   */
+  const handleManualRefresh = useCallback(() => {
+    if (!selectedId || isRefreshing || detailsLoading) return;
+    void fetchPeriodData(selectedId, { silent: true });
+  }, [selectedId, isRefreshing, detailsLoading, fetchPeriodData]);
+
+  /**
+   * Polling cada 20 segundos y revalidación en foco/visibilidad para sincronizar juntos KPI, tabla y desglose.
+   */
+  useEffect(() => {
+    if (!selectedId || !canView) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        void fetchPeriodData(selectedId, { silent: true });
+      }
+    };
+    const intervalId = window.setInterval(refreshWhenVisible, 20_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [selectedId, canView, fetchPeriodData]);
+
+  // Si la sesión cargó y el usuario no tiene permisos de consulta de sueldos
+  if (ready && !canView) {
+    return (
+      <AdminShell
+        title="Sueldos por periodo"
+        subtitle="Consulta cuánto se pagará a cada persona."
+      >
+        <div className="empty-state card card-pad" role="alert" style={{ marginTop: "1rem" }}>
+          <Alert size={28} style={{ color: "var(--red, #dc2626)" }} />
+          <div>
+            <h3 style={{ margin: "0 0 0.5rem" }}>Acceso restringido</h3>
+            <p className="muted" style={{ margin: 0 }}>
+              Solo administradores y jefes tienen autorización para consultar los sueldos y liquidaciones de personal.
+            </p>
+          </div>
+        </div>
+      </AdminShell>
+    );
+  }
+
+  // Mientras la sesión se inicializa
+  if (!ready) {
+    return (
+      <AdminShell
+        title="Sueldos por periodo"
+        subtitle="Consulta cuánto se pagará a cada persona."
+      >
+        <StatSkeleton count={5} />
+        <div className="table-wrap salaries-responsive-wrap" style={{ marginTop: "1rem" }}>
+          <table className="table salaries-responsive-table">
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                <th style={{ textAlign: "right" }}>Sueldo base</th>
+                <th style={{ textAlign: "right" }}>Horas extra</th>
+                <th style={{ textAlign: "right" }}>Ajuste manual</th>
+                <th style={{ textAlign: "right" }}>Total</th>
+                <th style={{ textAlign: "right" }}>Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              <SalariesTableSkeleton />
+            </tbody>
+          </table>
+        </div>
+      </AdminShell>
+    );
+  }
+
+  return (
+    <AdminShell
+      title="Sueldos por periodo"
+      subtitle="Consulta cuánto se pagará a cada persona. Los totales se actualizan solos con la asistencia y los ajustes del periodo."
+    >
+      <div className="toolbar salaries-toolbar">
+        <div className="salaries-toolbar-filters">
+          <Select
+            value={selectedId}
+            onValueChange={handlePeriodChange}
+            disabled={loading || periods.length === 0}
+          >
+            <SelectTrigger aria-label="Periodo de pago" className="salaries-period-select">
+              <SelectValue placeholder={periods.length === 0 ? "Sin periodos" : "Seleccionar periodo"} />
+            </SelectTrigger>
+            <SelectContent>
+              {periods.map((period) => (
+                <SelectItem key={period.id} value={period.id}>
+                  {period.name} ({periodStatusLabel(period.status)})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {selectedId && (
+            <div className="salary-search salaries-search-control">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                className="input salaries-search-input"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar empleado…"
+                aria-label="Buscar empleado en el periodo"
+              />
+              {search && (
+                <button
+                  type="button"
+                  className="salary-search-clear"
+                  onClick={() => setSearch("")}
+                  aria-label="Limpiar búsqueda"
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <span className="spacer salaries-toolbar-spacer" />
+
+        {selectedId && (
+          <div className="salaries-toolbar-actions">
+            <div className="toolbar-status salaries-toolbar-status" role="status" aria-live="polite">
+              <span>
+                {isRefreshing ? (
+                  <>
+                    <Spinner /> Actualizando sueldos…
+                  </>
+                ) : lastUpdatedAt ? (
+                  `Actualizado ${lastUpdatedAt.toLocaleTimeString("es-PE", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
+                ) : (
+                  "Sin actualizar"
+                )}
+              </span>
+              <button
+                className="btn btn-ghost btn-sm"
+                type="button"
+                onClick={handleManualRefresh}
+                disabled={isRefreshing || detailsLoading}
+                aria-label="Actualizar datos de sueldos"
+              >
+                <Refresh size={14} aria-hidden="true" className={isRefreshing ? "spin" : undefined} />
+                Actualizar
+              </button>
+            </div>
+
+            <button
+              className="btn btn-outline btn-sm salaries-export-btn"
+              type="button"
+              onClick={() =>
+                window.open(`${API_URL}/api/v1/exports/salaries.csv?period_id=${selectedId}`)
+              }
+              title="Descargar reporte en formato CSV compatible con Excel"
+            >
+              <Download size={15} aria-hidden="true" />
+              Descargar para Excel (CSV)
+            </button>
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div className="alert alert-error alert-with-action" role="alert">
+          <span className="alert-copy">
+            <Alert size={15} aria-hidden="true" /> {error}
+          </span>
+          <button className="btn btn-outline btn-sm" type="button" onClick={handleRetry}>
+            <Refresh size={14} aria-hidden="true" /> Reintentar
+          </button>
+        </div>
+      )}
+
+      {loading || detailsLoading ? (
+        <StatSkeleton count={5} />
+      ) : (
+        summary && (
+          <div
+            className="stat-grid salaries-summary"
+            style={{ gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))" }}
+          >
+            <Stat label="Monto estimado a pagar" value={formatMoney(summary.total)} />
+            <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
+            <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
+            <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
+            <Stat label="Empleados" value={String(summary.employee_count)} />
+          </div>
+        )
+      )}
+
+      {!loading && periods.length === 0 ? (
+        <div className="empty-state card card-pad">
+          <Receipt size={28} />
+          <div>
+            <h3>Aún no hay periodos de pago</h3>
+            <p>Primero crea y calcula un periodo para consultar los montos.</p>
+          </div>
+          <Link to="/admin/payroll" className="btn btn-primary btn-sm">
+            Ir a cálculo de pago
+          </Link>
+        </div>
+      ) : (
+        <div className="table-wrap salaries-responsive-wrap" aria-busy={detailsLoading}>
+          <table className="table salaries-responsive-table">
+            <thead>
+              <tr>
+                <th>Empleado</th>
+                <th style={{ textAlign: "right" }}>Sueldo base</th>
+                <th style={{ textAlign: "right" }}>Horas extra</th>
+                <th style={{ textAlign: "right" }}>Ajuste manual</th>
+                <th style={{ textAlign: "right" }}>Total</th>
+                <th style={{ textAlign: "right" }}>Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(loading || detailsLoading) && <SalariesTableSkeleton />}
+              {!loading && !detailsLoading && records.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="empty">
+                    <Coins size={26} />
+                    Sin registros para este periodo.
+                  </td>
+                </tr>
+              )}
+              {!loading && !detailsLoading && records.length > 0 && visibleRecords.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="empty">
+                    Sin coincidencias para «{search.trim()}».{" "}
+                    <button className="btn btn-ghost btn-sm" type="button" onClick={() => setSearch("")}>
+                      Limpiar búsqueda
+                    </button>
+                  </td>
+                </tr>
+              )}
+              {!loading &&
+                !detailsLoading &&
+                pagination.pageItems.flatMap((record, index) => [
+                  ...(record.payable === false &&
+                  (index === 0 || pagination.pageItems[index - 1]?.payable !== false)
+                    ? [
+                        <tr className="salary-history-separator" key={`separator-${record.id}`}>
+                          <td colSpan={6} style={{ background: "var(--gray-100)", fontWeight: 600 }}>
+                            Historial excluido (no suma al pago)
+                          </td>
+                        </tr>,
+                      ]
+                    : []),
+                  <FragmentRow
+                    key={record.id}
+                    record={record}
+                    daily={dailyReport?.daily.filter((item) => item.employee_id === record.employee_id) ?? []}
+                    employeeSummary={
+                      dailyReport?.employees.find((item) => item.employee_id === record.employee_id) ?? null
+                    }
+                    dailyLoading={detailsLoading || (isRefreshing && !dailyReport)}
+                    dailyError={dailyReportError}
+                    expanded={expanded === record.id}
+                    onToggle={() => setExpanded(expanded === record.id ? null : record.id)}
+                  />,
+                ])}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!loading && !detailsLoading && <TablePagination {...pagination} />}
+    </AdminShell>
+  );
+}
+
+function Stat({ label, value, green }: { label: string; value: string; green?: boolean }) {
+  return (
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={green ? { color: "var(--dark-green)" } : undefined}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function recognitionStatusLabel(status: PayrollDailyReport["daily"][number]["status"]): string {
+  return {
+    FUTURE_PENDING: "Pendiente",
+    PENDING: "En curso",
+    NO_SCHEDULE: "Sin jornada",
+    NO_ATTENDANCE: "Sin asistencia",
+    PARTIAL: "Parcial",
+    RECOGNIZED: "Reconocido",
+  }[status];
+}
+
+function recognitionStatusClass(status: PayrollDailyReport["daily"][number]["status"]): string {
+  return {
+    FUTURE_PENDING: "badge-blue",
+    PENDING: "badge-amber",
+    NO_SCHEDULE: "badge-blue",
+    NO_ATTENDANCE: "badge-red",
+    PARTIAL: "badge-amber",
+    RECOGNIZED: "badge-green",
+  }[status];
+}
+
+function FragmentRow({
+  record,
+  daily,
+  employeeSummary,
+  dailyLoading,
+  dailyError,
+  expanded,
+  onToggle,
+}: {
+  record: PayrollRecord;
+  daily: PayrollDailyReport["daily"];
+  employeeSummary: PayrollDailyReport["employees"][number] | null;
+  dailyLoading: boolean;
+  dailyError: string | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const dailyPagination = useTablePagination(
+    daily,
+    `${record.employee_id}:${daily
+      .map((item) => `${item.work_date}:${item.recognized_total_amount}:${item.status}`)
+      .join("|")}`,
+  );
+
+  return (
+    <>
+      <tr
+        className={expanded ? "is-expanded" : undefined}
+        style={expanded ? { background: "var(--blue-soft)" } : undefined}
+      >
+        <td data-label="Empleado" style={{ fontWeight: 600 }}>
+          {record.employee_name ?? "—"}
+          {record.payable === false && (
+            <div className="muted" style={{ fontWeight: 400, fontSize: "0.78rem" }}>
+              Excluido del pago
+            </div>
+          )}
+        </td>
+        <td className="num" data-label="Sueldo base" style={{ textAlign: "right" }}>
+          {formatMoney(record.base_salary)}
+        </td>
+        <td className="num" data-label="Horas extra" style={{ textAlign: "right" }}>
+          {record.overtime_minutes > 0 ? (
+            <span style={{ color: "var(--dark-green)" }}>{formatMoney(record.overtime_amount)}</span>
+          ) : (
+            "—"
+          )}
+        </td>
+        <td className="num" data-label="Ajuste manual" style={{ textAlign: "right" }}>
+          {Number(record.manual_adjustment) !== 0 ? (
+            <span
+              style={{
+                color:
+                  Number(record.manual_adjustment) < 0
+                    ? "var(--red)"
+                    : "var(--primary-blue)",
+              }}
+            >
+              {formatMoney(record.manual_adjustment)}
+            </span>
+          ) : (
+            <span className="muted">—</span>
+          )}
+        </td>
+        <td className="num" data-label="Total" style={{ textAlign: "right", fontWeight: 700 }}>
+          {formatMoney(record.total)}
+        </td>
+        <td data-label="Detalle" style={{ textAlign: "right" }}>
+          <div style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center" }}>
+            <Link
+              className="btn btn-ghost btn-sm"
+              to={`/admin/employees/${record.employee_id}`}
+              style={{ fontSize: "0.78rem" }}
+              title="Ver la ficha contractual del empleado (sueldo base y jornada)"
+            >
+              Ver ficha
+            </Link>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={onToggle}
+              aria-expanded={expanded}
+              aria-controls={`salary-detail-${record.id}`}
+            >
+              {expanded ? "Ocultar" : "Ver detalle"}
+            </button>
+          </div>
+        </td>
+      </tr>
+      {expanded && (
+        <tr
+          id={`salary-detail-${record.id}`}
+          className="salary-detail-row"
+          style={{ background: "var(--gray-100)" }}
+        >
+          <td colSpan={6} className="salary-detail-cell">
+            <div
+              style={{
+                display: "grid",
+                gap: "0.7rem",
+                gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))",
+                fontSize: "0.84rem",
+              }}
+            >
+              <div>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>
+                  Trabajado
+                </p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.worked_minutes)}</p>
+              </div>
+              <div>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>
+                  Esperado (jornada)
+                </p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.expected_minutes)}</p>
+              </div>
+              <div>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>
+                  Horas extra
+                </p>
+                <p style={{ fontWeight: 600 }}>
+                  {record.overtime_minutes > 0
+                    ? `${formatMinutes(record.overtime_minutes)} = ${formatMoney(record.overtime_amount)}`
+                    : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="label" style={{ marginBottom: "0.1rem" }}>
+                  Ajustes de horas (aprobados)
+                </p>
+                <p style={{ fontWeight: 600 }}>{formatMinutes(record.adjustment_minutes)}</p>
+              </div>
+              {record.notes && (
+                <div>
+                  <p className="label" style={{ marginBottom: "0.1rem" }}>
+                    Notas del ajuste manual
+                  </p>
+                  <p style={{ fontWeight: 600 }}>{record.notes}</p>
+                </div>
+              )}
+            </div>
+            {Number(record.manual_adjustment) !== 0 && (
+              <p className="muted" style={{ fontSize: "0.82rem", marginTop: "0.65rem" }}>
+                Ajuste manual del periodo: {formatMoney(record.manual_adjustment)}. No se asigna a un día porque aún no tiene fecha propia.
+              </p>
+            )}
+            <details className="salary-calc">
+              <summary className="salary-calc-summary">Cómo se calculó</summary>
+              <div className="salary-calc-body">
+                {employeeSummary && (
+                  <div>
+                    <p className="label" style={{ marginBottom: "0.55rem" }}>
+                      Resumen informativo a la fecha
+                    </p>
+                    <p className="muted" style={{ fontSize: "0.8rem", marginBottom: "0.55rem" }}>
+                      Cada día del periodo aporta 1/30 del sueldo, incluidos descansos.
+                    </p>
+                    <div
+                      style={{
+                        display: "grid",
+                        gap: "0.7rem",
+                        gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
+                        fontSize: "0.84rem",
+                      }}
+                    >
+                      <div>
+                        <p className="muted">Valor día legal (sueldo ÷ 30)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.legal_daily_value)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Base por calendario (treintavos)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.calendar_base_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Regularización de cierre</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.regularization_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Base del tramo (calendario + regularización)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.programmed_base_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Base reconocida (asistencia)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.recognized_base_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Saldo no atribuido (base − reconocido)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.unattributed_base_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">HE reconocida</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.recognized_overtime_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Total reconocido (asistencia)</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.recognized_total_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Base futura pendiente</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.future_pending_base_amount)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="muted">Diferencia por revisar</p>
+                        <p style={{ fontWeight: 700 }}>
+                          {formatMoney(employeeSummary.review_difference_amount)}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="muted" style={{ fontSize: "0.76rem", marginTop: "0.5rem" }}>
+                      Cada fecha del tramo aporta su treintavo legal (sueldo vigente ÷ 30), incluso descansos. La base por
+                      calendario más la regularización de cierre suman la base del tramo. La base reconocida valora la
+                      asistencia al mismo valor día y no es el sueldo total devengado. El treintavo del domingo ya está
+                      incluido en la base por calendario: si ese descanso se trabaja, la valoración especial se paga aparte y
+                      no reemplaza ni duplica el treintavo.
+                    </p>
+                  </div>
+                )}
+                <div className="salary-daily">
+                  <p className="label" style={{ marginBottom: "0.55rem" }}>
+                    Desglose diario del periodo
+                  </p>
+                  <p className="muted" style={{ fontSize: "0.76rem", marginBottom: "0.45rem" }}>
+                    Todas las fechas calendario del tramo aparecen, incluso descansos o días sin jornada. Cada fecha aporta su
+                    treintavo legal (sueldo vigente ÷ 30): la base no se reparte entre jornadas programadas. La regularización
+                    de cierre (28/29/31 y redondeo) aparece por separado y anclada al cierre. El valor día legal (sueldo ÷ 30,
+                    D.S. 012-92-TR, art. 2) no cambia si el mes tiene 28, 29, 30 o 31 días. El <strong>total del día
+                    (atribuible)</strong> suma base por calendario + regularización + HE reconocida + descanso/feriado
+                    reconocido (y el ajuste monetario aprobado con fecha, si existe); no es el reconocimiento de asistencia,
+                    que se conserva por separado en <strong>total reconocido (asistencia)</strong>.
+                  </p>
+                  {dailyLoading ? (
+                    <div
+                      aria-live="polite"
+                      aria-label="Cargando desglose diario"
+                      style={{ display: "grid", gap: "0.45rem", maxWidth: 640 }}
+                    >
+                      <Skeleton width="100%" height={12} />
+                      <Skeleton width="82%" height={12} />
+                      <Skeleton width="92%" height={12} />
+                    </div>
+                  ) : dailyError ? (
+                    <p className="muted" role="status" style={{ fontSize: "0.84rem" }}>
+                      {dailyError}
+                    </p>
+                  ) : daily.length === 0 ? (
+                    <p className="muted" style={{ fontSize: "0.84rem" }}>
+                      No hay fechas del tramo para este empleado.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="table-wrap payroll-daily-responsive-wrap" style={{ margin: 0 }}>
+                        <table className="table">
+                          <thead>
+                            <tr>
+                              <th>Fecha</th>
+                              <th>Estado</th>
+                              <th style={{ textAlign: "right" }}>Reconocido</th>
+                              <th style={{ textAlign: "right" }}>Esperado</th>
+                              <th style={{ textAlign: "right" }}>Base por calendario</th>
+                              <th style={{ textAlign: "right" }}>Regularización</th>
+                              <th style={{ textAlign: "right" }}>Descanso/Feriado</th>
+                              <th style={{ textAlign: "right" }}>HE reconocida</th>
+                              <th style={{ textAlign: "right" }}>Ajustes aprobados</th>
+                              <th style={{ textAlign: "right" }}>Reconocido (asistencia)</th>
+                              <th style={{ textAlign: "right" }}>Total reconocido (asistencia)</th>
+                              <th style={{ textAlign: "right" }}>Total del día (atribuible)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {dailyPagination.pageItems.map((item) => (
+                              <tr key={item.work_date}>
+                                <td className="table-cell-nowrap">
+                                  {formatOperationalDate(item.work_date)}
+                                </td>
+                                <td>
+                                  <span className={`badge ${recognitionStatusClass(item.status)}`}>
+                                    {recognitionStatusLabel(item.status)}
+                                  </span>
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {formatMinutes(item.recognized_minutes)}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {formatMinutes(item.expected_minutes)}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {formatMoney(item.base_amount)}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {Number(item.regularization_amount) !== 0
+                                    ? formatMoney(item.regularization_amount)
+                                    : "—"}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {Number(item.recognized_special_day_amount) !== 0
+                                    ? formatMoney(item.recognized_special_day_amount)
+                                    : "—"}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {item.overtime_minutes > 0
+                                    ? formatMoney(item.recognized_overtime_amount)
+                                    : "—"}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {item.approved_adjustment_minutes !== 0
+                                    ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto`
+                                    : "—"}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {formatMoney(item.recognized_base_amount)}
+                                </td>
+                                <td className="num table-cell-nowrap" style={{ textAlign: "right" }}>
+                                  {formatMoney(item.recognized_total_amount)}
+                                </td>
+                                <td
+                                  className="num table-cell-nowrap"
+                                  style={{ textAlign: "right", fontWeight: 700 }}
+                                >
+                                  {formatMoney(dailyAttributableTotal(item))}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <TablePagination {...dailyPagination} />
+                      </div>
+                      <div className="responsive-table-cards" aria-label="Desglose diario del periodo">
+                        {dailyPagination.pageItems.map((item) => (
+                          <article className="responsive-table-card" key={`card-${item.work_date}`}>
+                            <div className="responsive-table-card__heading">
+                              <time
+                                className="responsive-table-card__date"
+                                dateTime={item.work_date}
+                              >
+                                {formatOperationalDate(item.work_date)}
+                              </time>
+                              <span className={`badge ${recognitionStatusClass(item.status)}`}>
+                                {recognitionStatusLabel(item.status)}
+                              </span>
+                            </div>
+                            <dl className="responsive-table-card__grid">
+                              <div className="responsive-table-card__item">
+                                <dt>Reconocido</dt>
+                                <dd>{formatMinutes(item.recognized_minutes)}</dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Esperado</dt>
+                                <dd>{formatMinutes(item.expected_minutes)}</dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Base por calendario</dt>
+                                <dd>{formatMoney(item.base_amount)}</dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Regularización</dt>
+                                <dd>
+                                  {Number(item.regularization_amount) !== 0
+                                    ? formatMoney(item.regularization_amount)
+                                    : "—"}
+                                </dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Descanso/Feriado</dt>
+                                <dd>
+                                  {Number(item.recognized_special_day_amount) !== 0
+                                    ? formatMoney(item.recognized_special_day_amount)
+                                    : "—"}
+                                </dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>HE reconocida</dt>
+                                <dd>
+                                  {item.overtime_minutes > 0
+                                    ? formatMoney(item.recognized_overtime_amount)
+                                    : "—"}
+                                </dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Ajustes aprobados</dt>
+                                <dd>
+                                  {item.approved_adjustment_minutes !== 0
+                                    ? `${formatMinutes(item.approved_adjustment_minutes)} · sin monto`
+                                    : "—"}
+                                </dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Reconocido (asistencia)</dt>
+                                <dd>{formatMoney(item.recognized_base_amount)}</dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Total reconocido (asistencia)</dt>
+                                <dd>{formatMoney(item.recognized_total_amount)}</dd>
+                              </div>
+                              <div className="responsive-table-card__item">
+                                <dt>Total del día (atribuible)</dt>
+                                <dd>
+                                  <strong>{formatMoney(dailyAttributableTotal(item))}</strong>
+                                </dd>
+                              </div>
+                            </dl>
+                          </article>
+                        ))}
+                        <TablePagination {...dailyPagination} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </details>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}

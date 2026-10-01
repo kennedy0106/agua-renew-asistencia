@@ -10,7 +10,8 @@ periodo. **No** incluye planilla legal (AFP/ONP/CTS/SUNAT/boletas).
 
 | Capa | Tecnología | Hosting |
 |---|---|---|
-| Frontend | Next.js + TypeScript + Tailwind | Vercel |
+| Frontend objetivo | React 19 + Vite + React Router | Estático/CDN |
+| Frontend rollback | Next.js + TypeScript + Tailwind | Vercel |
 | Backend | FastAPI + SQLAlchemy 2 + Alembic + pytest | Railway |
 | Base de datos | PostgreSQL | Neon |
 
@@ -18,9 +19,10 @@ periodo. **No** incluye planilla legal (AFP/ONP/CTS/SUNAT/boletas).
 
 ```text
 agua-renew-erp/
-├── frontend/   # Next.js (App Router, TS, Tailwind)
-├── backend/    # FastAPI + SQLAlchemy + Alembic + pytest
-├── docs/       # Especificaciones (fuente de verdad)
+├── frontend-react/app/ # React + Vite (objetivo de cutover)
+├── frontend/           # Next.js conservado como rollback
+├── backend/            # FastAPI + SQLAlchemy + Alembic + pytest
+├── docs/               # Especificaciones (fuente de verdad)
 └── README.md
 ```
 
@@ -28,6 +30,25 @@ agua-renew-erp/
 
 - `docs/agua_renew_mvp_asistencia_hermes.md` — alcance funcional y técnico del MVP.
 - `docs/agua_renew_plan_desarrollo_modulos_fases.md` — orden de fases, dependencias y Definition of Done.
+
+## Estado del cutover Next → React (ejecutado el 2026-10-01)
+
+- La app **React** (`frontend-react/app/`) sirve la producción operativa en
+  `https://agua-renew-asistencia.vercel.app` mediante Vercel
+  `dpl_8MrtDwd9aXgimyhCU3j5uZ8qNPym`.
+- El preview validado fue `dpl_F8XePJTYNfgt4UAfcL5niKfL7j91`; preview y
+  producción entregan el mismo artefacto (ETag
+  `d6159c695824aa51f163ebde918505a2`).
+- `VITE_API_URL` está definida para Preview y Production con la API Railway
+  vigente. El bundle publicado contiene `backend-api-production-3eb3`, no la
+  URL retirada `...-fe69...`, y no contiene `__E2E_KIOSK`.
+- El deployment **Next** anterior `dpl_C1WZbpGSi2zciCEvoZeRSHdYtTM8` se
+  conserva Ready como rollback dentro del mismo proyecto Vercel.
+- Se verificaron HTTP 200 de portada/login/kiosco/deep-link, renderizado
+  headless sin errores en login y kiosco, `/health`, `/health/db` y CORS con
+  credenciales para el origen productivo.
+- El runbook y la evidencia del corte están en
+  [`frontend-react/app/CUTOVER.md`](frontend-react/app/CUTOVER.md).
 
 ## Estado — Fase 20 (endurecimiento de tiempo y cálculo de pago) ✅
 
@@ -74,22 +95,28 @@ agua-renew-erp/
 - [x] Logs de producción sin errores; datos reales verificados (periodo cerrado 1559.01, balance −11820 coherente)
 - [x] Nota honesta: la revisión visual de UX queda pendiente de tu prueba manual en producción
 
-## Estado — Fase 16 (frontend en Vercel + dominio)
+## Estado — Fase 16 (frontend Next en Vercel + dominio — histórico/rollback)
 
-- [x] **Producción en vivo: `https://agua-renew-erp-frontend.vercel.app`**
-- [x] Proyecto Vercel `agua-renew-erp-frontend` (cuenta kennedyrojas0106-8210); 14 páginas, build limpio
-- [x] `NEXT_PUBLIC_API_URL=https://backend-api-production-fe69.up.railway.app` (env de producción en Vercel)
+> Esta fase documenta el frontend **Next** que sirvió producción antes del
+> cutover. Desde el 2026-10-01 el dominio operativo sirve React; Next se
+> conserva como rollback. Ver
+> [Estado del cutover](#estado-del-cutover-next--react-ejecutado-el-2026-10-01).
+
+- [x] **Rollback Next conservado:** Vercel `dpl_C1WZbpGSi2zciCEvoZeRSHdYtTM8` (Ready; retirado del alias productivo el 2026-10-01)
+- [x] Proyecto Vercel `agua-renew-asistencia` (`prj_fBwdfyiWW6t6ilK2I3BG3n1UeDxy`, cuenta kennedyrojas0106-8210)
+- [x] `NEXT_PUBLIC_API_URL=https://backend-api-production-3eb3.up.railway.app` confirmado en el bundle productivo
 - [x] `FRONTEND_URL` en Railway → dominio Vercel (CORS)
 - [x] **Verificado cross-site**: login 200 con Origin Vercel + cookie `SameSite=none; Secure`, `/me` 200 (admin/ADMIN), CORS `allow-origin` correcto
 - [x] Sin dominio personalizado aún (queda como mejora: añadir dominio propio en Vercel y ajustar FRONTEND_URL)
+- [!] `https://agua-renew-erp-frontend.vercel.app` queda como deployment legacy: su bundle usa la API retirada `...-fe69...` y el backend vigente rechaza su origen CORS; no usarlo como rollback sin reconfigurarlo.
 
 ## Estado — Fase 15 (deploy del backend en Railway)
 
-- [x] **Producción en vivo: `https://backend-api-production-fe69.up.railway.app`**
+- [x] **Producción en vivo: `https://backend-api-production-3eb3.up.railway.app`** (`/health` y `/health/db` 200 el 2026-10-01)
 - [x] Dockerfile (uv, python 3.12) — migraciones idempotentes al arrancar con conexión directa, luego uvicorn en `$PORT`
 - [x] Variables en Railway: DATABASE_URL (pooled) + DATABASE_URL_UNPOOLED (directa), SECRET_KEY real, ENVIRONMENT=production, `SESSION_COOKIE_SECURE=true` + `SESSION_COOKIE_SAMESITE=none` (cross-site para Vercel)
 - [x] Verificado en producción: `/health` 200, `/health/db` → connected, `/docs` 200, login 200 con cookie `HttpOnly; SameSite=none; Secure`
-- [x] Proyecto Railway `agua-renew-erp` (id `dbe8d65e`), servicio `backend-api`
+- [x] Proyecto Railway `agua-renew-asistencia` (id `91db88f3-6df4-401b-8119-b6f33374055e`), servicio `backend-api`
 - [x] Gotcha resuelto: los valores del `.env` local venían entre comillas (`"..."`) — pydantic las tolera localmente pero SQLAlchemy en producción no; se limpiaron al configurar
 
 ## Estado — Fase 14 (exportaciones CSV)
@@ -282,10 +309,20 @@ uv run pytest
 ### Frontend
 
 ```bash
-cd frontend
-npm install
+cd frontend-react/app
+npm ci
 npm run dev            # http://localhost:3000
+npm run lint
+npm test
+npm run build
+npm run test:e2e
 ```
+
+El frontend Next anterior permanece en `frontend/` como rollback hasta completar
+el cutover. Las 17 rutas y las reglas de fallback SPA están documentadas en
+`frontend-react/app/README.md`; el procedimiento ejecutable de cutover/rollback
+(cross-site Vercel↔Railway, gates y smoke) está en
+`frontend-react/app/CUTOVER.md`.
 
 ### Verificación local (equivalente al workflow CI)
 

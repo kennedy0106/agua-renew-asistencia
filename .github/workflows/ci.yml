@@ -1,12 +1,50 @@
 name: CI
 
+# Endurecimiento del CI para el reemplazo Next.js -> React + Vite.
+#
+# Gates obligatorios del frontend React (frontend-react/app):
+#   npm ci -> lint -> test (Vitest) -> preflight:prod -> build (tsc + vite)
+#   -> Playwright UI -> gate `dist` sin __E2E_KIOSK -> artifact candidato.
+#   El bundle candidato se construye con la URL pública HTTPS documentada del
+#   API (nunca loopback) y solo se publica con la UI en verde.
+# Gate de integración real (FastAPI + Postgres + MinIO):
+#   frontend-react/app construido con VITE_API_URL=127.0.0.1 (API del runner)
+#   + Playwright integración (*.integration.spec.ts). Este dist es SOLO
+#   evidencia local y NO se publica como artefacto promovible.
+#
+# Vercel: este workflow NO despliega y NO elige proyecto. Hay dos proyectos
+# distintos en juego:
+#   - agua-renew-asistencia    (producción operativa verificada)
+#   - agua-renew-erp-frontend  (deployment legacy; no asumir rollback sano)
+# La selección es un gate manual explícito (workflow_dispatch -> vercel_project,
+# ver job `vercel-target-gate`). No se requiere ningún secreto nuevo.
+
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      vercel_project:
+        description: "Proyecto Vercel objetivo (gate manual; este workflow no despliega)."
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - agua-renew-erp-frontend
+          - agua-renew-asistencia
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -39,6 +77,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -53,8 +92,67 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
+  # Gate de reemplazo React: instalación reproducible, lint, unitarios, build
+  # y Playwright UI contra el bundle de producción (`vite preview`).
+  frontend-react:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend-react/app
+    env:
+      # URL pública HTTPS documentada del API de producción (README/CUTOVER).
+      # Es pública y no secreta: fija el bundle candidato de CI de forma
+      # determinista y evita publicar un artefacto que apunte a loopback.
+      VITE_API_URL: https://backend-api-production-3eb3.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Gate de reemplazo: frontend-react/app versionado"
+        working-directory: .
+        run: |
+          if [ ! -f frontend-react/app/package.json ]; then
+            echo "::error::frontend-react/app no está versionado en este commit; el gate de reemplazo React no puede ejecutarse."
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend-react/app/package-lock.json
+      - name: npm ci (instalación reproducible)
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Test unitarios (Vitest)
+        run: npm test
+      - name: Preflight de configuración productiva
+        run: npm run preflight:prod
+      - name: Build (tsc --noEmit + vite build)
+        run: npm run build
+      - name: Playwright UI
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+        env:
+          CI: true
+      - name: "Gate: dist sin bypass de cámara sintético"
+        run: |
+          if grep -R "__E2E_KIOSK" dist; then
+            echo "::error::dist contiene el bypass de cámara sintético __E2E_KIOSK"
+            exit 1
+          fi
+      - name: Publicar artifact candidato (dist HTTPS, UI verde)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-react-dist-candidate
+          path: frontend-react/app/dist
+          if-no-files-found: error
+          retention-days: 14
+
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: frontend
@@ -78,8 +176,10 @@ jobs:
         env:
           CI: true
 
+  # Integración real del frontend React contra FastAPI + Postgres + MinIO.
   e2e-integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -101,7 +201,7 @@ jobs:
       ALLOW_TEST_DB_RESET: "1"
       SECRET_KEY: e2e-asistencia-secret-key-32chars!!
       ENVIRONMENT: development
-      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+      VITE_API_URL: http://127.0.0.1:8000
       E2E_API_URL: http://127.0.0.1:8000
       E2E_INTEGRATION: "1"
       OBJECT_STORE_ENDPOINT: http://127.0.0.1:9000
@@ -112,19 +212,25 @@ jobs:
       OBJECT_STORE_CREATE_BUCKET: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: "Gate de reemplazo: frontend-react/app versionado"
+        run: |
+          if [ ! -f frontend-react/app/package.json ]; then
+            echo "::error::frontend-react/app no está versionado en este commit; la integración React no puede ejecutarse."
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@v5
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: frontend-react/app/package-lock.json
       - name: Instalar y migrar API
         working-directory: backend
         run: |
           uv sync --group dev
           uv run alembic upgrade head
           uv run python -m scripts.seed_e2e_kiosk
-      - name: Arrancar FastAPI
+      - name: Arrancar MinIO y FastAPI
         working-directory: backend
         run: |
           docker run -d --name asistencia-ci-minio -p 9000:9000 \
@@ -148,21 +254,54 @@ jobs:
           echo "FastAPI no respondió"
           cat /tmp/asistencia-api.log
           exit 1
-      - name: Instalar y construir frontend
-        working-directory: frontend
+      # Bundle local de integración: VITE_API_URL apunta al FastAPI del runner
+      # (127.0.0.1) a propósito. NO es un artefacto promovible y por eso no se
+      # publica; el único candidato es el dist del job `frontend-react` (HTTPS).
+      - name: Instalar y construir frontend (API local, solo integración)
+        working-directory: frontend-react/app
         run: |
           npm ci
           npm run build
-      - name: Playwright con API y Postgres reales
-        working-directory: frontend
+        env:
+          VITE_API_URL: http://127.0.0.1:8000
+      - name: Playwright integración (FastAPI + Postgres + MinIO)
+        working-directory: frontend-react/app
         run: |
           npx playwright install --with-deps chromium
           npm run test:e2e:integration
         env:
           CI: true
           E2E_INTEGRATION: "1"
-          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          VITE_API_URL: http://127.0.0.1:8000
           E2E_API_URL: http://127.0.0.1:8000
           SECRET_KEY: e2e-asistencia-secret-key-32chars!!
           TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
           ALLOW_TEST_DB_RESET: "1"
+
+  # Gate manual explícito para el cutover a Vercel. No elige ni muta ningún
+  # proyecto y no despliega (no usa VERCEL_TOKEN ni ningún secreto): solo exige
+  # que una persona seleccione uno de los dos proyectos al despachar el workflow.
+  # El único artefacto promovible es `frontend-react-dist-candidate` (job
+  # `frontend-react`, HTTPS + UI verde); la integración solo produce evidencia.
+  vercel-target-gate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validar selección explícita del proyecto Vercel
+        env:
+          VERCEL_TARGET: ${{ inputs.vercel_project }}
+        run: |
+          set -euo pipefail
+          case "$VERCEL_TARGET" in
+            agua-renew-erp-frontend)
+              echo "::notice::Gate explícito: Vercel objetivo = agua-renew-erp-frontend (legacy; verificar API/CORS antes de usar)."
+              ;;
+            agua-renew-asistencia)
+              echo "::notice::Gate explícito: Vercel objetivo = agua-renew-asistencia (producción operativa verificada)."
+              ;;
+            *)
+              echo "::error::Debes elegir explícitamente 'agua-renew-erp-frontend' o 'agua-renew-asistencia'. Este workflow no despliega; solo fija el objetivo."
+              exit 1
+              ;;
+          esac

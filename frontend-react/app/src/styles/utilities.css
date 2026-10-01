@@ -1,0 +1,31 @@
+/* Etapa 1 — utilidades puntuales usadas por el markup portado.
+   En el frontend Next estas clases las generaba Tailwind (postcss) a partir de
+   layout.tsx (`h-full antialiased` en <html>, `min-h-full flex flex-col` en
+   <body>); `.outline-none` proviene de los contenedores con `tabIndex={-1}`.
+   Esta migración NO usa Tailwind: se reproducen aquí como CSS plano para
+   conservar el mismo resultado visual, sin capas nuevas. */
+
+.h-full {
+  height: 100%;
+}
+
+.min-h-full {
+  min-height: 100%;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.antialiased {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.outline-none {
+  outline: none;
+}

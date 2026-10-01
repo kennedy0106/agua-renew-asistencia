@@ -1,0 +1,30 @@
+/* Fuentes locales Geist (SIL OFL, ver public/fonts/geist/LICENSE.txt).
+   Los woff2 se sirven desde /fonts/geist y alimentan las variables CSS que
+   consume globals.css; no hay dependencia de ningún proveedor de fuentes. */
+
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/geist/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/geist/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --font-geist-sans: "Geist";
+  --font-geist-mono: "Geist Mono";
+
+  /* Stitch — Renew Operations & Assistance. Plus Jakarta Sans Variable se usa
+     en titulares y métricas; Inter Variable en cuerpo, tablas y controles.
+     Los woff2 se autocontienen vía @fontsource-variable (sin CDN). */
+  --font-display: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", var(--font-geist-sans), "Segoe UI", sans-serif;
+  --font-body: "Inter Variable", "Inter", var(--font-geist-sans), "Segoe UI", sans-serif;
+}
