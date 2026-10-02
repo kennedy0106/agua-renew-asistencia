@@ -635,10 +635,10 @@ textarea {
   .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) {
     overflow: hidden;
     padding: 0.75rem 0.9rem;
-    border: 1px solid var(--line-subtle);
-    border-radius: var(--radius-panel);
-    background: var(--surface-raised);
-    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255,255,255,0.92);
+    border: 1px solid var(--st-border);
+    border-radius: var(--st-radius-md);
+    background: var(--st-card);
+    box-shadow: var(--st-shadow-sm);
   }
   .salaries-responsive-table > tbody > tr:not(.salary-detail-row):not(.salary-history-separator) > td {
     display: grid;
@@ -696,10 +696,10 @@ textarea {
   .historical-history-table > tbody > tr {
     overflow: hidden;
     padding: 0.75rem 0.9rem;
-    border: 1px solid var(--line-subtle);
-    border-radius: var(--radius-panel);
-    background: var(--surface-raised);
-    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    border: 1px solid var(--st-border);
+    border-radius: var(--st-radius-md);
+    background: var(--st-card);
+    box-shadow: var(--st-shadow-sm);
   }
   .historical-history-table > tbody > tr > td {
     display: grid;
