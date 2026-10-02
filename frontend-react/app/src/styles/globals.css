@@ -1038,6 +1038,10 @@ textarea {
   pointer-events: none;
 }
 .kiosk::before {
+  /* Viewport-fixed: the kiosk must not report hidden scrollable overflow.
+     An absolutely positioned orb with negative offsets inflates the kiosk's
+     scrollHeight/scrollWidth, which autofocus could pan on phase change. */
+  position: fixed;
   width: 420px;
   height: 420px;
   background: rgba(0, 123, 255, 0.35);
@@ -1046,6 +1050,8 @@ textarea {
   animation: orb-drift 10s ease-in-out infinite alternate;
 }
 .kiosk::after {
+  /* Viewport-fixed for the same reason as ::before (see above). */
+  position: fixed;
   width: 380px;
   height: 380px;
   background: rgba(0, 200, 83, 0.28);

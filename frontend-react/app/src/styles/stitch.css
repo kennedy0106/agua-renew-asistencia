@@ -1716,7 +1716,7 @@ h4,
   background: var(--st-surface-low);
 }
 .kiosk-mode-tab {
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   padding: 0.4rem 0.5rem;
   border: 0;
   border-radius: 0.375rem;
@@ -1763,7 +1763,7 @@ h4,
 .kiosk-dni-cell {
   display: grid;
   place-items: center;
-  min-height: 2.6rem;
+  min-height: 2.75rem;
   border: 1px solid var(--st-border-strong);
   border-radius: var(--st-radius-sm);
   background: var(--st-card);
@@ -1785,7 +1785,7 @@ h4,
   position: absolute;
   inset: 0;
   width: 100%;
-  min-height: 2.6rem;
+  min-height: 2.75rem;
   opacity: 0;
   cursor: text;
 }
@@ -1849,8 +1849,10 @@ h4,
 }
 
 /* Short screens keep the complete marking form in view. Compact decoration
-   and whitespace first; keypad and action targets remain at least 44px. */
-@media (max-height: 760px) {
+   and whitespace first; keypad and action targets remain at least 44px.
+   The 800px threshold also covers common 1366x768 laptops, where the
+   uncompacted card previously pushed the QR button past the viewport. */
+@media (max-height: 800px) {
   .kiosk {
     min-height: 100dvh;
     padding: 0.75rem 1rem;
