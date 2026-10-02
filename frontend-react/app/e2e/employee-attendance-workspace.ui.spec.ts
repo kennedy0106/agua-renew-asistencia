@@ -368,9 +368,9 @@ test("el listado abre el editor compartido y anula un ajuste vigente", async ({ 
   });
 
   await page.goto("/admin/employees/employee-1");
-  const approvedRow = page.locator("li.card").filter({ hasText: "Aprobado por admin" });
-  const pendingRow = page.locator("li.card").filter({ hasText: "Pendiente de revisión" });
-  const rejectedRow = page.locator("li.card").filter({ hasText: "Rechazado con motivo" });
+  const approvedRow = page.getByRole("listitem").filter({ hasText: "Aprobado por admin" });
+  const pendingRow = page.getByRole("listitem").filter({ hasText: "Pendiente de revisión" });
+  const rejectedRow = page.getByRole("listitem").filter({ hasText: "Rechazado con motivo" });
   await expect(approvedRow.getByRole("button", { name: "Editar" })).toBeVisible();
   await expect(approvedRow.getByRole("button", { name: "Eliminar" })).toBeVisible();
   await expect(pendingRow.getByRole("button", { name: "Editar" })).toBeVisible();

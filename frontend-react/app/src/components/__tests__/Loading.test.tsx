@@ -1,6 +1,6 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Spinner } from "@/components/Loading";
+import { Spinner, StatSkeleton } from "@/components/Loading";
 
 describe("Spinner — wrapper animado", () => {
   it("rota el wrapper y deja el SVG interior estático", () => {
@@ -23,5 +23,16 @@ describe("Spinner — wrapper animado", () => {
 
     expect(svg).toHaveAttribute("width", "24");
     expect(svg).toHaveAttribute("height", "24");
+  });
+});
+
+describe("StatSkeleton — coherente con MetricCard", () => {
+  it("usa la rejilla y el material del patrón de métrica compartido", () => {
+    const { container } = render(<StatSkeleton count={3} />);
+
+    expect(container.querySelector(".metric-grid.metric-skeleton")).not.toBeNull();
+    expect(container.querySelectorAll(".metric-card")).toHaveLength(3);
+    // El esqueleto es decorativo: no compite con el árbol accesible.
+    expect(container.firstElementChild).toHaveAttribute("aria-hidden", "true");
   });
 });

@@ -29,14 +29,23 @@ export function TableSkeleton({ rows = 5, cols = 6 }: { rows?: number; cols?: nu
   );
 }
 
-/** Tarjetas de estadística de esqueleto. */
-export function StatSkeleton({ count = 5 }: { count?: number }) {
+/** Tarjetas de métrica en esqueleto, alineadas al patrón compartido MetricCard. */
+export function StatSkeleton({
+  count = 5,
+  gridClassName = "metric-grid",
+}: {
+  count?: number;
+  gridClassName?: string;
+}) {
   return (
-    <div className="stat-grid">
+    <div className={`${gridClassName} metric-skeleton`} aria-hidden="true">
       {Array.from({ length: count }).map((_, i) => (
-        <div className="stat-card" key={i} style={{ borderColor: "transparent" }}>
-          <Skeleton width={110} height={11} />
-          <div style={{ marginTop: "0.6rem" }}>
+        <div className="metric-card metric-card--neutral" key={i}>
+          <div className="metric-card-head">
+            <Skeleton width={110} height={11} />
+            <Skeleton width={36} height={36} round />
+          </div>
+          <div className="metric-card-value">
             <Skeleton width={70} height={22} />
           </div>
         </div>

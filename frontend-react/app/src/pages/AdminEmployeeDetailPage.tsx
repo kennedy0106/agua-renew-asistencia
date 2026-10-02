@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import EmployeeAttendanceWorkspace, { type EmployeeAttendanceWorkspaceHandle } from "@/components/EmployeeAttendanceWorkspace";
+import MetricCard from "@/components/MetricCard";
 import { DetailSkeleton, Skeleton, Spinner } from "@/components/Loading";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminSession } from "@/components/AdminSession";
@@ -607,13 +608,11 @@ export default function EmployeeDetailPage() {
         {/* QR único del empleado */}
         <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginTop: "1rem", flexWrap: "wrap" }}>
           <div
+            className="surface-material--inset"
             style={{
               width: 120,
               height: 120,
               padding: 6,
-              background: "#ffffff",
-              borderRadius: "var(--radius-panel)",
-              border: "1px solid var(--ink-border)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -961,20 +960,16 @@ export default function EmployeeDetailPage() {
           </AppDialog>}
 
           {salary ? (
-            <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", marginBottom: 0 }}>
-              <div className="stat-card">
-                <div className="stat-label">Sueldo mensual</div>
-                <div className="stat-value" style={{ fontSize: "1.25rem" }}>{formatMoney(salary.monthly_salary)}</div>
-                <div className="stat-hint">desde {salary.effective_from}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Horas extra</div>
-                <div className="stat-value" style={{ fontSize: "1.05rem" }}>{overtimeLabel(salary)}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Estado</div>
-                <div className="stat-value" style={{ fontSize: "1.05rem", color: "var(--dark-green)" }}>Vigente</div>
-              </div>
+            <div className="metric-grid metric-grid--auto">
+              <MetricCard
+                size="md"
+                tone="blue"
+                label="Sueldo mensual"
+                value={formatMoney(salary.monthly_salary)}
+                supportingText={`desde ${salary.effective_from}`}
+              />
+              <MetricCard size="md" tone="neutral" label="Horas extra" value={overtimeLabel(salary)} />
+              <MetricCard size="md" tone="green" label="Estado" value="Vigente" />
             </div>
           ) : (
             <p className="muted" style={{ fontSize: "0.85rem" }}>
@@ -1012,41 +1007,22 @@ export default function EmployeeDetailPage() {
         </div>
 
         {balance && (
-          <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
-            <div className="stat-card">
-              <div className="stat-label">Trabajado</div>
-              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.worked_minutes)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Esperado</div>
-              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.expected_minutes)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Ajustes aprobados</div>
-              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.adjustment_minutes)}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Horas extra</div>
-              <div className="stat-value" style={{ fontSize: "1.1rem" }}>{signedMinutes(balance.overtime_minutes)}</div>
-            </div>
-            <div
-              className="stat-card"
-              style={
-                balance.balance_minutes < 0
-                  ? { borderColor: "#f0d9a8", background: "#fffdf7" }
-                  : { borderColor: "#bfe8cd", background: "#f2fcf6" }
-              }
-            >
-              <div className="stat-label">Saldo del mes</div>
-              <div className="stat-value" style={{ fontSize: "1.1rem", color: balance.balance_minutes < 0 ? "#9a5b00" : "var(--dark-green)" }}>
-                {signedMinutes(balance.balance_minutes)}
-              </div>
-            </div>
+          <div className="metric-grid metric-grid--auto">
+            <MetricCard size="sm" tone="neutral" label="Trabajado" value={signedMinutes(balance.worked_minutes)} />
+            <MetricCard size="sm" tone="neutral" label="Esperado" value={signedMinutes(balance.expected_minutes)} />
+            <MetricCard size="sm" tone="neutral" label="Ajustes aprobados" value={signedMinutes(balance.adjustment_minutes)} />
+            <MetricCard size="sm" tone="neutral" label="Horas extra" value={signedMinutes(balance.overtime_minutes)} />
+            <MetricCard
+              size="sm"
+              tone={balance.balance_minutes < 0 ? "amber" : "green"}
+              label="Saldo del mes"
+              value={signedMinutes(balance.balance_minutes)}
+            />
           </div>
         )}
 
         {canManage && (
-          <div className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--blue-soft)", borderColor: "rgba(0,123,255,0.25)", boxShadow: "none" }}>
+          <div className="surface-material--inset" style={{ padding: "0.9rem", marginBottom: "1rem" }}>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", marginBottom: "0.6rem" }}>
               <div>
                 <h3 style={{ fontSize: "0.85rem", fontWeight: 600 }}>Horas extra</h3>
@@ -1068,7 +1044,7 @@ export default function EmployeeDetailPage() {
             </div>
 
             {overtimeValue && overtimeValue.overtime_minutes > 0 && (
-              <div className="card" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", boxShadow: "none", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
+              <div className="surface-material--inset" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
                 <span className="muted">
                   Tiempo aprobado: <strong style={{ color: "var(--text)" }}>{signedMinutes(overtimeValue.overtime_minutes)}</strong>
                 </span>
@@ -1086,7 +1062,7 @@ export default function EmployeeDetailPage() {
               ) : (
                 <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.4rem" }}>
                   {detectedDays.map((day) => (
-                    <li key={day.work_date} className="card" style={{ padding: "0.55rem 0.8rem", boxShadow: "none", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", fontSize: "0.84rem" }}>
+                    <li key={day.work_date} className="surface-material--inset" style={{ padding: "0.55rem 0.8rem", display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem", fontSize: "0.84rem" }}>
                       <span>
                         <strong>{day.work_date}</strong>
                         <span className="muted" style={{ marginLeft: "0.5rem" }}>
@@ -1195,7 +1171,7 @@ export default function EmployeeDetailPage() {
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: "0.5rem" }}>
             {adjustments.map((adj) => (
-              <li key={adj.id} className="card" style={{ padding: "0.7rem 0.9rem", boxShadow: "none" }}>
+              <li key={adj.id} className="surface-material--inset" style={{ padding: "0.7rem 0.9rem" }}>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
                   <div>
                     <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>

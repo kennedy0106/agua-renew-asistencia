@@ -2,6 +2,7 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import MetricCard from "@/components/MetricCard";
 import { useAdminUser } from "@/components/AdminSession";
 import { Spinner, StatSkeleton } from "@/components/Loading";
 import {
@@ -209,11 +210,11 @@ export default function AdminDashboardPage() {
             </aside>
           </section>
 
-          <section className="dash-kpis" aria-label="Indicadores de la jornada">
-            <KpiCard href="/admin/employees" tone="blue" label="Empleados activos" value={data.summary.employees_active} unit="asignados" icon={<Users size={20} />} chip="100% de la plantilla" />
-            <KpiCard href="#incidencias" tone="red" label="Sin entrada hoy" value={data.summary.no_entry_today} unit="ausentes" icon={<Alert size={20} />} chip={data.summary.no_entry_today > 0 ? "Crítico · atención" : "Sin pendientes"} onClick={handleFocusIncidents} />
-            <KpiCard href="#incidencias" tone="neutral" label="Entradas abiertas" value={data.summary.open_entries} unit="laborando" icon={<ClipboardCheck size={20} />} chip={data.summary.open_entries > 0 ? "En jornada regular" : "Sin jornadas abiertas"} onClick={handleFocusIncidents} />
-            <KpiCard href="/admin/attendance" tone="green" label="Con salida hoy" value={data.summary.checked_out_today} unit="completadas" icon={<Chart size={20} />} chip="Turnos finalizados" />
+          <section className="metric-grid" aria-label="Indicadores de la jornada">
+            <MetricCard href="/admin/employees" tone="blue" label="Empleados activos" value={data.summary.employees_active} unit="asignados" icon={<Users size={20} />} chip="100% de la plantilla" />
+            <MetricCard href="#incidencias" tone="red" label="Sin entrada hoy" value={data.summary.no_entry_today} unit="ausentes" icon={<Alert size={20} />} chip={data.summary.no_entry_today > 0 ? "Crítico · atención" : "Sin pendientes"} onClick={handleFocusIncidents} />
+            <MetricCard href="#incidencias" tone="neutral" label="Entradas abiertas" value={data.summary.open_entries} unit="laborando" icon={<ClipboardCheck size={20} />} chip={data.summary.open_entries > 0 ? "En jornada regular" : "Sin jornadas abiertas"} onClick={handleFocusIncidents} />
+            <MetricCard href="/admin/attendance" tone="green" label="Con salida hoy" value={data.summary.checked_out_today} unit="completadas" icon={<Chart size={20} />} chip="Turnos finalizados" />
           </section>
 
           <div className="dash-workspace">
@@ -309,48 +310,5 @@ export default function AdminDashboardPage() {
         </>
       ) : null}
     </AdminShell>
-  );
-}
-
-function KpiCard({
-  href,
-  label,
-  value,
-  unit,
-  icon,
-  chip,
-  tone,
-  onClick,
-}: {
-  href: string;
-  label: string;
-  value: number;
-  unit: string;
-  icon: React.ReactNode;
-  chip: string;
-  tone: "blue" | "green" | "red" | "neutral";
-  onClick?: () => void;
-}) {
-  return (
-    <Link
-      to={href}
-      onClick={onClick}
-      className={`dash-kpi dash-kpi--${tone}`}
-      aria-label={`${label}: ${value}. Abrir detalle`}
-    >
-      <div className="dash-kpi-head">
-        <span className="dash-kpi-label">{label}</span>
-        <span className={`dash-kpi-icon dash-kpi-icon--${tone}`}>{icon}</span>
-      </div>
-      <div className="dash-kpi-value">
-        <strong>{value}</strong>
-        <small>{unit}</small>
-      </div>
-      <div className="dash-kpi-foot">
-        <span className="dash-kpi-chip"><i aria-hidden />{chip}</span>
-        <ChevronRight size={16} className="dash-kpi-arrow" />
-      </div>
-      <span className="dash-kpi-accent" aria-hidden />
-    </Link>
   );
 }

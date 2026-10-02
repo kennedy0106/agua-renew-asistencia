@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { AsyncButton } from "@/components/AsyncButton";
 import DateField from "@/components/DateField";
 import MonthField from "@/components/MonthField";
+import MetricCard from "@/components/MetricCard";
 import { DetailSkeleton, InlineLoading } from "@/components/Loading";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -569,7 +570,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
   const hasConflicts = preview?.items.some((item) => item.status === "CONFLICT") ?? false;
 
   return (
-    <section className="employee-attendance-workspace" aria-labelledby="employee-agenda-title">
+    <section className="employee-attendance-workspace surface-material" aria-labelledby="employee-agenda-title">
       <header className="employee-workspace-head">
         <div>
           <h2 id="employee-agenda-title">Asistencia, horas y acumulado</h2>
@@ -581,7 +582,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       {error && <div className="alert alert-error" role="alert">{error}</div>}
       {notice && <div className="alert alert-success" role="status">{notice}</div>}
 
-      <div className="employee-accrual-panel">
+      <div className="employee-accrual-panel surface-material--inset">
         <div className="employee-period-controls">
           <label><span className="label">Periodo acumulado</span>
             <Select value={period} onValueChange={(value) => setPeriod(value as typeof period)}>
@@ -596,22 +597,22 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
         </div>
         {accrualError && <div className="alert alert-error" role="alert">{accrualError}</div>}
         {accrualLoading ? <div className="employee-accrual-loading"><DetailSkeleton sections={1} /></div> : accrual && (
-          <div className="employee-accrual-grid">
-            <div><span>Base acumulada</span><strong>{money(accrual.base_amount)}</strong></div>
-            <div><span>Valor día legal (sueldo ÷ 30)</span><strong>{money(accrual.legal_daily_value)}</strong></div>
+          <div className="metric-grid metric-grid--auto employee-accrual-grid">
+            <MetricCard size="sm" tone="neutral" label="Base acumulada" value={money(accrual.base_amount)} />
+            <MetricCard size="sm" tone="neutral" label="Valor día legal (sueldo ÷ 30)" value={money(accrual.legal_daily_value)} />
             {accrual.closing_regularization_amount != null && Number(accrual.closing_regularization_amount) !== 0 && (
-              <div><span>Regularización de cierre</span><strong>{money(accrual.closing_regularization_amount)}</strong></div>
+              <MetricCard size="sm" tone="neutral" label="Regularización de cierre" value={money(accrual.closing_regularization_amount)} />
             )}
-            <div><span>Adicionales aprobados</span><strong>{money(accrual.approved_additional_amount)}</strong></div>
-            <div><span>Adicionales pendientes</span><strong>{money(accrual.pending_additional_amount)}</strong></div>
-            <div className="employee-accrual-total"><span>Total estimado al {accrual.cutoff_date}</span><strong>{money(accrual.estimated_total)}</strong></div>
-            {accrual.official_total_snapshot !== null && <div><span>Planilla confirmada</span><strong>{money(accrual.official_total_snapshot)}</strong></div>}
+            <MetricCard size="sm" tone="neutral" label="Adicionales aprobados" value={money(accrual.approved_additional_amount)} />
+            <MetricCard size="sm" tone="neutral" label="Adicionales pendientes" value={money(accrual.pending_additional_amount)} />
+            <MetricCard size="sm" tone="blue" label={`Total estimado al ${accrual.cutoff_date}`} value={money(accrual.estimated_total)} />
+            {accrual.official_total_snapshot !== null && <MetricCard size="sm" tone="green" label="Planilla confirmada" value={money(accrual.official_total_snapshot)} />}
           </div>
         )}
       </div>
 
       <div className="employee-agenda-layout">
-        <div className="employee-calendar-panel">
+        <div className="employee-calendar-panel surface-material--inset">
           <div className="employee-calendar-toolbar">
             <label><span className="label">Mes</span><MonthField value={month} onChange={(value) => { setMonth(value); setSelectedDates([]); setPreview(null); }} /></label>
             <span>{selectedDates.length} de 50 fechas</span>
@@ -639,7 +640,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
           )}
         </div>
 
-        <aside className="employee-day-detail" aria-live="polite">
+        <aside className="employee-day-detail surface-material--inset" aria-live="polite">
           <h3>{focused ? new Intl.DateTimeFormat("es-PE", { dateStyle: "full", timeZone: "UTC" }).format(new Date(`${focused.work_date}T12:00:00Z`)) : "Detalle del día"}</h3>
           {!focused ? <p className="empty">Seleccione una fecha del calendario.</p> : <>
             <div className="employee-day-statuses">{focused.statuses.map((status) => <span className="badge badge-blue" key={status}>{statusCopy[status] ?? status}</span>)}</div>
@@ -663,7 +664,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
         </aside>
       </div>
 
-      <section className="employee-disclosure-card" aria-labelledby="work-calendar-title">
+      <section className="employee-disclosure-card surface-material--inset" aria-labelledby="work-calendar-title">
         <div>
           <h3 id="work-calendar-title">Descansos y feriados</h3>
           <p>Descanso habitual: {weekdays[Number(restWeekday)] ?? "Sin definir"} · jornada usada para el cálculo: {formatMinutes(effectiveReferenceMinutes)}.</p>
@@ -687,7 +688,7 @@ const EmployeeAttendanceWorkspace = forwardRef<EmployeeAttendanceWorkspaceHandle
       </section>
       </AppDialog>}
 
-      <section className="employee-disclosure-card" aria-labelledby="employee-batch-title">
+      <section className="employee-disclosure-card surface-material--inset" aria-labelledby="employee-batch-title">
         <div><h3 id="employee-batch-title">Registrar horas en bloque</h3><p>{selectedDates.length ? `${selectedDates.length} ${selectedDates.length === 1 ? "fecha seleccionada" : "fechas seleccionadas"} en la agenda.` : "Seleccione hasta 50 fechas en la agenda para preparar una carga."}</p></div>
         <button type="button" className="btn btn-primary" onClick={() => setBatchDialogOpen(true)} disabled={!selectedDates.length}>Registrar {selectedDates.length ? `${selectedDates.length} ${selectedDates.length === 1 ? "fecha" : "fechas"}` : "fechas"}</button>
       </section>

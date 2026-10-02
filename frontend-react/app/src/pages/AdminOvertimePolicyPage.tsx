@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import DateField from "@/components/DateField";
+import MetricCard from "@/components/MetricCard";
 import { Alert, Check, Plus, X } from "@/components/Icons";
 import { ApiError, OvertimePolicy, overtimePolicyApi } from "@/lib/api";
 import { Spinner, TableSkeleton } from "@/components/Loading";
@@ -266,24 +267,28 @@ export default function OvertimePolicyPage() {
         {loading ? (
           <TableSkeleton rows={2} cols={4} />
         ) : active ? (
-          <div className="stat-grid overtime-stat-grid">
-            <div className="stat-card overtime-stat-card">
-              <div className="stat-label">Primeras 2 horas</div>
-              <div className="stat-value num">{active.first_two_hours_rate}%</div>
-              <div className="stat-hint">Vigente desde {active.effective_from}</div>
-            </div>
-            <div className="stat-card overtime-stat-card">
-              <div className="stat-label">Tercera hora en adelante</div>
-              <div className="stat-value num">{active.additional_hours_rate}%</div>
-              <div className="stat-hint">Vigente desde {active.effective_from}</div>
-            </div>
-            <div className="stat-card overtime-stat-card">
-              <div className="stat-label">Estado</div>
-              <div className="stat-value stat-value--status">
-                <span className="badge badge-green">Vigente</span>
-              </div>
-              <div className="stat-hint">Política activa actual</div>
-            </div>
+          <div className="metric-grid metric-grid--auto">
+            <MetricCard
+              size="md"
+              tone="blue"
+              label="Primeras 2 horas"
+              value={`${active.first_two_hours_rate}%`}
+              supportingText={`Vigente desde ${active.effective_from}`}
+            />
+            <MetricCard
+              size="md"
+              tone="blue"
+              label="Tercera hora en adelante"
+              value={`${active.additional_hours_rate}%`}
+              supportingText={`Vigente desde ${active.effective_from}`}
+            />
+            <MetricCard
+              size="md"
+              tone="green"
+              label="Estado"
+              value="Vigente"
+              supportingText="Política activa actual"
+            />
           </div>
         ) : (
           <div className="overtime-empty-state">

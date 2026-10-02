@@ -106,7 +106,7 @@ test("salarios muestra base por calendario, descanso y total atribuible por fech
   await expect(page.getByText("no es el reconocimiento de asistencia", { exact: false })).toBeVisible();
 
   // La fila del empleado y el resumen incluyen el descanso trabajado (325.00 + 65.00 = 390.00).
-  await expect(page.locator(".stat-card").filter({ hasText: "Monto estimado a pagar" }).getByText("S/ 390.00")).toBeVisible();
+  await expect(page.locator(".metric-card").filter({ hasText: "Monto estimado a pagar" }).getByText("S/ 390.00")).toBeVisible();
   await expect(page.locator('td[data-label="Total"]').getByText("S/ 390.00")).toBeVisible();
 
   const cards = page.locator(".responsive-table-cards");

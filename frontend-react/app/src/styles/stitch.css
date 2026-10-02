@@ -41,6 +41,9 @@
   --st-teal: #0b938d;
   --st-teal-deep: #00534f;
   --st-neutral: #64748b;
+  --st-amber: #b4781f;
+  --st-amber-deep: #8a5a00;
+  --st-amber-soft: rgba(180, 120, 20, 0.1);
 
   --st-canvas-start: #f8fafc;
   --st-canvas-end: #f0f9ff;
@@ -582,38 +585,6 @@ h4,
 }
 
 /* ============================================================
-   KPI cards
-   ============================================================ */
-.stat-card {
-  background: var(--st-card);
-  border: 1px solid var(--st-border);
-  border-radius: var(--st-radius-md);
-  box-shadow: var(--st-shadow-sm);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-.stat-card .stat-label {
-  font-family: var(--font-display);
-  color: var(--st-outline);
-  letter-spacing: 0.06em;
-}
-.stat-card .stat-label svg {
-  color: var(--st-primary);
-}
-.stat-card .stat-value {
-  font-family: var(--font-display);
-  font-size: 2rem;
-  font-weight: 800;
-  color: var(--st-on-surface);
-}
-.stat-card .stat-hint {
-  color: var(--st-neutral);
-}
-.stat-grid {
-  gap: 1rem;
-}
-
-/* ============================================================
    Dashboard Stitch — contexto, hero, alerta, KPIs, listas
    ============================================================ */
 .dash-context {
@@ -954,23 +925,35 @@ h4,
   background: #b91c1c;
 }
 
-.dash-kpis {
+/* ============================================================
+   Métricas (KPI) — patrón canónico compartido
+   El dashboard es la fuente de verdad visual. Otras superficies
+   reutilizan este material y jerarquía mediante <MetricCard>, sin
+   fabricar semántica KPI ni enlaces falsos en métricas pasivas.
+   ============================================================ */
+.metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1rem;
   margin-bottom: 1.25rem;
 }
+/* Rejilla flexible para conteos distintos de 4 (3, 5 o más métricas). */
+.metric-grid--auto {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
 @media (max-width: 1040px) {
-  .dash-kpis {
+  .metric-grid,
+  .metric-grid--auto {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 460px) {
-  .dash-kpis {
+  .metric-grid,
+  .metric-grid--auto {
     grid-template-columns: 1fr;
   }
 }
-.dash-kpi {
+.metric-card {
   position: relative;
   overflow: hidden;
   display: flex;
@@ -978,27 +961,35 @@ h4,
   justify-content: space-between;
   gap: 0.9rem;
   padding: 1.25rem;
+  color: var(--st-on-surface);
+  text-align: left;
+  font: inherit;
   border: 1px solid var(--st-border);
   border-radius: var(--st-radius-md);
   background: var(--st-card);
   box-shadow: var(--st-shadow-sm);
-  transition: box-shadow 180ms ease, transform 180ms ease;
+  transition: box-shadow 180ms ease, border-color 180ms ease, transform 180ms ease;
 }
-.dash-kpi:hover {
-  box-shadow: var(--st-shadow-md);
+.metric-card.is-interactive {
+  cursor: pointer;
 }
 @media (hover: hover) and (pointer: fine) {
-  .dash-kpi:hover {
+  .metric-card.is-interactive:hover {
+    box-shadow: var(--st-shadow-md);
     transform: translateY(-1px);
   }
 }
-.dash-kpi-head {
+.metric-card.is-interactive:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+.metric-card-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
 }
-.dash-kpi-label {
+.metric-card-label {
   font-family: var(--font-display);
   font-size: 0.68rem;
   font-weight: 700;
@@ -1006,7 +997,7 @@ h4,
   text-transform: uppercase;
   color: var(--st-outline);
 }
-.dash-kpi-icon {
+.metric-card-icon {
   display: grid;
   place-items: center;
   width: 2.25rem;
@@ -1014,52 +1005,70 @@ h4,
   border-radius: var(--st-radius-sm);
   flex: 0 0 auto;
 }
-.dash-kpi-icon--blue {
+.metric-card-icon--blue {
   background: var(--st-surface-high);
   color: var(--st-primary);
 }
-.dash-kpi-icon--red {
+.metric-card-icon--red {
   background: var(--st-error-fill);
   color: var(--st-error-icon);
 }
-.dash-kpi-icon--neutral {
+.metric-card-icon--neutral {
   background: var(--st-surface-container);
   color: var(--st-on-surface-variant);
 }
-.dash-kpi-icon--green {
+.metric-card-icon--green {
   background: rgba(91, 253, 127, 0.4);
   color: var(--st-on-green-container);
 }
-.dash-kpi-value {
+.metric-card-icon--amber {
+  background: var(--st-amber-soft);
+  color: var(--st-amber-deep);
+}
+.metric-card-value {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 0.4rem;
+  min-width: 0;
 }
-.dash-kpi-value strong {
+.metric-card-value strong {
   font-family: var(--font-display);
-  font-size: 2.5rem;
   font-weight: 800;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
-.dash-kpi--blue .dash-kpi-value strong {
+.metric-card--lg .metric-card-value strong {
+  font-size: clamp(2rem, 5vw, 2.5rem);
+}
+.metric-card--md .metric-card-value strong {
+  font-size: clamp(1.3rem, 3.2vw, 1.7rem);
+}
+.metric-card--sm .metric-card-value strong {
+  font-size: clamp(1.05rem, 2.6vw, 1.3rem);
+}
+.metric-card--blue .metric-card-value strong {
   color: var(--st-primary);
 }
-.dash-kpi--red .dash-kpi-value strong {
+.metric-card--red .metric-card-value strong {
   color: var(--st-error-text);
 }
-.dash-kpi--green .dash-kpi-value strong {
+.metric-card--green .metric-card-value strong {
   color: var(--st-green-deep);
 }
-.dash-kpi--neutral .dash-kpi-value strong {
+.metric-card--amber .metric-card-value strong {
+  color: var(--st-amber-deep);
+}
+.metric-card--neutral .metric-card-value strong {
   color: var(--st-on-surface);
 }
-.dash-kpi-value small {
+.metric-card-value small {
   font-size: 0.72rem;
   font-weight: 600;
   color: var(--st-outline);
 }
-.dash-kpi-foot {
+.metric-card-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1067,7 +1076,7 @@ h4,
   padding-top: 0.75rem;
   border-top: 1px solid var(--st-border);
 }
-.dash-kpi-chip {
+.metric-card-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -1077,64 +1086,85 @@ h4,
   font-size: 0.64rem;
   font-weight: 600;
 }
-.dash-kpi-chip i {
+.metric-card-chip i {
   width: 0.375rem;
   height: 0.375rem;
   border-radius: var(--st-radius-pill);
 }
-.dash-kpi--blue .dash-kpi-chip {
+.metric-card-support {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--st-outline);
+}
+.metric-card--blue .metric-card-chip {
   background: var(--st-surface-high);
   color: var(--st-primary);
 }
-.dash-kpi--blue .dash-kpi-chip i {
+.metric-card--blue .metric-card-chip i {
   background: var(--st-primary);
 }
-.dash-kpi--red .dash-kpi-chip {
+.metric-card--red .metric-card-chip {
   background: #ffdad6;
   color: #93000a;
 }
-.dash-kpi--red .dash-kpi-chip i {
+.metric-card--red .metric-card-chip i {
   background: var(--st-error-icon);
 }
-.dash-kpi--neutral .dash-kpi-chip {
+.metric-card--neutral .metric-card-chip {
   background: var(--st-surface-container);
   color: var(--st-on-surface-variant);
 }
-.dash-kpi--neutral .dash-kpi-chip i {
+.metric-card--neutral .metric-card-chip i {
   background: var(--st-outline);
 }
-.dash-kpi--green .dash-kpi-chip {
+.metric-card--green .metric-card-chip {
   background: rgba(91, 253, 127, 0.4);
   color: var(--st-on-green-container);
 }
-.dash-kpi--green .dash-kpi-chip i {
+.metric-card--green .metric-card-chip i {
   background: var(--st-green);
 }
-.dash-kpi-arrow {
+.metric-card--amber .metric-card-chip {
+  background: var(--st-amber-soft);
+  color: var(--st-amber-deep);
+}
+.metric-card--amber .metric-card-chip i {
+  background: var(--st-amber);
+}
+.metric-card-arrow {
   color: var(--st-outline);
   transition: transform 180ms ease;
 }
 @media (hover: hover) and (pointer: fine) {
-  .dash-kpi:hover .dash-kpi-arrow {
+  .metric-card.is-interactive:hover .metric-card-arrow {
     transform: translateX(3px);
   }
 }
-.dash-kpi-accent {
+.metric-card-accent {
   position: absolute;
   inset: auto 0 0;
   height: 2px;
 }
-.dash-kpi--blue .dash-kpi-accent {
-  background: linear-gradient(90deg, var(--st-primary), var(--st-primary-fixed-dim));
+.metric-card--blue .metric-card-accent {
+  background: var(--st-primary);
 }
-.dash-kpi--red .dash-kpi-accent {
+.metric-card--red .metric-card-accent {
   background: var(--st-error-icon);
 }
-.dash-kpi--neutral .dash-kpi-accent {
+.metric-card--neutral .metric-card-accent {
   background: var(--st-surface-highest);
 }
-.dash-kpi--green .dash-kpi-accent {
+.metric-card--green .metric-card-accent {
   background: var(--st-green);
+}
+.metric-card--amber .metric-card-accent {
+  background: var(--st-amber);
+}
+.metric-skeleton .metric-card {
+  box-shadow: none;
+}
+.metric-skeleton .metric-card-value {
+  margin-top: 0.6rem;
 }
 
 .dash-workspace {
@@ -1616,14 +1646,14 @@ h4,
    Accesibilidad — movimiento reducido
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
-  .dash-kpi,
+  .metric-card,
   .dash-coverage-fill,
   .dash-ring-fill,
-  .dash-kpi-arrow {
+  .metric-card-arrow {
     transition: none !important;
   }
-  .dash-kpi,
-  .dash-kpi-arrow {
+  .metric-card,
+  .metric-card-arrow {
     transform: none !important;
   }
 }
@@ -1881,4 +1911,51 @@ h4,
   .kiosk-topbar {
     justify-content: space-between;
   }
+}
+
+/* ============================================================
+   Superficies Stitch compartidas (no métricas)
+   Mismo material que .metric-card —blanco, borde sutil, radio 16px
+   y sombra pequeña— para paneles, tarjetas de periodo y filas
+   contenedoras. No son KPI: no llevan icono/acento ni semántica de
+   métrica. La receta vive aquí una sola vez; los paneles heredados
+   entran por selector para no duplicarla en cada archivo.
+   ============================================================ */
+.surface-material,
+.employee-attendance-workspace,
+.employee-accrual-panel,
+.employee-calendar-panel,
+.employee-day-detail,
+.employee-disclosure-card,
+.period-card,
+.recovery-panel,
+.historical-page .panel,
+.audit-event,
+.account-profile,
+.account-security,
+.issued-code-card,
+.responsive-table-card {
+  background: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  box-shadow: var(--st-shadow-sm);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* Variante interior: superficies anidadas sin doble elevación. */
+.surface-material--inset,
+.employee-day-entry,
+.employee-day-record,
+.employee-batch-date:not(.employee-batch-date--head),
+.employee-preview-row,
+.device-code-badge,
+.responsive-table-card__item {
+  background: var(--st-surface-low);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-sm);
+  box-shadow: none;
+}
+/* El panel de edición señala su modo sin salir del material compartido. */
+.historical-edit-panel {
+  border-color: var(--st-border-highlight);
 }

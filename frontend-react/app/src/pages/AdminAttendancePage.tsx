@@ -528,7 +528,7 @@ export default function AdminAttendancePage() {
       </div>
 
       {canManage && (
-        <details className="recovery-panel">
+        <details className="recovery-panel surface-material">
           <summary>
             <span>
               <strong>Recuperar un intento de la tablet</strong>

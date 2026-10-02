@@ -2,6 +2,7 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import MetricCard from "@/components/MetricCard";
 import { useAdminSession } from "@/components/AdminSession";
 import { Alert, Coins, Download, Receipt, Refresh, Search, X } from "@/components/Icons";
 import { Skeleton, Spinner, StatSkeleton } from "@/components/Loading";
@@ -360,7 +361,7 @@ export default function AdminSalariesPage() {
         title="Sueldos por periodo"
         subtitle="Consulta cuánto se pagará a cada persona."
       >
-        <StatSkeleton count={5} />
+        <StatSkeleton count={5} gridClassName="metric-grid metric-grid--auto" />
         <div className="table-wrap salaries-responsive-wrap" style={{ marginTop: "1rem" }}>
           <table className="table salaries-responsive-table">
             <thead>
@@ -489,18 +490,15 @@ export default function AdminSalariesPage() {
       )}
 
       {loading || detailsLoading ? (
-        <StatSkeleton count={5} />
+        <StatSkeleton count={5} gridClassName="metric-grid metric-grid--auto" />
       ) : (
         summary && (
-          <div
-            className="stat-grid salaries-summary"
-            style={{ gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))" }}
-          >
-            <Stat label="Monto estimado a pagar" value={formatMoney(summary.total)} />
-            <Stat label="Sueldo base" value={formatMoney(summary.total_base)} />
-            <Stat label="Horas extra" value={formatMoney(summary.total_overtime)} green />
-            <Stat label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
-            <Stat label="Empleados" value={String(summary.employee_count)} />
+          <div className="metric-grid metric-grid--auto salaries-summary">
+            <MetricCard size="md" tone="blue" label="Monto estimado a pagar" value={formatMoney(summary.total)} />
+            <MetricCard size="md" tone="neutral" label="Sueldo base" value={formatMoney(summary.total_base)} />
+            <MetricCard size="md" tone="green" label="Horas extra" value={formatMoney(summary.total_overtime)} />
+            <MetricCard size="md" tone="neutral" label="Ajustes manuales" value={formatMoney(summary.total_manual)} />
+            <MetricCard size="md" tone="neutral" label="Empleados" value={String(summary.employee_count)} />
           </div>
         )
       )}
@@ -581,17 +579,6 @@ export default function AdminSalariesPage() {
       )}
       {!loading && !detailsLoading && <TablePagination {...pagination} />}
     </AdminShell>
-  );
-}
-
-function Stat({ label, value, green }: { label: string; value: string; green?: boolean }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value" style={green ? { color: "var(--dark-green)" } : undefined}>
-        {value}
-      </div>
-    </div>
   );
 }
 

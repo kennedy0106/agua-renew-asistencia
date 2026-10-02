@@ -832,7 +832,7 @@ export default function HistoricalAttendancePage() {
           <span className="flow-step-copy"><strong>Revisar y guardar</strong><small>Previsualiza antes de confirmar</small></span>
         </li>
       </ol>
-      <section className="panel historical-compose">
+      <section className="panel historical-compose surface-material">
         <div className="historical-compose-head">
           <div className="historical-date-field">
             <span className="label">Fecha trabajada</span>
@@ -1224,7 +1224,7 @@ export default function HistoricalAttendancePage() {
           )}
         </div>
         {preview && (
-          <div className="panel historical-preview">
+          <div className="panel historical-preview surface-material">
             <h2>Previsualización</h2>
             <div className="table-wrap">
               <table className="table">
@@ -1278,7 +1278,7 @@ export default function HistoricalAttendancePage() {
           </div>
         )}
       </section>
-      <section className="panel historical-recovery-panel" id="registro-permisos">
+      <section className="panel historical-recovery-panel surface-material" id="registro-permisos">
         <div className="historical-section-head">
           <div>
         <h2>Registrar un permiso pendiente de recuperar</h2>
@@ -1353,7 +1353,7 @@ export default function HistoricalAttendancePage() {
           Registrar permiso pendiente
         </button>
       </section>
-      <section className="panel historical-history-panel">
+      <section className="panel historical-history-panel surface-material">
         <h2>Historial de cargas</h2>
         <p className="historical-section-copy">Consulta, corrige o anula registros manteniendo su trazabilidad.</p>
         <div className="page-actions">
@@ -1473,7 +1473,7 @@ export default function HistoricalAttendancePage() {
       {edit && (
         <section
           ref={editPanelRef}
-          className="panel historical-edit-panel"
+          className="panel historical-edit-panel surface-material"
           aria-labelledby="historical-edit-heading"
         >
           <h2 id="historical-edit-heading">Editar carga histórica</h2>
