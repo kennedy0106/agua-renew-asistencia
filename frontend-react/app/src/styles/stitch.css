@@ -1681,74 +1681,10 @@ h4,
 }
 
 /* ============================================================
-   Kiosco Stitch (C3) — status strip, card con acento, DNI
+   Kiosco Stitch (C3) — card con acento, DNI
    segmentado, teclado táctil y CTA azul→verde.
    Conserva la lógica y los testids existentes.
    ============================================================ */
-.kiosk-topbar {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
-  width: 100%;
-  max-width: 64rem;
-  margin-bottom: 1.25rem;
-  padding: 0.6rem 1rem;
-  border: 1px solid var(--st-border);
-  border-radius: var(--st-radius-pill);
-  background: var(--st-card);
-  box-shadow: var(--st-shadow-sm);
-}
-.kiosk-topbar-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-family: var(--font-display);
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--st-primary);
-  letter-spacing: 0.02em;
-}
-.kiosk-topbar-tagline {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: center;
-  font-family: var(--font-body);
-  font-size: 0.74rem;
-  color: var(--st-neutral);
-}
-.kiosk-topbar-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.2rem 0.6rem;
-  border-radius: var(--st-radius-pill);
-  background: var(--st-success-soft);
-  color: var(--st-success-text);
-  font-family: var(--font-display);
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.kiosk-topbar-status i {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: var(--st-radius-pill);
-  background: var(--st-green);
-}
-.kiosk-topbar-status.is-offline {
-  background: var(--st-error-fill);
-  color: var(--st-error-text);
-}
-.kiosk-topbar-status.is-offline i {
-  background: var(--st-error-icon);
-}
-
 .kiosk-card {
   position: relative;
   overflow: hidden;
@@ -1908,12 +1844,66 @@ h4,
   gap: 0.5rem;
 }
 
-@media (max-width: 560px) {
-  .kiosk-topbar-tagline {
-    display: none;
+/* Short screens keep the complete marking form in view. Compact decoration
+   and whitespace first; keypad and action targets remain at least 44px. */
+@media (max-height: 760px) {
+  .kiosk {
+    min-height: 100dvh;
+    padding: 0.75rem 1rem;
   }
-  .kiosk-topbar {
-    justify-content: space-between;
+  .kiosk-brand {
+    margin-bottom: 0.5rem;
+  }
+  .kiosk-brand img {
+    width: 10rem;
+  }
+  .kiosk-card {
+    padding: 1rem;
+  }
+  .kiosk-clock {
+    font-size: clamp(2.25rem, 14cqw, 3rem);
+  }
+  .kiosk-date {
+    margin-block: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+  .kiosk-form {
+    gap: 0.5rem;
+  }
+  .kiosk-keypad {
+    gap: 0.375rem;
+  }
+  .kiosk-btn {
+    min-height: 2.75rem;
+    padding: 0.6rem;
+  }
+  .kiosk-video {
+    max-height: 30dvh;
+    width: auto;
+    max-width: 100%;
+    margin-inline: auto;
+  }
+}
+
+@media (max-height: 760px) and (orientation: landscape) {
+  .kiosk {
+    padding-block: 0.5rem;
+  }
+  .kiosk-brand img {
+    width: 8rem;
+  }
+  .kiosk-card {
+    max-width: 520px;
+    padding: 0.75rem 1.1rem;
+  }
+  .kiosk-clock {
+    font-size: 1.75rem;
+  }
+  .kiosk-date {
+    margin-block: 0.25rem 0.45rem;
+  }
+  .kiosk-form {
+    gap: 0.375rem;
   }
 }
 

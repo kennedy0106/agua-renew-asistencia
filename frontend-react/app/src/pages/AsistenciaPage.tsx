@@ -148,8 +148,6 @@ export default function AsistenciaPage() {
   const [lastAttemptStatus, setLastAttemptStatus] = useState<RecoverOutcome | null>(null);
   const [idMode, setIdMode] = useState<"dni" | "code">("dni");
   const [copiedNonce, setCopiedNonce] = useState(false);
-  // Estado real de conectividad para la barra del kiosco (sin inventar sede).
-  const [online, setOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -189,17 +187,6 @@ export default function AsistenciaPage() {
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const sync = () => setOnline(navigator.onLine);
-    sync();
-    window.addEventListener("online", sync);
-    window.addEventListener("offline", sync);
-    return () => {
-      window.removeEventListener("online", sync);
-      window.removeEventListener("offline", sync);
-    };
   }, []);
 
   useEffect(() => {
@@ -921,17 +908,6 @@ export default function AsistenciaPage() {
 
   return (
     <div className="kiosk">
-      <div className="kiosk-topbar">
-        <span className="kiosk-topbar-brand">
-          <ClipboardCheck size={16} /> Kiosco de asistencia
-        </span>
-        <span className="kiosk-topbar-tagline">Agua que renueva · Espíritu que transforma</span>
-        <span className={`kiosk-topbar-status${online ? "" : " is-offline"}`} role="status" aria-live="polite">
-          <i aria-hidden />
-          {online ? "En línea" : "Sin conexión"}
-        </span>
-      </div>
-
       <div className="kiosk-brand">
         <img src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} />
       </div>
