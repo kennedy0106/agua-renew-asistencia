@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     decolecta_api_key: str = ""
     decolecta_timeout_seconds: float = 5.0
 
-    # --- Instrumentación de tiempos (opt-in, local) ---
-    # Apagado por defecto. Cuando se activa, GET /api/v1/attendance/summary
-    # responde con una cabecera Server-Timing numérica (sin datos sensibles).
+    # --- Instrumentación de tiempos (opt-in) ---
+    # Apagado por defecto. Activa Server-Timing numérico para el resumen y
+    # los GET de ajustes, balance y calendario por empleado (sin datos sensibles).
     summary_timing_enabled: bool = False
 
     @field_validator("secret_key")

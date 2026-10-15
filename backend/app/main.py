@@ -64,7 +64,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Instrumentación opt-in (flag apagado por defecto) solo para el resumen.
+# Instrumentación opt-in del resumen y las tres lecturas administrativas permitidas.
 app.add_middleware(SummaryTimingMiddleware)
 
 
