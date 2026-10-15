@@ -248,7 +248,8 @@ jobs:
             sleep 1
           done
           OBJECT_STORE_CREATE_BUCKET=1 uv run python -c "from app.core.object_store import provision_test_bucket; provision_test_bucket()"
-          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asistencia-api.log 2>&1 &
+          .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asistencia-api.log 2>&1 &
+          echo $! > /tmp/asistencia-api.pid
           for i in $(seq 1 40); do
             if curl -sf http://127.0.0.1:8000/health; then
               exit 0
@@ -268,7 +269,7 @@ jobs:
           npm run build
         env:
           VITE_API_URL: http://127.0.0.1:8000
-      - name: Playwright integración (FastAPI + Postgres + MinIO)
+      - name: Playwright integración (FastAPI + Postgres + S3 local)
         working-directory: frontend-react/app
         run: |
           npx playwright install --with-deps chromium
@@ -281,6 +282,16 @@ jobs:
           SECRET_KEY: e2e-asistencia-secret-key-32chars!!
           TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/asistencia_test
           ALLOW_TEST_DB_RESET: "1"
+      - name: Detener servicios de integración
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f /tmp/asistencia-api.pid ]; then
+            pid="$(cat /tmp/asistencia-api.pid)"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          fi
+          docker rm -f asistencia-ci-s3 >/dev/null 2>&1 || true
 
   # Gate manual explícito para el cutover a Vercel. No elige ni muta ningún
   # proyecto y no despliega (no usa VERCEL_TOKEN ni ningún secreto): solo exige

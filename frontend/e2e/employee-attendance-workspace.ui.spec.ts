@@ -130,7 +130,10 @@ test("al fallar otra quincena no conserva el importe del periodo anterior", asyn
   });
 
   await page.goto("/admin/employees/employee-1");
-  await expect(page.getByText("S/ 300.00", { exact: true })).toBeVisible();
+  await page.getByLabel("Periodo acumulado").click();
+  await page.getByRole("option", { name: "Segunda quincena" }).click();
+  await expect(page.getByText("S/ 100.00", { exact: true })).toBeVisible();
+
   await page.getByLabel("Periodo acumulado").click();
   await page.getByRole("option", { name: "Primera quincena" }).click();
   await expect(page.locator(".employee-accrual-panel").getByRole("alert")).toBeVisible();
