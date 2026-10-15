@@ -434,8 +434,8 @@ def test_enabled_target_reports_three_numeric_metrics(
     # Adquisición explícita única y ejecución de cursor acumulada exacta (ms).
     assert metrics["summary_dbconn"] == step_clock.step * _MS
     assert metrics["summary_dbsql"] == cursor_counter.count * step_clock.step * _MS
-    # Incluye la consulta de autenticación más los cuatro conteos del resumen.
-    assert cursor_counter.count >= 5
+    # Includes authentication plus one combined counter query.
+    assert cursor_counter.count == 2
     assert metrics["summary_req"] >= metrics["summary_dbsql"] + metrics["summary_dbconn"]
     assert "SELECT" not in header and "/" not in header
     assert re.fullmatch(r"[\w;,=. ]+", header)
@@ -484,14 +484,14 @@ def test_sql_error_preserves_status_and_cleans_up(real_db, timing_flag, step_clo
     timing_flag(True)
     from app.modules.attendance.repository import AttendanceRepository
 
-    def _failing_sql(self):
+    def _failing_sql(self, day):
         # SQL real que falla en SQLite: emite before_cursor_execute y nunca after.
         self.db.execute(text("SELECT * FROM tabla_inexistente_timing"))
 
     with TestClient(app, raise_server_exceptions=False) as client:
         _login(client)
         with monkeypatch.context() as context:
-            context.setattr(AttendanceRepository, "count_active_employees", _failing_sql)
+            context.setattr(AttendanceRepository, "summary_counts", _failing_sql)
             failed = client.get(_SUMMARY_PATH)
             assert failed.status_code == 500
             collector = created_collectors[-1]
@@ -635,14 +635,14 @@ def test_concurrent_http_requests_isolate_sql_timing(tmp_path, monkeypatch, timi
         assert collector.sql_seconds == per_connection[connection] * 1.0
 
     own_counts = sorted(per_connection[connection] for _, connection in pairs)
-    assert own_counts == [5, 6, 8]
+    assert own_counts == [2, 3, 5]
     header_values = sorted(
         parse_server_timing(response.headers["server-timing"])["summary_dbsql"]
         for response in responses
     )
-    assert header_values == [6.0 * _MS, 8.0 * _MS]
+    assert header_values == [3.0 * _MS, 5.0 * _MS]
     third_metrics = parse_server_timing(third.headers["server-timing"])
-    assert third_metrics["summary_dbsql"] == 5.0 * _MS
+    assert third_metrics["summary_dbsql"] == 2.0 * _MS
     assert third_metrics["summary_dbconn"] == 1.0 * _MS
 
     event.remove(engine, "before_cursor_execute", _count)

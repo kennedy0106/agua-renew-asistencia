@@ -37,9 +37,12 @@ emitted.
 | `summary_dbconn` | Wall time of the explicit `Session.connection()` acquisition for the request. Includes pool checkout setup and `pool_pre_ping` (`pool_pre_ping` is DBAPI activity that happens **before** any cursor event). It is **not** a pure queue wait. |
 | `summary_dbsql` | Cumulative cursor execution time (`before_cursor_execute` → `after_cursor_execute`) on the request connection. Excludes acquisition and result fetching, and does **not** represent database CPU time. |
 
-`summary_dbsql` includes the authentication lookup plus the four summary count
-statements, because dependency teardown shares one session for the whole
-request. A cursor execution that raises is not counted: SQLAlchemy emits
+`summary_dbsql` includes the authentication lookup plus one combined summary
+counter statement: two cursor executions per normal request, instead of five.
+The combined statement preserves distinct employees present today, active
+employee counts, all-time open entries, and today's completed records. No
+cache, schema change, or authentication change is involved. Dependency teardown
+shares one session for the whole request. A cursor execution that raises is not counted: SQLAlchemy emits
 `before_cursor_execute` but not `after_cursor_execute`, so the failed statement's
 duration is discarded (pending starts are cleared on detach) and only
 successful statements contribute.
@@ -73,10 +76,38 @@ that header. Local DevTools inspection and same-origin reads are unaffected.
 
 ## Verification
 
+### Isolated Windows launcher
+
+From `backend`, use the existing virtual environment (no dependency installation):
+
+```powershell
+.venv/Scripts/python.exe -I -B scripts/verify_summary_local.py
+```
+
+The launcher uses Python's native temporary-directory API rather than passing
+Windows paths through nested Bash/`mktemp`. It copies only Python sources and
+`pyproject.toml` into the explicitly authorized
+`C:/Users/USER/AppData/Local/Temp/agua-summary-verify` subtree. It discards inherited
+application credentials, disables dotenv before loading settings, and refuses to
+run if the application has a configured database engine. Tests use SQLite/moto;
+no production database is used. Source hashes must match before and after.
+
+It runs summary performance, timing, administrative, and launcher regressions,
+preserves pytest stdout/stderr and its exit status, and retains the isolated
+copy for inspection. `ISOLATED_COPY` identifies that copy; `SOURCE_UNCHANGED=1`
+and `FOCUSED_EXIT=0` indicate success. The script does not commit, deploy, alter
+branch protection, or replace required GitHub checks. Its fixed external path
+is specific to the currently authorized local environment.
+
+### Other focused commands
+
+These commands do not sanitize inherited environment or dotenv configuration;
+use them only in an already isolated development environment:
+
 Focused runners (offline, no dependency install):
 
 ```bash
-cd backend && uv run --no-sync --offline pytest tests/test_attendance_summary_timing.py -q
+cd backend && uv run --no-sync --offline pytest tests/test_attendance_summary_performance.py tests/test_attendance_summary_timing.py -q
 cd backend && uv run --no-sync --offline pytest tests/test_attendance_admin.py -q
 cd backend && uv run --no-sync --offline pytest
 ```
