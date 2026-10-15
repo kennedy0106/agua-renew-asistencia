@@ -1501,14 +1501,15 @@ class AttendanceService:
 
     def summary(self, today: date) -> dict:
         """Indicadores simples del dashboard (MVP §29)."""
-        active = self.repo.count_active_employees()
-        present = self.repo.count_distinct_employees_on(today)
+        counts = self.repo.summary_counts(today)
+        active = counts["employees_active"]
+        present = counts["present_today"]
         return {
             "employees_active": active,
             "present_today": present,
             "no_entry_today": max(0, active - present),
-            "open_entries": self.repo.count_open(),
-            "checked_out_today": self.repo.count_complete_on(today),
+            "open_entries": counts["open_entries"],
+            "checked_out_today": counts["checked_out_today"],
         }
 
     def list_daily(

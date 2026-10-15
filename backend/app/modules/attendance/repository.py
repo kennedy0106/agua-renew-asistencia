@@ -3,7 +3,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.attendance.models import (
@@ -98,6 +98,28 @@ class AttendanceRepository:
             query = query.where(AttendanceRecord.status == status)
         query = query.order_by(AttendanceRecord.work_date.desc(), AttendanceRecord.check_in_at.desc())
         return list(self.db.scalars(query))
+
+    def summary_counts(self, day: date) -> dict[str, int]:
+        """Read all dashboard counters in one database round trip."""
+        active = (
+            select(func.count())
+            .select_from(Employee)
+            .where(Employee.active.is_(True))
+            .scalar_subquery()
+        )
+        statement = select(
+            active.label("employees_active"),
+            func.count(func.distinct(case(
+                (AttendanceRecord.work_date == day, AttendanceRecord.employee_id),
+            ))).label("present_today"),
+            # Open entries intentionally include previous dates.
+            func.count(case((AttendanceRecord.status == "OPEN", 1))).label("open_entries"),
+            func.count(case((
+                (AttendanceRecord.status == "COMPLETE") & (AttendanceRecord.work_date == day),
+                1,
+            ))).label("checked_out_today"),
+        ).select_from(AttendanceRecord)
+        return dict(self.db.execute(statement).mappings().one())
 
     def count_active_employees(self) -> int:
         return self.db.scalar(
