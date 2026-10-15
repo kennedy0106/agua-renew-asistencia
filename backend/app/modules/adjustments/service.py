@@ -26,7 +26,7 @@ from app.core.timezone import lima_now
 from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
-from app.modules.attendance.totals import ordinary_minutes, recovery_credit_minutes, worked_minutes as actual_worked_minutes
+from app.modules.attendance.totals import balance_presence_minutes, recovery_credit_minutes
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
 from app.modules.employees.repository import EmployeeRepository
@@ -476,8 +476,7 @@ class AdjustmentService:
             )
         self._get_employee(employee_id)
 
-        worked = ordinary_minutes(self.db, employee_id, date_from, date_to)
-        actual_worked = actual_worked_minutes(self.db, employee_id, date_from, date_to)
+        worked, actual_worked = balance_presence_minutes(self.db, employee_id, date_from, date_to)
         recovery_credit = recovery_credit_minutes(self.db, employee_id, date_from, date_to)
 
         days = [
@@ -490,11 +489,8 @@ class AdjustmentService:
         expected_by_day = ScheduleService(self.db).expected_minutes_for_days({employee_id: days})
         expected = sum(expected_by_day.values())
 
-        adjustments = self.repo.approved_minutes_in_range(
-            employee_id, date_from, date_to, adjustment_type=None
-        )
-        overtime_minutes = self.repo.approved_minutes_in_range(
-            employee_id, date_from, date_to, adjustment_type="OVERTIME"
+        adjustments, overtime_minutes = self.repo.approved_balance_totals(
+            employee_id, date_from, date_to
         )
         hour_adjustments = adjustments - overtime_minutes
 

@@ -3,7 +3,7 @@
 import uuid
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.adjustments.models import HourAdjustment
@@ -126,6 +126,27 @@ class AdjustmentRepository:
         self.db.commit()
         self.db.refresh(adjustment)
         return adjustment
+
+    def approved_balance_totals(
+        self, employee_id: uuid.UUID, date_from: date, date_to: date,
+    ) -> tuple[int, int]:
+        """Read all approved minutes and the overtime subset in one statement."""
+        total, overtime = self.db.execute(
+            select(
+                func.coalesce(func.sum(HourAdjustment.minutes), 0),
+                func.coalesce(func.sum(case(
+                    (HourAdjustment.adjustment_type == "OVERTIME", HourAdjustment.minutes),
+                    else_=0,
+                )), 0),
+            ).where(
+                HourAdjustment.employee_id == employee_id,
+                HourAdjustment.status == "APPROVED",
+                HourAdjustment.voided_at.is_(None),
+                HourAdjustment.adjustment_date >= date_from,
+                HourAdjustment.adjustment_date <= date_to,
+            )
+        ).one()
+        return int(total), int(overtime)
 
     def approved_minutes_in_range(
         self,
