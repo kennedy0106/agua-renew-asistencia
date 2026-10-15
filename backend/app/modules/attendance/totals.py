@@ -25,6 +25,25 @@ def manual_payable_net_minutes(manual: ManualAttendanceDay) -> int:
     return max(0, int(manual.worked_minutes_net) - manual_payable_break_minutes(manual))
 
 
+def balance_presence_minutes(
+    db: Session, employee_id: uuid.UUID, date_from: date, date_to: date,
+) -> tuple[int, int]:
+    """Read ordinary and actual worked minutes together for the balance panel."""
+    sessions = int(db.scalar(
+        select(func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0)).where(
+            AttendanceRecord.employee_id == employee_id,
+            AttendanceRecord.status == "COMPLETE",
+            AttendanceRecord.work_date >= date_from,
+            AttendanceRecord.work_date <= date_to,
+        )
+    ) or 0)
+    rows = manual_days(db, employee_id, date_from, date_to)
+    return (
+        sessions + sum(int(item.normal_minutes or 0) for item in rows),
+        sessions + sum(manual_payable_net_minutes(item) for item in rows),
+    )
+
+
 def worked_minutes(db: Session, employee_id: uuid.UUID, date_from: date, date_to: date) -> int:
     sessions = db.scalar(select(func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0)).where(AttendanceRecord.employee_id == employee_id, AttendanceRecord.status == "COMPLETE", AttendanceRecord.work_date >= date_from, AttendanceRecord.work_date <= date_to)) or 0
     manual = sum(

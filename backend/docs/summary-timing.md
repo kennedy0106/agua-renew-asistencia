@@ -152,3 +152,25 @@ medians do not add. Three/five samples do not establish a reliable percentile
 or a controlled A/B comparison. CORS/Timing-Allow-Origin are not changed.
 
 The code does not perform deployment, migrations or database maintenance.
+
+## Balance query budget
+
+The balance read reuses one attendance aggregate and one active manual-day
+fetch for both ordinary and actual worked minutes. Manual normal minutes and
+snapshot-adjusted payable minutes remain distinct. One conditional aggregate
+returns both approved adjustment minutes and their overtime subset; pending,
+rejected, voided and out-of-range adjustments remain excluded. Existing shared
+payroll/calendar helpers and recovery-credit calculations are unchanged.
+
+Public HTTP regressions with an isolated administrative session observe seven
+SELECTs per empty/mixed balance request, down from ten (including authentication).
+An in-range recovery commitment still adds five reads, giving twelve rather
+than fifteen in the recovery fixture. This removes three redundant reads;
+it does not batch the recovery loop or change calculations, permissions or
+stored data. Counts are verified in tests, not exported in production headers.
+
+Run the balance budget regression in an already isolated development environment:
+
+```bash
+cd backend && uv run --no-sync --offline pytest tests/test_balance_query_budget.py -q
+```
