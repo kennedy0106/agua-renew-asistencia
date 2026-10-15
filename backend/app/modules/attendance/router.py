@@ -10,22 +10,26 @@ Panel administrativo (autenticado):
 import uuid
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import Response as RawResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.permissions import get_current_user, require_any_role
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.core.rate_limit import RateLimiter, client_ip
 from app.core.security import create_terminal_token, decode_attendance_token, decode_terminal_token, terminal_cookie_kwargs
 from app.core.timezone import lima_tz
 from app.db.session import get_db
 from app.modules.attendance.schemas import (
     AttendanceCorrection,
+    AttendanceBreakOverrideDeleteRequest,
+    AttendanceBreakOverrideRequest,
     AttendanceDailyItem,
     AttendanceListItem,
     AttendanceRecordOut,
     AttendanceSummary,
+    AttemptResolveRequest,
+    AttemptReviewRequest,
     CheckInRequest,
     CheckOutRequest,
     EvidenceRequest,
@@ -138,6 +142,39 @@ def attempt_status(
     )
 
 
+@router.post("/attempt/resolve", response_model=AttemptStatusResponse)
+def resolve_attempt(
+    payload: AttemptResolveRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+    device=Depends(require_terminal),
+) -> dict:
+    return AttendanceService(db).resolve_attempt(
+        payload.marking_token,
+        reason_code=payload.reason_code,
+        device_id=device.id if device else None,
+    )
+
+
+@router.get("/attempts/{nonce}")
+def inspect_attempt(
+    nonce: str,
+    db: Session = Depends(get_db),
+    _: object = Depends(can_correct),
+) -> dict:
+    return AttendanceService(db).inspect_attempt_admin(nonce)
+
+
+@router.post("/attempts/{nonce}/review")
+def review_attempt(
+    nonce: str,
+    payload: AttemptReviewRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> dict:
+    return AttendanceService(db).review_attempt(nonce, reason=payload.reason, user_id=user.id)
+
+
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
 def check_in(
     payload: CheckInRequest,
@@ -153,6 +190,7 @@ def check_in(
         require_evidence=require_evidence,
         device_id=device.id if device else None,
         token_device_id=token_did,
+        marking_token=payload.marking_token,
     )
 
 
@@ -172,6 +210,7 @@ def check_out(
         device_id=device.id if device else None,
         token_device_id=token_did,
         record_id=record_id,
+        marking_token=payload.marking_token,
     )
 
 
@@ -182,7 +221,7 @@ def list_attendance(
     date_to: date | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[AttendanceListItem]:
     return AttendanceService(db).list_records(
         employee_id=employee_id, date_from=date_from, date_to=date_to, status_filter=status
@@ -190,7 +229,7 @@ def list_attendance(
 
 
 @router.get("/summary", response_model=AttendanceSummary)
-def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> AttendanceSummary:
+def attendance_summary(db: Session = Depends(get_db), _: object = Depends(get_current_operational_user)) -> AttendanceSummary:
     today = datetime.now(lima_tz()).date()
     return AttendanceService(db).summary(today)
 
@@ -201,10 +240,37 @@ def daily_attendance(
     date_from: date | None = None,
     date_to: date | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[AttendanceDailyItem]:
     return AttendanceService(db).list_daily(
         employee_id=employee_id, date_from=date_from, date_to=date_to
+    )
+
+
+@router.put("/daily/{employee_id}/{work_date}/break", response_model=AttendanceDailyItem)
+def set_daily_break_override(
+    employee_id: uuid.UUID,
+    work_date: date,
+    payload: AttendanceBreakOverrideRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> AttendanceDailyItem:
+    return AttendanceService(db).set_break_override(
+        employee_id, work_date, requested_break_minutes=payload.requested_break_minutes,
+        reason=payload.reason, current_user_id=user.id,
+    )
+
+
+@router.delete("/daily/{employee_id}/{work_date}/break", response_model=AttendanceDailyItem)
+def clear_daily_break_override(
+    employee_id: uuid.UUID,
+    work_date: date,
+    payload: AttendanceBreakOverrideDeleteRequest,
+    db: Session = Depends(get_db),
+    user=Depends(can_correct),
+) -> AttendanceDailyItem:
+    return AttendanceService(db).clear_break_override(
+        employee_id, work_date, reason=payload.reason, current_user_id=user.id,
     )
 
 
@@ -212,10 +278,9 @@ def daily_attendance(
 def purge_abandoned_evidence(
     db: Session = Depends(get_db),
     _: object = Depends(require_any_role("ADMIN")),
-    older_than_hours: int = 24,
+    older_than_hours: int = Query(default=24, ge=24),
 ) -> dict:
-    deleted = AttendanceService(db).purge_abandoned_evidence(older_than_hours=older_than_hours)
-    return {"deleted": deleted}
+    return AttendanceService(db).purge_abandoned_evidence(older_than_hours=older_than_hours)
 
 
 @router.get("/{record_id}/evidence")
@@ -233,10 +298,10 @@ def evidence_image(
     db: Session = Depends(get_db),
     _: object = Depends(can_view_evidence),
 ) -> RawResponse:
-    evidence = AttendanceService(db).get_evidence_image(evidence_id)
+    payload, content_type = AttendanceService(db).get_evidence_payload(evidence_id)
     return RawResponse(
-        content=evidence.image_bytes,
-        media_type=evidence.content_type,
+        content=payload,
+        media_type=content_type,
         headers={"Cache-Control": "private, no-store"},
     )
 

@@ -181,6 +181,13 @@ export const Pencil = (p: IconProps) => (
   </svg>
 );
 
+export const Camera = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M4 8.5h3l1.35-2h7.3l1.35 2h3A1.5 1.5 0 0 1 21.5 10v8.5A1.5 1.5 0 0 1 20 20H4a1.5 1.5 0 0 1-1.5-1.5V10A1.5 1.5 0 0 1 4 8.5Z" />
+    <circle cx="12" cy="14" r="3.5" />
+  </svg>
+);
+
 export const Refresh = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M20 12a8 8 0 1 1-2.3-5.7" />

@@ -9,13 +9,16 @@ Permisos (decisión de negocio):
 
 import io
 import uuid
+from hashlib import sha256
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.permissions import get_current_user, require_any_role
+from app.core.config import get_settings
+from app.core.permissions import get_current_operational_user, require_any_role
 from app.db.session import get_db
-from app.modules.employees.schemas import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from app.modules.employees.decolecta import DeColectaError, lookup_dni
+from app.modules.employees.schemas import DniLookupOut, DniLookupRequest, EmployeeCreate, EmployeeOut, EmployeeUpdate
 from app.modules.employees.service import EmployeeService
 
 router = APIRouter(prefix="/api/v1/employees", tags=["employees"])
@@ -47,7 +50,7 @@ def list_employees(
     job_role_id: uuid.UUID | None = None,
     search: str | None = None,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_user),
+    _: object = Depends(get_current_operational_user),
 ) -> list[EmployeeOut]:
     employees = EmployeeService(db).list_all(active=active, job_role_id=job_role_id, search=search)
     return [_to_out(e) for e in employees]
@@ -57,7 +60,6 @@ def list_employees(
 def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db), _: object = Depends(can_manage_employees)) -> EmployeeOut:
     employee = EmployeeService(db).create(
         dni=payload.dni,
-        employee_code=payload.employee_code,
         first_name=payload.first_name,
         last_name=payload.last_name,
         job_role_id=payload.job_role_id,
@@ -66,8 +68,43 @@ def create_employee(payload: EmployeeCreate, db: Session = Depends(get_db), _: o
     return _to_out(employee)
 
 
+@router.post("/dni-lookup", response_model=DniLookupOut)
+def lookup_employee_dni(payload: DniLookupRequest, _: object = Depends(can_manage_employees)) -> DniLookupOut:
+    """Consulta manualmente el DNI al crear un empleado; no escribe datos."""
+    settings = get_settings()
+    if not settings.decolecta_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="La consulta de DNI no está configurada. Configura DECOLECTA_API_KEY en el servidor.",
+        )
+    try:
+        identity = lookup_dni(
+            dni=payload.dni,
+            api_key=settings.decolecta_api_key,
+            timeout_seconds=settings.decolecta_timeout_seconds,
+        )
+    except DeColectaError as exc:
+        errors = {
+            "not_found": (status.HTTP_404_NOT_FOUND, "No se encontró información para este DNI."),
+            "authentication": (status.HTTP_503_SERVICE_UNAVAILABLE, "La consulta de DNI no está disponible. Revisa su configuración en el servidor."),
+            "rate_limited": (status.HTTP_429_TOO_MANY_REQUESTS, "Se alcanzó el límite de consultas de DNI. Intenta nuevamente en unos minutos."),
+            "timeout": (status.HTTP_504_GATEWAY_TIMEOUT, "La consulta de DNI tardó demasiado. Intenta nuevamente."),
+            "invalid_payload": (status.HTTP_502_BAD_GATEWAY, "La consulta de DNI devolvió datos no válidos. Intenta nuevamente."),
+            "upstream": (status.HTTP_502_BAD_GATEWAY, "No se pudo consultar el DNI en este momento. Intenta nuevamente."),
+        }
+        status_code, detail = errors.get(exc.kind, errors["upstream"])
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return DniLookupOut(
+        dni=identity.dni,
+        first_name=identity.first_name,
+        first_last_name=identity.first_last_name,
+        second_last_name=identity.second_last_name,
+        full_name=identity.full_name,
+    )
+
+
 @router.get("/{employee_id}", response_model=EmployeeOut)
-def get_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> EmployeeOut:
+def get_employee(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_operational_user)) -> EmployeeOut:
     return _to_out(EmployeeService(db).get(employee_id))
 
 
@@ -76,7 +113,6 @@ def update_employee(employee_id: uuid.UUID, payload: EmployeeUpdate, db: Session
     employee = EmployeeService(db).update(
         employee_id,
         dni=payload.dni,
-        employee_code=payload.employee_code,
         first_name=payload.first_name,
         last_name=payload.last_name,
         job_role_id=payload.job_role_id,
@@ -106,26 +142,67 @@ def rotate_employee_qr(
 
 
 @router.get("/{employee_id}/qr", response_class=Response)
-def get_employee_qr(employee_id: uuid.UUID, db: Session = Depends(get_db), _: object = Depends(get_current_user)) -> Response:
+def get_employee_qr(
+    employee_id: uuid.UUID,
+    request: Request,
+    format: str = "svg",
+    db: Session = Depends(get_db),
+    _: object = Depends(get_current_operational_user),
+) -> Response:
     """QR único del empleado (SVG). Escanea a un identificador estable: AR:<qr_token>.
 
     El token es aleatorio y único (server-side); la imagen se genera al vuelo
     a partir de él. No se expone el DNI ni el código interno en el QR.
     """
     employee = EmployeeService(db).get(employee_id)
+    output_format = format.lower()
+    if output_format not in {"svg", "png", "jpg", "jpeg"}:
+        return Response(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content="Formato QR no soportado")
     payload = f"AR:{employee.qr_token}"
+    extension = "jpg" if output_format == "jpeg" else output_format
+    etag = f'"{sha256(f"{employee.qr_token}:{extension}:591".encode()).hexdigest()}"'
+    headers = {
+        "ETag": etag,
+        # La URL del QR se mantiene estable para el empleado. Obligar la
+        # revalidación evita que, tras rotarlo, una tablet muestre la imagen
+        # anterior desde su caché local.
+        "Cache-Control": "private, no-cache",
+        "Vary": "Cookie",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
     import qrcode
-    import qrcode.image.svg
-
-    factory = qrcode.image.svg.SvgPathImage
-    img = qrcode.make(payload, image_factory=factory, box_size=10, border=2)
     buffer = io.BytesIO()
-    img.save(buffer)
-    svg = buffer.getvalue().decode("utf-8")
+    if output_format == "svg":
+        import qrcode.image.svg
+
+        img = qrcode.make(payload, image_factory=qrcode.image.svg.SvgPathImage, box_size=10, border=2)
+        img.save(buffer)
+        content: bytes | str = buffer.getvalue().decode("utf-8")
+        media_type = "image/svg+xml"
+    else:
+        from PIL import Image
+
+        # 5 × 5 cm a 300 dpi ≈ 591 px. Elegimos un módulo entero y centramos
+        # el QR en un lienzo blanco: no se interpola ni se vuelve borroso.
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=1, border=4)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        modules = qr.modules_count + (qr.border * 2)
+        box_size = max(1, 591 // modules)
+        image = qr.make_image(fill_color="black", back_color="white", image_factory=None).convert("RGB")
+        image = image.resize((modules * box_size, modules * box_size), resample=Image.Resampling.NEAREST)
+        canvas = Image.new("RGB", (591, 591), "white")
+        offset = ((591 - image.width) // 2, (591 - image.height) // 2)
+        canvas.paste(image, offset)
+        save_format = "JPEG" if extension == "jpg" else "PNG"
+        canvas.save(buffer, format=save_format, dpi=(300, 300), quality=95, optimize=True)
+        content = buffer.getvalue()
+        media_type = "image/jpeg" if extension == "jpg" else "image/png"
 
     return Response(
-        content=svg,
-        media_type="image/svg+xml",
-        headers={"Content-Disposition": f'inline; filename="qr-{employee.employee_code}.svg"'},
+        content=content,
+        media_type=media_type,
+        headers={**headers, "Content-Disposition": f'inline; filename="qr-{employee.employee_code}.{extension}"'},
     )

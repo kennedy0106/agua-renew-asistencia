@@ -5,11 +5,14 @@ En CI el workflow inyecta Postgres y corre este archivo.
 """
 
 import os
+import threading
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from app.core.test_db import assert_disposable_postgres_url
 
@@ -55,16 +58,91 @@ def test_alembic_upgrade_head_desde_esquema_vacio(pg_url: str, monkeypatch: pyte
     columns = {col["name"] for col in inspector.get_columns("payroll_records")}
     assert "missing_salary_days" in columns
     assert "payable" in columns
+    assert "special_day_amount" in columns
     period_cols = {col["name"] for col in inspector.get_columns("payroll_periods")}
     assert "inputs_fingerprint" in period_cols
+    assert {"payroll_month_id", "period_kind"} <= period_cols
     assert "attendance_evidence" in tables
     assert "attendance_consumed_nonces" in tables
     device_cols = {col["name"] for col in inspector.get_columns("attendance_devices")}
     assert "pairing_code_hash" in device_cols
     evidence_cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
     assert "image_sha256" in evidence_cols
+    assert "object_key" in evidence_cols
+    assert "storage_backend" in evidence_cols
+    assert "storage_bucket" in evidence_cols
+    assert "byte_size" in evidence_cols
     nonce_cols = {col["name"] for col in inspector.get_columns("attendance_consumed_nonces")}
     assert "device_id" in nonce_cols
+    assert "attendance_attempt_resolutions" in tables
+    assert "manual_attendance_days" in tables
+    assert {"employee_weekly_rest_rules", "rest_substitutions", "special_day_valuations", "special_day_valuation_components", "holiday_calendar_days", "payroll_months"} <= tables
+    substitution_cols = {col["name"] for col in inspector.get_columns("rest_substitutions")}
+    assert "origin_kind" in substitution_cols
+    calendar_receipt_cols = {col["name"] for col in inspector.get_columns("work_calendar_operation_receipts")}
+    assert "target_entity_id" in calendar_receipt_cols
+    assert "adjustment_operation_receipts" in tables
+    adjustment_cols = {col["name"] for col in inspector.get_columns("hour_adjustments")}
+    assert {"version", "supersedes_id", "voided_at", "voided_by", "void_reason", "approval_snapshot_data"} <= adjustment_cols
+    assert "recovery_commitments" in tables
+    commitment_constraints = {item["name"] for item in inspector.get_unique_constraints("recovery_commitments")}
+    assert "uq_recovery_commitment_employee_permission" in commitment_constraints
+    resolution_cols = {col["name"] for col in inspector.get_columns("attendance_attempt_resolutions")}
+    assert {"nonce", "employee_id", "device_id", "resolution", "reason"} <= resolution_cols
+    reason_col = next(
+        col for col in inspector.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_col["type"], "length", None) == 500
+
+
+def test_payroll_month_concurrent_q1_returns_domain_conflict(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CAL-04/T30: PostgreSQL serializes two simultaneous Q1 creations.
+
+    The losing transaction reloads the monthly parent after its unique-key
+    race and reports the existing overlapping period, never an IntegrityError.
+    """
+    from app.core.config import get_settings
+    from app.modules.payroll.models import PERIOD_FIRST_HALF
+    from app.modules.payroll.service import PayrollService
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    command.upgrade(Config("alembic.ini"), "head")
+
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+    guard = threading.Lock()
+
+    def create_q1() -> None:
+        session = factory()
+        try:
+            barrier.wait(timeout=10)
+            period = PayrollService(session).create_period(
+                name=None, start_date=None, end_date=None, year=2026, month=8,
+                period_kind=PERIOD_FIRST_HALF,
+            )
+            outcome: object = ("CREATED", period.id)
+        except HTTPException as exc:
+            outcome = ("HTTP", exc.status_code, exc.detail)
+        finally:
+            session.rollback()
+            session.close()
+        with guard:
+            outcomes.append(outcome)
+
+    threads = [threading.Thread(target=create_q1), threading.Thread(target=create_q1)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads)
+    assert sum(1 for result in outcomes if result[0] == "CREATED") == 1
+    assert sum(1 for result in outcomes if result[0] == "HTTP" and result[1] == 409) == 1
 
 
 def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,3 +238,645 @@ def test_alembic_upgrade_conserva_datos_de_revision_previa(pg_url: str, monkeypa
         assert "result_payload" in nonce_cols
         assert "device_id" in nonce_cols
 
+
+def test_hst01_corrective_upgrade_from_l8f9_preserves_rows_or_reports_duplicate(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A46: m9 upgrades l8f9 data, but never silently chooses a duplicate."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    cfg = Config("alembic.ini")
+
+    def reset_to_l8f9() -> tuple[str, str]:
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+        command.upgrade(cfg, "l8f9a0b1c2d3")
+        role_id = "71111111-1111-1111-1111-111111111111"
+        employee_id = "72222222-2222-2222-2222-222222222222"
+        user_id = "73333333-3333-3333-3333-333333333333"
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario HST', true)"), {"id": role_id})
+            conn.execute(text("INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token) VALUES (:id, '71845632', 'HST-MIG', 'Ana', 'Migración', :role_id, true, 'qr-hst-mig')"), {"id": employee_id, "role_id": role_id})
+            conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'ADMIN-HST-MIG', true)"), {"id": role_id})
+            # The role used by the audit actor must be distinct from job_roles.
+            actor_role_id = "74444444-4444-4444-4444-444444444444"
+            conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'AUDIT-HST-MIG', true)"), {"id": actor_role_id})
+            conn.execute(text("INSERT INTO users (id, username, password_hash, system_role_id, active, must_change_password) VALUES (:id, 'hst-migration-user', 'hash', :role_id, true, false)"), {"id": user_id, "role_id": actor_role_id})
+            conn.execute(text("INSERT INTO recovery_commitments (id, employee_id, permission_date, agreed_minutes, covered_before, reference, status, created_by_user_id) VALUES ('75555555-5555-5555-5555-555555555555', :employee_id, '2026-08-01', 120, false, 'Compromiso conservado', 'ACTIVE', :user_id)"), {"employee_id": employee_id, "user_id": user_id})
+        return employee_id, user_id
+
+    employee_id, user_id = reset_to_l8f9()
+    command.upgrade(cfg, "m9a0b1c2d3e4")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT reference FROM recovery_commitments")).scalar_one() == "Compromiso conservado"
+        constraints = {item[0] for item in conn.execute(text("SELECT conname FROM pg_constraint WHERE conrelid = 'recovery_commitments'::regclass"))}
+        assert "uq_recovery_commitment_employee_permission" in constraints
+
+    employee_id, user_id = reset_to_l8f9()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO recovery_commitments (id, employee_id, permission_date, agreed_minutes, covered_before, reference, status, created_by_user_id) VALUES ('76666666-6666-6666-6666-666666666666', :employee_id, '2026-08-01', 60, false, 'Duplicado auditado', 'ACTIVE', :user_id)"), {"employee_id": employee_id, "user_id": user_id})
+    with pytest.raises(RuntimeError, match="duplicate recovery commitments"):
+        command.upgrade(cfg, "m9a0b1c2d3e4")
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM recovery_commitments")).scalar_one() == 2
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "l8f9a0b1c2d3"
+
+
+def test_h693_operation_receipt_upgrade_keeps_v1_unscoped(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """C14: v1 bytes survive and the migration never invents an owner."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "m9a0b1c2d3e4")
+    payload_hash = "a" * 64
+    result = '{"created":["legacy-id"]}'
+    with engine.begin() as conn:
+        conn.execute(
+            text("""INSERT INTO manual_attendance_idempotency
+                (idempotency_key, payload_hash, result)
+                VALUES ('legacy-h693-receipt', :hash, CAST(:result AS json))"""),
+            {"hash": payload_hash, "result": result},
+        )
+        created_at = conn.execute(text("SELECT created_at FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'")).scalar_one()
+    command.upgrade(cfg, "n0b1c2d3e4f5")
+    with engine.connect() as conn:
+        row = conn.execute(text("""SELECT payload_hash, result, protocol_version,
+            actor_user_id, operation_type, target_manual_day_id, http_status
+            FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'""")).one()
+        assert row[0] == payload_hash
+        assert row[1] == {"created": ["legacy-id"]}
+        assert row[2:] == (1, None, None, None, None)
+        assert conn.execute(text("SELECT created_at FROM manual_attendance_idempotency WHERE idempotency_key = 'legacy-h693-receipt'")).scalar_one() == created_at
+        constraints = {item["name"] for item in inspect(engine).get_check_constraints("manual_attendance_idempotency")}
+        assert {"ck_manual_attendance_idempotency_protocol", "ck_manual_attendance_idempotency_v2_scope"} <= constraints
+    with engine.begin() as conn:
+        role_id = "81111111-1111-1111-1111-111111111111"
+        actor_id = "82222222-2222-2222-2222-222222222222"
+        conn.execute(text("INSERT INTO system_roles (id, name, active) VALUES (:id, 'H693-RECEIPT', true)"), {"id": role_id})
+        conn.execute(text("INSERT INTO users (id, username, password_hash, system_role_id, active, must_change_password) VALUES (:id, 'hst-receipt-check', 'hash', :role, true, false)"), {"id": actor_id, "role": role_id})
+    for key, operation_type, http_status in (
+        ("invalid-null-operation", None, 200),
+        ("invalid-null-status", "BATCH", None),
+    ):
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(text("""INSERT INTO manual_attendance_idempotency
+                    (idempotency_key, payload_hash, result, protocol_version, actor_user_id, operation_type, http_status)
+                    VALUES (:key, :hash, CAST(:result AS json), 2, :actor, :operation_type, :http_status)"""),
+                    {"key": key, "hash": "b" * 64, "result": '{}', "actor": actor_id, "operation_type": operation_type, "http_status": http_status})
+    with pytest.raises(RuntimeError, match="cannot be downgraded safely"):
+        command.downgrade(cfg, "m9a0b1c2d3e4")
+
+
+def test_alembic_upgrade_conserva_nonces_sin_device_id(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """e1f2a3b4c5d6 deja device_id NULL en nonces anteriores; no inventa propietario."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "d9a1b2c3d4e5")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    record_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-LEG', 'Luis', 'Paz', :role_id, true, 'qr-legacy-nonce')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    id, employee_id, work_date, check_in_at, check_out_at, worked_minutes, status
+                ) VALUES (
+                    :id, :employee_id, '2026-08-03',
+                    '2026-08-03 13:00:00+00', NULL, NULL, 'OPEN'
+                )
+                """
+            ),
+            {"id": record_id, "employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'legacy-nonce-sin-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "record_id": record_id,
+                "payload": '{"id": "cccccccc-cccc-cccc-cccc-cccccccccccc", "event_type": "CHECK_IN"}',
+            },
+        )
+
+    command.upgrade(cfg, "head")
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT device_id, action, employee_id, result_payload
+                FROM attendance_consumed_nonces
+                WHERE nonce = 'legacy-nonce-sin-terminal'
+                """
+            )
+        ).one()
+        assert row[0] is None
+        assert row[1] == "CHECK_IN"
+        assert str(row[2]) == employee_id
+        payload = row[3]
+        assert payload["event_type"] == "CHECK_IN"
+
+
+def test_alembic_upgrade_e1f2a3b4c5d6_conserva_datos_y_crea_resoluciones(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upgrade poblado desde e1f2a3b4c5d6: no backfill de dueños y tabla nueva vacía."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "e1f2a3b4c5d6")
+
+    role_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    employee_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    record_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    device_id = "12121212-1212-1212-1212-121212121212"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71117777', 'EMP-EDB', 'Rita', 'Sol', :role_id, true, 'qr-edb-nonce')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_devices (id, name, device_code, active, token_version)
+                VALUES (:id, 'Kiosco legado', 'dev-edb', true, 1)
+                """
+            ),
+            {"id": device_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_records (
+                    id, employee_id, work_date, check_in_at, check_out_at, worked_minutes, status
+                ) VALUES (
+                    :id, :employee_id, '2026-08-03',
+                    '2026-08-03 13:00:00+00', NULL, NULL, 'OPEN'
+                )
+                """
+            ),
+            {"id": record_id, "employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, device_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'nonce-con-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :device_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "device_id": device_id,
+                "record_id": record_id,
+                "payload": '{"id": "ffffffff-ffff-ffff-ffff-ffffffffffff", "event_type": "CHECK_IN"}',
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_consumed_nonces (
+                    nonce, action, event_type, employee_id, attendance_record_id, result_payload
+                ) VALUES (
+                    'nonce-sin-terminal', 'CHECK_IN', 'CHECK_IN', :employee_id, :record_id,
+                    CAST(:payload AS json)
+                )
+                """
+            ),
+            {
+                "employee_id": employee_id,
+                "record_id": record_id,
+                "payload": '{"id": "ffffffff-ffff-ffff-ffff-ffffffffffff", "event_type": "CHECK_IN"}',
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, attendance_record_id, device_id, content_type, image_bytes
+                ) VALUES (
+                    '13131313-1313-1313-1313-131313131313', 'nonce-con-terminal', :employee_id, :record_id,
+                    :device_id, 'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id, "record_id": record_id, "device_id": device_id},
+        )
+
+    command.upgrade(cfg, "f2a3b4c5d6e7")
+    inspector = inspect(engine)
+    assert "attendance_attempt_resolutions" in inspector.get_table_names()
+    with engine.connect() as conn:
+        owned = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-con-terminal'")
+        ).scalar_one()
+        orphan = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-sin-terminal'")
+        ).scalar_one()
+        assert str(owned) == device_id
+        assert orphan is None
+        evidence_sha = conn.execute(
+            text("SELECT content_type FROM attendance_evidence WHERE nonce = 'nonce-con-terminal'")
+        ).scalar_one()
+        assert evidence_sha == "image/jpeg"
+        resolutions = conn.execute(text("SELECT count(*) FROM attendance_attempt_resolutions")).scalar_one()
+        assert resolutions == 0
+        status = conn.execute(
+            text("SELECT status FROM attendance_records WHERE id = :id"), {"id": record_id}
+        ).scalar_one()
+        assert status == "OPEN"
+
+    command.downgrade(cfg, "e1f2a3b4c5d6")
+    inspector_after = inspect(engine)
+    assert "attendance_attempt_resolutions" not in inspector_after.get_table_names()
+    with engine.connect() as conn:
+        orphan = conn.execute(
+            text("SELECT device_id FROM attendance_consumed_nonces WHERE nonce = 'nonce-sin-terminal'")
+        ).scalar_one()
+        assert orphan is None
+
+
+def test_alembic_upgrade_f2a3b4c5d6e7_amplia_reason_sin_perder_datos(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A04/A05: 80→500 conserva motivos; 501 falla en PG; downgrade no recorta."""
+    from sqlalchemy.exc import DataError
+
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "f2a3b4c5d6e7")
+
+    employee_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    device_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    role_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    reason_80 = "R" * 80
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-R500', 'Nora', 'Luz', :role_id, true, 'qr-reason-500')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_devices (id, name, device_code, active, token_version)
+                VALUES (:id, 'Kiosco motivo', 'dev-reason', true, 1)
+                """
+            ),
+            {"id": device_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_attempt_resolutions (
+                    nonce, employee_id, device_id, action, resolution, reason
+                ) VALUES (
+                    'nonce-reason-80', :employee_id, :device_id, 'CHECK_IN', 'CANCELLED_UNCONFIRMED', :reason
+                )
+                """
+            ),
+            {"employee_id": employee_id, "device_id": device_id, "reason": reason_80},
+        )
+
+    command.upgrade(cfg, "g3b4c5d6e7f8")
+    inspector = inspect(engine)
+    reason_col = next(
+        col for col in inspector.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_col["type"], "length", None) == 500
+    with engine.connect() as conn:
+        preserved = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert preserved == reason_80
+        assert len(preserved) == 80
+
+    lengths = {81: "A" * 81, 120: "B" * 120, 500: "C" * 500}
+    with engine.begin() as conn:
+        for length, reason in lengths.items():
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attendance_attempt_resolutions (
+                        nonce, employee_id, device_id, action, resolution, reason
+                    ) VALUES (
+                        :nonce, :employee_id, :device_id, 'CHECK_OUT', 'CANCELLED_UNCONFIRMED', :reason
+                    )
+                    """
+                ),
+                {
+                    "nonce": f"nonce-reason-{length}",
+                    "employee_id": employee_id,
+                    "device_id": device_id,
+                    "reason": reason,
+                },
+            )
+
+    with engine.connect() as conn:
+        for length, reason in lengths.items():
+            stored = conn.execute(
+                text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = :nonce"),
+                {"nonce": f"nonce-reason-{length}"},
+            ).scalar_one()
+            assert stored == reason
+            assert len(stored) == length
+
+    with pytest.raises(DataError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attendance_attempt_resolutions (
+                        nonce, employee_id, device_id, action, resolution, reason
+                    ) VALUES (
+                        'nonce-reason-501', :employee_id, :device_id, 'CHECK_IN',
+                        'CANCELLED_UNCONFIRMED', :reason
+                    )
+                    """
+                ),
+                {"employee_id": employee_id, "device_id": device_id, "reason": "D" * 501},
+            )
+
+    with engine.connect() as conn:
+        missing = conn.execute(
+            text("SELECT count(*) FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-501'")
+        ).scalar_one()
+        assert missing == 0
+        eighty = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert eighty == reason_80
+
+    with pytest.raises(Exception, match="No se puede reducir reason"):
+        command.downgrade(cfg, "f2a3b4c5d6e7")
+
+    with engine.connect() as conn:
+        remaining = conn.execute(
+            text(
+                """
+                SELECT nonce, char_length(reason) FROM attendance_attempt_resolutions
+                ORDER BY nonce
+                """
+            )
+        ).all()
+        assert {(row[0], row[1]) for row in remaining} == {
+            ("nonce-reason-80", 80),
+            ("nonce-reason-81", 81),
+            ("nonce-reason-120", 120),
+            ("nonce-reason-500", 500),
+        }
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM attendance_attempt_resolutions WHERE char_length(reason) > 80")
+        )
+
+    command.downgrade(cfg, "f2a3b4c5d6e7")
+    inspector_after = inspect(engine)
+    reason_after = next(
+        col for col in inspector_after.get_columns("attendance_attempt_resolutions") if col["name"] == "reason"
+    )
+    assert getattr(reason_after["type"], "length", None) == 80
+    with engine.connect() as conn:
+        leftover = conn.execute(
+            text("SELECT reason FROM attendance_attempt_resolutions WHERE nonce = 'nonce-reason-80'")
+        ).scalar_one()
+        assert leftover == reason_80
+
+
+def test_alembic_upgrade_h4c5d6e7f8a9_conserva_bytes_y_anade_object_key(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "g3b4c5d6e7f8")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71118888', 'EMP-S3', 'Nora', 'R2', :role_id, true, 'qr-s3')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes
+                ) VALUES (
+                    '14141414-1414-1414-1414-141414141414', 'nonce-s3-legacy', :employee_id,
+                    'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+
+    command.upgrade(cfg, "h4c5d6e7f8a9")
+    inspector = inspect(engine)
+    evidence_cols = {col["name"]: col for col in inspector.get_columns("attendance_evidence")}
+    assert "object_key" in evidence_cols
+    assert evidence_cols["image_bytes"]["nullable"] is True
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT object_key, encode(image_bytes, 'hex')
+                FROM attendance_evidence WHERE nonce = 'nonce-s3-legacy'
+                """
+            )
+        ).one()
+        assert row[0] is None
+        assert row[1] == "ffd8ff"
+
+
+def test_alembic_upgrade_i5d6e7f8a9b0_ubicacion_y_downgrade_seguro(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", pg_url)
+    get_settings.cache_clear()
+
+    engine = create_engine(pg_url)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "h4c5d6e7f8a9")
+
+    role_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    employee_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO job_roles (id, name, active) VALUES (:id, 'Operario', true)"),
+            {"id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO employees (id, dni, employee_code, first_name, last_name, job_role_id, active, qr_token)
+                VALUES (:id, '71119999', 'EMP-LOC', 'Luis', 'S3', :role_id, true, 'qr-loc')
+                """
+            ),
+            {"id": employee_id, "role_id": role_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes
+                ) VALUES (
+                    '15151515-1515-1515-1515-151515151515', 'nonce-db-legacy', :employee_id,
+                    'image/jpeg', decode('ffd8ff', 'hex')
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO attendance_evidence (
+                    id, nonce, employee_id, content_type, image_bytes, object_key
+                ) VALUES (
+                    '16161616-1616-1616-1616-161616161616', 'nonce-s3-orphan', :employee_id,
+                    'image/jpeg', NULL, 'attendance/orphan/key.jpg'
+                )
+                """
+            ),
+            {"employee_id": employee_id},
+        )
+
+    command.upgrade(cfg, "i5d6e7f8a9b0")
+    inspector = inspect(engine)
+    cols = {col["name"] for col in inspector.get_columns("attendance_evidence")}
+    assert {"storage_backend", "storage_bucket", "byte_size"} <= cols
+    with engine.connect() as conn:
+        db_row = conn.execute(
+            text(
+                """
+                SELECT storage_backend, storage_bucket, byte_size, object_key
+                FROM attendance_evidence WHERE nonce = 'nonce-db-legacy'
+                """
+            )
+        ).one()
+        assert db_row[0] == "DATABASE"
+        assert db_row[1] is None
+        assert db_row[2] == 3
+        assert db_row[3] is None
+        orphan = conn.execute(
+            text(
+                """
+                SELECT storage_backend, storage_bucket, object_key
+                FROM attendance_evidence WHERE nonce = 'nonce-s3-orphan'
+                """
+            )
+        ).one()
+        assert orphan[0] is None
+        assert orphan[1] is None
+        assert orphan[2] == "attendance/orphan/key.jpg"
+
+    with pytest.raises(Exception, match="No se puede revertir i5d6e7f8a9b0"):
+        command.downgrade(cfg, "h4c5d6e7f8a9")

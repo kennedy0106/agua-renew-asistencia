@@ -9,6 +9,7 @@ Guardas de seguridad:
 - Las acciones sensibles quedan auditadas (sin exponer contraseñas).
 """
 
+import secrets
 import uuid
 
 from fastapi import HTTPException, status
@@ -67,11 +68,10 @@ class UserAdminService:
         self,
         *,
         username: str,
-        password: str,
         system_role_id: uuid.UUID,
         employee_id: uuid.UUID | None,
         current_user_id: uuid.UUID,
-    ) -> User:
+    ) -> tuple[User, str]:
         username = username.strip()
         if self.repo.get_by_username(username) is not None:
             raise HTTPException(
@@ -80,11 +80,15 @@ class UserAdminService:
         self._get_role_or_422(system_role_id)
         self._validate_employee(employee_id)
 
+        # token_urlsafe usa CSPRNG del SO. La clave solo vive en memoria para
+        # esta respuesta; el repositorio recibe exclusivamente el hash Argon2.
+        temporary_password = secrets.token_urlsafe(18)
         user = self.repo.create(
             username=username,
-            password_hash=hash_password(password),
+            password_hash=hash_password(temporary_password),
             system_role_id=system_role_id,
             employee_id=employee_id,
+            must_change_password=True,
         )
         AuditRepository(self.db).create(
             entity_type="user",
@@ -95,7 +99,7 @@ class UserAdminService:
             reason=f"Creación del usuario {user.username}",
             performed_by=current_user_id,
         )
-        return user
+        return user, temporary_password
 
     def update(
         self,
@@ -172,7 +176,7 @@ class UserAdminService:
 
     def reset_password(self, user_id: uuid.UUID, *, new_password: str, current_user_id: uuid.UUID) -> User:
         user = self._get_or_404(user_id)
-        saved = self.repo.set_password_hash(user, hash_password(new_password))
+        saved = self.repo.set_password(user, hash_password(new_password), must_change_password=True)
         AuditRepository(self.db).create(
             entity_type="user",
             entity_id=user_id,
@@ -190,7 +194,7 @@ class UserAdminService:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="La contraseña actual es incorrecta",
             )
-        self.repo.set_password_hash(user, hash_password(new_password))
+        self.repo.set_password(user, hash_password(new_password), must_change_password=False)
         AuditRepository(self.db).create(
             entity_type="user",
             entity_id=user.id,

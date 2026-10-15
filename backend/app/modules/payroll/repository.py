@@ -11,7 +11,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from app.modules.payroll.models import PayrollPeriod, PayrollRecord
+from app.modules.payroll.models import PayrollMonth, PayrollPeriod, PayrollRecord
 
 
 class PayrollRepository:
@@ -40,8 +40,18 @@ class PayrollRepository:
             query = query.where(PayrollPeriod.id != exclude_id)
         return self.db.scalar(query)
 
-    def create_period(self, *, name: str, start_date: date, end_date: date) -> PayrollPeriod:
-        period = PayrollPeriod(name=name, start_date=start_date, end_date=end_date)
+    def get_month(self, year: int, month: int, *, for_update: bool = False) -> PayrollMonth | None:
+        query = select(PayrollMonth).where(PayrollMonth.year == year, PayrollMonth.month == month)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self.db.scalar(query)
+
+    def create_month(self, *, year: int, month: int, mode: str) -> PayrollMonth:
+        item = PayrollMonth(year=year, month=month, mode=mode)
+        self.db.add(item); self.db.flush(); return item
+
+    def create_period(self, *, name: str, start_date: date, end_date: date, payroll_month_id: uuid.UUID | None = None, period_kind: str = "MONTHLY") -> PayrollPeriod:
+        period = PayrollPeriod(name=name, start_date=start_date, end_date=end_date, payroll_month_id=payroll_month_id, period_kind=period_kind)
         self.db.add(period)
         self.db.flush()
         self.db.refresh(period)
@@ -112,7 +122,7 @@ class PayrollRepository:
         record.manual_adjustment = amount
         if notes is not None:
             record.notes = notes
-        record.total = record.base_salary + record.overtime_amount + amount
+        record.total = record.base_salary + record.overtime_amount + record.special_day_amount + amount
         self.db.add(record)
         self.db.flush()
         self.db.refresh(record)

@@ -9,6 +9,7 @@ from app.core.permissions import require_admin
 from app.db.session import get_db
 from app.modules.users.schemas import (
     AdminUserOut,
+    CreatedAdminUserOut,
     ResetPasswordRequest,
     UserCreate,
     UserUpdate,
@@ -30,6 +31,7 @@ def _out(user: User) -> AdminUserOut:
             f"{user.employee.first_name} {user.employee.last_name}" if user.employee else None
         ),
         active=user.active,
+        must_change_password=user.must_change_password,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
     )
@@ -43,20 +45,19 @@ def list_users(
     return [_out(u) for u in UserAdminService(db).list_users()]
 
 
-@router.post("", response_model=AdminUserOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=CreatedAdminUserOut, status_code=status.HTTP_201_CREATED)
 def create_user(
     payload: UserCreate,
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
-) -> AdminUserOut:
-    user = UserAdminService(db).create(
+) -> CreatedAdminUserOut:
+    user, temporary_password = UserAdminService(db).create(
         username=payload.username,
-        password=payload.password,
         system_role_id=payload.system_role_id,
         employee_id=payload.employee_id,
         current_user_id=admin.id,
     )
-    return _out(user)
+    return CreatedAdminUserOut(**_out(user).model_dump(), temporary_password=temporary_password)
 
 
 @router.patch("/{user_id}", response_model=AdminUserOut)

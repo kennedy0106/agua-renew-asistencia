@@ -17,6 +17,8 @@ class OvertimeDetectItem(BaseModel):
 class OvertimeValueItem(BaseModel):
     adjustment_date: date
     minutes: int
+    requested_minutes: int = 0
+    break_minutes: int = 0
     first_two_minutes: int
     additional_minutes: int
     first_two_hours_rate: Decimal

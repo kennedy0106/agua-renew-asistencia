@@ -43,12 +43,14 @@ class UserRepository:
         password_hash: str,
         system_role_id: uuid.UUID,
         employee_id: uuid.UUID | None = None,
+        must_change_password: bool = False,
     ) -> User:
         user = User(
             username=username,
             password_hash=password_hash,
             system_role_id=system_role_id,
             employee_id=employee_id,
+            must_change_password=must_change_password,
         )
         self.db.add(user)
         self.db.commit()
@@ -62,6 +64,14 @@ class UserRepository:
 
     def set_password_hash(self, user: User, password_hash: str) -> User:
         user.password_hash = password_hash
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def set_password(self, user: User, password_hash: str, *, must_change_password: bool) -> User:
+        user.password_hash = password_hash
+        user.must_change_password = must_change_password
         self.db.add(user)
         self.db.commit()
         self.db.refresh(user)

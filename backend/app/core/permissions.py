@@ -34,13 +34,28 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+def get_current_operational_user(user: User = Depends(get_current_user)) -> User:
+    """Usuario autenticado y habilitado para operar el panel.
+
+    Un usuario con clave temporal mantiene una sesión válida únicamente para
+    consultar su identidad, cerrar sesión y establecer su contraseña. El
+    bloqueo queda en el servidor, por lo que no depende de la redirección UI.
+    """
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Debes cambiar tu contraseña temporal antes de continuar",
+        )
+    return user
+
+
 def require_any_role(*roles: str) -> Callable:
     """Fabrica una dependencia que exige que el usuario tenga uno de los roles dados.
 
     Ejemplo: ``require_any_role("ADMIN", "BOSS")``
     """
 
-    def _dependency(user: User = Depends(get_current_user)) -> User:
+    def _dependency(user: User = Depends(get_current_operational_user)) -> User:
         if user.system_role.name not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -7,6 +7,8 @@
 """
 
 import uuid
+from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date, timedelta
 
 from fastapi import HTTPException, status
@@ -39,6 +41,77 @@ class ScheduleService:
         if schedule is None:
             return 0
         return getattr(schedule, _DAY_FIELDS[day.weekday()])
+
+    @staticmethod
+    def journey_from_schedule(schedule) -> int:
+        """Jornada ordinaria de referencia derivada de la propia jornada.
+
+        Toma los días laborables de lunes a sábado; si no hubiera ninguno con
+        minutos, cae al máximo de la semana.  Es la referencia que debe usar el
+        cálculo de descansos y feriados en lugar de un valor almacenado obsoleto.
+        """
+        if schedule is None:
+            return 0
+        working = max(getattr(schedule, field) for field in _DAY_FIELDS[:6])
+        if working > 0:
+            return working
+        return max(getattr(schedule, field) for field in _DAY_FIELDS)
+
+    def ordinary_journey_minutes(self, employee_id: uuid.UUID, day: date) -> int:
+        return self.journey_from_schedule(self.repo.get_for_date(employee_id, day))
+
+    def expected_minutes_for_days(
+        self, employee_days: dict[uuid.UUID, Iterable[date]]
+    ) -> dict[tuple[uuid.UUID, date], int]:
+        """Resuelve minutos esperados para varios empleados/días en lote.
+
+        Es intencionalmente una capa de lectura: no cambia qué jornada gana
+        cuando hay historial.  Para cada fecha se elige la vigente con
+        ``effective_from`` más reciente, igual que ``get_for_date``.
+        """
+        schedules = self.schedules_for_days(employee_days)
+        return {
+            (employee_id, day): getattr(schedule, _DAY_FIELDS[day.weekday()]) if schedule else 0
+            for (employee_id, day), schedule in schedules.items()
+        }
+
+    def schedules_for_days(
+        self, employee_days: dict[uuid.UUID, Iterable[date]]
+    ) -> dict[tuple[uuid.UUID, date], WorkSchedule | None]:
+        """Jornadas vigentes por empleado/día, resueltas con una sola consulta."""
+        normalized = {
+            employee_id: sorted(set(days))
+            for employee_id, days in employee_days.items()
+            if days
+        }
+        if not normalized:
+            return {}
+
+        all_days = [day for days in normalized.values() for day in days]
+        schedules_by_employee: dict[uuid.UUID, list[WorkSchedule]] = defaultdict(list)
+        for schedule in self.repo.list_overlapping(
+            normalized.keys(), min(all_days), max(all_days)
+        ):
+            schedules_by_employee[schedule.employee_id].append(schedule)
+
+        result: dict[tuple[uuid.UUID, date], WorkSchedule | None] = {}
+        for employee_id, days in normalized.items():
+            history = schedules_by_employee.get(employee_id, [])
+            for day in days:
+                # Historiales normales no se solapan. Recorrer al revés además
+                # mantiene exactamente el orden de preferencia del SELECT
+                # original si existiera un historial legado solapado.
+                schedule = next(
+                    (
+                        item
+                        for item in reversed(history)
+                        if item.effective_from <= day
+                        and (item.effective_to is None or item.effective_to >= day)
+                    ),
+                    None,
+                )
+                result[(employee_id, day)] = schedule
+        return result
 
     def get_current(self, employee_id: uuid.UUID) -> WorkSchedule:
         schedule = self.repo.get_active(employee_id)
@@ -85,27 +158,44 @@ class ScheduleService:
                 ),
             )
 
-        # Cerrar la vigente el día anterior al inicio de la nueva (historial).
-        if active is not None:
-            self.repo.close_active(employee_id, effective_from - timedelta(days=1))
+        # Creación/cierre de vigencias, invalidación dependiente y auditoría se
+        # confirman en una sola transacción. Si la invalidación rechaza la
+        # operación (p. ej. periodo cerrado) o falla cualquier escritura, el
+        # rollback deja intacto el estado anterior: no queda una jornada nueva
+        # sin invalidar valoraciones ni un cierre de la anterior a medias.
+        try:
+            # Cerrar la vigente el día anterior al inicio de la nueva (historial).
+            if active is not None:
+                self.repo.close_active(employee_id, effective_from - timedelta(days=1))
 
-        created = self.repo.create(
-            employee_id=employee_id,
-            effective_from=effective_from,
-            break_minutes=break_minutes,
-            break_applies_after_minutes=break_applies_after_minutes,
-            **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
-        )
+            created = self.repo.create(
+                employee_id=employee_id,
+                effective_from=effective_from,
+                break_minutes=break_minutes,
+                break_applies_after_minutes=break_applies_after_minutes,
+                **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
+                commit=False,
+            )
 
-        AuditRepository(self.db).create(
-            entity_type="schedule",
-            entity_id=created.id,
-            action="set_schedule",
-            old_values=self._serialize(active),
-            new_values=self._serialize(created),
-            reason=f"Nueva jornada vigente desde {effective_from.isoformat()}",
-            performed_by=performed_by,
-        )
+            from app.modules.work_calendar.service import WorkCalendarService
+            WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
+
+            AuditRepository(self.db).create(
+                entity_type="schedule",
+                entity_id=created.id,
+                action="set_schedule",
+                old_values=self._serialize(active),
+                new_values=self._serialize(created),
+                reason=f"Nueva jornada vigente desde {effective_from.isoformat()}",
+                performed_by=performed_by,
+                commit=False,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        self.db.refresh(created)
         return created
 
     @staticmethod

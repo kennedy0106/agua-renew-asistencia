@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { ApiError, authApi } from "@/lib/api";
-import { Check, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
+import { writeAdminSessionHint } from "@/components/AdminSession";
+import { Check, ChevronRight, Clock, Droplet, Eye, EyeOff, Key, Shield, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
 export default function AdminLoginPage() {
@@ -20,8 +21,9 @@ export default function AdminLoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await authApi.login(username, password);
-      router.replace("/admin/dashboard");
+      const loggedIn = await authApi.login(username, password);
+      writeAdminSessionHint(loggedIn);
+      router.replace(loggedIn.must_change_password ? "/admin/change-password" : "/admin/dashboard");
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -33,11 +35,13 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <div className="login-wrap">
-      <section className="login-hero" aria-labelledby="login-hero-title">
+    <main className="login-wrap login-wrap--adaptive">
+      <section className="login-hero login-hero--adaptive" aria-labelledby="login-hero-title">
         <div className="login-caustic" aria-hidden />
-        <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
-        <h1 id="login-hero-title">El tiempo del equipo, claro y en orden</h1>
+        <div className="login-brand-plaque">
+          <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
+        </div>
+        <h1 id="login-hero-title"><span>Asistencia</span> diaria</h1>
         <p>
           Registra jornadas, revisa incidencias y calcula remuneraciones con la
           misma precisión con la que Agua Renew cuida cada operación.
@@ -53,19 +57,20 @@ export default function AdminLoginPage() {
         </p>
       </section>
 
-      <section className="login-card" aria-labelledby="login-title">
+      <section className="login-card login-card--adaptive" aria-labelledby="login-title">
         <div className="brand">
           <Image src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} priority />
         </div>
 
+        <div className="login-drop" aria-hidden>
+          <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
+        </div>
         <div className="login-card-heading">
-          <div className="login-drop" aria-hidden>
-            <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} />
-          </div>
-          <div>
-            <h2 id="login-title">Iniciar sesión</h2>
-            <p>Entra con tu usuario de Agua Renew para administrar la asistencia.</p>
-          </div>
+          <span className="login-mobile-context">
+            Agua ReNew · Asistencia
+          </span>
+          <h2 id="login-title">Iniciar sesión</h2>
+          <p>Entra con tu usuario de Agua Renew para administrar la asistencia.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="login-form">
@@ -83,8 +88,9 @@ export default function AdminLoginPage() {
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
                 placeholder="tu.usuario"
-                autoFocus
                 required
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? "login-error" : undefined}
               />
             </div>
           </div>
@@ -103,6 +109,8 @@ export default function AdminLoginPage() {
                 autoComplete="current-password"
                 placeholder="Tu contraseña"
                 required
+                aria-invalid={Boolean(error)}
+                aria-describedby={error ? "login-error" : undefined}
               />
               <button
                 type="button"
@@ -110,6 +118,7 @@ export default function AdminLoginPage() {
                 onClick={() => setShowPassword((visible) => !visible)}
                 aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"}
                 aria-pressed={showPassword}
+                aria-controls="login-pass"
               >
                 {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
@@ -117,22 +126,29 @@ export default function AdminLoginPage() {
           </div>
 
           {error && (
-            <p className="alert alert-error" role="alert">
-              <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+            <p id="login-error" className="alert alert-error" role="alert" aria-live="assertive">
+              <Droplet size={15} className="alert-icon" />
               {error}
             </p>
           )}
 
-          <button type="submit" className="btn btn-primary login-submit" disabled={busy}>
+          <button
+            type="submit"
+            className="btn btn-primary login-submit"
+            disabled={busy}
+            aria-busy={busy}
+          >
             {busy && <Spinner />}
             {busy ? "Ingresando…" : "Ingresar al sistema"}
+            {!busy && <ChevronRight className="login-submit-arrow" size={18} />}
           </button>
         </form>
+        <div className="login-security-divider" aria-hidden><span><Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} /></span></div>
         <p className="login-security">
           <Image src="/brand/logo_gotita.svg" alt="" width={754} height={1065} aria-hidden />
           Acceso solo para el equipo Agua Renew.
         </p>
       </section>
-    </div>
+    </main>
   );
 }

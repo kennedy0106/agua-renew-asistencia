@@ -1,9 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AdminShell from "@/components/AdminShell";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import EmployeeAttendanceWorkspace, { type EmployeeAttendanceWorkspaceHandle } from "@/components/EmployeeAttendanceWorkspace";
+import { DetailSkeleton, Skeleton, Spinner } from "@/components/Loading";
+import { useNotifications } from "@/components/Notifications";
 import { useAdminSession } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
 import {
@@ -142,13 +146,71 @@ export default function EmployeeDetailPage() {
   const [showAdjForm, setShowAdjForm] = useState(false);
   const [adjForm, setAdjForm] = useState({
     adjustment_date: new Date().toISOString().slice(0, 10),
-    minutes: 0,
+    minutes: "0",
     adjustment_type: "RECUPERACION" as HourAdjustment["adjustment_type"],
     reason: "",
   });
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
   const [savingAdj, setSavingAdj] = useState(false);
+  const adjustmentOperationKeys = useRef<Record<string, string>>({});
+  const [adjustmentAction, setAdjustmentAction] = useState<string | null>(null);
+  const workspaceRef = useRef<EmployeeAttendanceWorkspaceHandle>(null);
+
+  const [initialScheduleForm, setInitialScheduleForm] = useState(JSON.stringify(defaultForm()));
+  const [initialSalaryForm, setInitialSalaryForm] = useState("");
+  const isScheduleDirty = JSON.stringify(form) !== initialScheduleForm;
+  const isSalaryDirty = JSON.stringify(salaryForm) !== initialSalaryForm;
+  const isAdjDirty =
+    adjForm.reason.trim() !== "" || adjForm.minutes !== "0" || adjForm.adjustment_type !== "RECUPERACION";
+
+  function handleCancelSchedule() {
+    if (saving) return;
+    if (isScheduleDirty) {
+      if (!window.confirm("Tienes cambios sin guardar en la jornada laboral. ¿Deseas descartarlos?")) {
+        return;
+      }
+    }
+    setShowForm(false);
+  }
+
+  function handleCancelSalary() {
+    if (savingSalary) return;
+    if (isSalaryDirty) {
+      if (!window.confirm("Tienes cambios sin guardar en la configuración del sueldo. ¿Deseas descartarlos?")) {
+        return;
+      }
+    }
+    setShowSalaryForm(false);
+  }
+
+  // `onClose` se invoca cuando termina la animación de salida del diálogo. La
+  // protección de datos vive en dos capas anteriores: AppDialog impide que
+  // Escape/backdrop cierren mientras `dismissible` sea false, y el botón de
+  // cierre ya confirmó el descarte antes de animar. Por eso aquí solo
+  // desmontamos, sin volver a preguntar (evita confirmaciones duplicadas).
+  function handleCancelAdjustment() {
+    if (savingAdj) return;
+    setShowAdjForm(false);
+  }
+
+  // Cierre explícito del diálogo de "Nuevo ajuste" vía AppDialogCloseButton.
+  // AppDialog separa el cierre implícito (Escape/backdrop, respeta
+  // `dismissible`) del cierre explícito por botón: si no cancelamos con
+  // `preventDefault`, el botón arranca la animación
+  // (data-motion-state="exiting") y solo al terminar llama a `onClose`.
+  function requestAdjustmentClose(event: React.MouseEvent<HTMLButtonElement>) {
+    if (savingAdj) {
+      event.preventDefault();
+      return;
+    }
+    if (!isAdjDirty) return; // limpio: el botón anima la salida y cierra
+    if (!window.confirm("Tienes datos ingresados en el ajuste. ¿Deseas descartarlos?")) {
+      event.preventDefault(); // el usuario conserva los datos
+      return;
+    }
+    // Descarte confirmado: dejamos que el cierre explícito anime y desmonte.
+  }
 
   const [detectedDays, setDetectedDays] = useState<OvertimeDetectItem[] | null>(null);
   const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
@@ -160,8 +222,16 @@ export default function EmployeeDetailPage() {
   const [qrNonce, setQrNonce] = useState(0);
   const [downloadingQr, setDownloadingQr] = useState(false);
   const [rotatingQr, setRotatingQr] = useState(false);
+  const [confirmQrRotation, setConfirmQrRotation] = useState(false);
+  const [registeringOvertimeDay, setRegisteringOvertimeDay] = useState<string | null>(null);
+  const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const activeOvertimeByDate = new Map(
+    adjustments
+      .filter((adjustment) => adjustment.adjustment_type === "OVERTIME" && (adjustment.status === "PENDING" || adjustment.status === "APPROVED"))
+      .map((adjustment) => [adjustment.adjustment_date, adjustment]),
+  );
 
   function monthRange(): { from: string; to: string } {
     const now = new Date();
@@ -187,6 +257,8 @@ export default function EmployeeDetailPage() {
   }, [canManage, employeeId]);
 
   async function registerOvertime(day: OvertimeDetectItem) {
+    if (registeringOvertimeDay) return;
+    setRegisteringOvertimeDay(day.work_date);
     setError(null);
     try {
       await adjustmentsApi.create(employeeId, {
@@ -196,18 +268,25 @@ export default function EmployeeDetailPage() {
         reason: `Horas extra del ${day.work_date} (${Math.round(day.extra_minutes / 60)} h)`,
       });
       await Promise.all([loadOvertime(), loadAdjustmentsAndBalance()]);
+      success("Horas extra registradas como ajuste pendiente.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo registrar la hora extra");
+    } finally {
+      setRegisteringOvertimeDay(null);
     }
   }
 
-  async function loadAdjustmentsAndBalance() {
+  const loadAdjustmentsAndBalance = useCallback(async () => {
     const [bal, adj] = await Promise.all([
       adjustmentsApi.balance(employeeId),
       adjustmentsApi.list(employeeId),
     ]);
     setBalance(bal);
     setAdjustments(adj);
+  }, [employeeId]);
+
+  async function refreshAdjustmentSurfaces() {
+    await Promise.all([loadAdjustmentsAndBalance(), loadOvertime()]);
   }
 
   const load = useCallback(async () => {
@@ -243,7 +322,7 @@ export default function EmployeeDetailPage() {
         withTimeout(adjustmentsApi.list(employeeId)).then(setAdjustments),
       ];
 
-      if (user && MANAGE_ROLES.includes(user.role)) {
+      if (canManage) {
         tasks.push(
           withTimeout(salaryApi.get(employeeId))
             .then((s) => setSalary(s))
@@ -266,7 +345,7 @@ export default function EmployeeDetailPage() {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
       setLoading(false);
     }
-  }, [employeeId, loadOvertime, user]);
+  }, [canManage, employeeId, loadOvertime]);
 
   useEffect(() => {
     if (!ready) return;
@@ -288,23 +367,24 @@ export default function EmployeeDetailPage() {
         const blob = new Blob([svg], { type: "image/svg+xml" });
         const url = URL.createObjectURL(blob);
         if (!cancelled) setQrUrl(url);
+        else URL.revokeObjectURL(url);
       } catch {
         // silencioso: el QR es un extra, no debe romper la página
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [employee, qrNonce]);
 
-  async function handleDownloadQr() {
+  useEffect(() => () => { if (qrUrl) URL.revokeObjectURL(qrUrl); }, [qrUrl]);
+
+  async function handleDownloadQr(format: "svg" | "png" | "jpg") {
     if (!employee) return;
     setDownloadingQr(true);
     try {
       // Descargar el archivo real (SVG), no un link. El atributo `download`
       // de un <a> cross-origin es ignorado por el navegador; por eso se baja
       // vía fetch + blob + <a> local.
-      const res = await fetch(employeesApi.qrUrl(employee.id), {
+      const res = await fetch(`${employeesApi.qrUrl(employee.id)}?format=${format}`, {
         credentials: "include",
       });
       if (!res.ok) {
@@ -312,16 +392,16 @@ export default function EmployeeDetailPage() {
         setError(body.includes("No autenticado") ? "Sesión expirada: vuelve a iniciar sesión" : "No se pudo descargar el QR");
         return;
       }
-      const svg = await res.text();
-      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `qr-${employee.employee_code}.svg`;
+      a.download = `qr-${employee.employee_code}-5x5cm.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      success(`QR ${format.toUpperCase()} descargado a 5 × 5 cm.`);
     } catch {
       setError("No se pudo descargar el QR");
     } finally {
@@ -331,12 +411,12 @@ export default function EmployeeDetailPage() {
 
   async function handleRotateQr() {
     if (!employee) return;
-    if (!window.confirm("Esto invalida el QR actual. ¿Rotar el código?")) return;
     setRotatingQr(true);
     setError(null);
     try {
       await employeesApi.rotateQr(employee.id);
       setQrNonce((n) => n + 1);
+      success("QR rotado. El código anterior ya no identifica al empleado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rotar el QR");
     } finally {
@@ -353,6 +433,7 @@ export default function EmployeeDetailPage() {
       setShowForm(false);
       setForm(defaultForm());
       await load();
+      success("Jornada laboral guardada.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo guardar la jornada");
     } finally {
@@ -376,6 +457,7 @@ export default function EmployeeDetailPage() {
         custom_additional_hours_rate: null,
       });
       await load();
+      success("Sueldo guardado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo guardar el sueldo");
     } finally {
@@ -393,18 +475,25 @@ export default function EmployeeDetailPage() {
 
   async function handleCreateAdjustment(event: React.FormEvent) {
     event.preventDefault();
+    const minutes = Number(adjForm.minutes);
+    const minutesAreValid = /^-?\d+$/.test(adjForm.minutes.trim()) && Number.isInteger(minutes) && minutes >= -1440 && minutes <= 1440;
+    if (!minutesAreValid) {
+      setError("Ingresa minutos enteros entre -1440 y 1440. Usa el signo menos para descontar tiempo.");
+      return;
+    }
     setSavingAdj(true);
     setError(null);
     try {
-      await adjustmentsApi.create(employeeId, adjForm);
+      await adjustmentsApi.create(employeeId, { ...adjForm, minutes });
       setShowAdjForm(false);
       setAdjForm({
         adjustment_date: new Date().toISOString().slice(0, 10),
-        minutes: 0,
+        minutes: "0",
         adjustment_type: "RECUPERACION",
         reason: "",
       });
       await loadAdjustmentsAndBalance();
+      success("Ajuste registrado correctamente.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el ajuste");
     } finally {
@@ -413,32 +502,54 @@ export default function EmployeeDetailPage() {
   }
 
   async function handleApproveAdjustment(id: string) {
+    if (adjustmentAction) return;
     setError(null);
+    const adjustment = adjustments.find((item) => item.id === id);
+    if (!adjustment?.version || !adjustment.approval_snapshot) {
+      setError("Actualice el historial antes de aprobar; falta la previsualización vigente del ajuste.");
+      return;
+    }
+    const key = adjustmentOperationKeys.current[id] ?? crypto.randomUUID();
+    adjustmentOperationKeys.current[id] = key;
+    setAdjustmentAction(`approve:${id}`);
     try {
-      await adjustmentsApi.approve(id);
+      await adjustmentsApi.approve(id, adjustment.version, adjustment.approval_snapshot, key);
+      delete adjustmentOperationKeys.current[id];
       await loadAdjustmentsAndBalance();
+      success("Ajuste aprobado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo aprobar el ajuste");
-    }
+    } finally { setAdjustmentAction(null); }
   }
 
   async function handleRejectAdjustment(id: string) {
+    if (adjustmentAction) return;
     if (rejectReason.trim().length < 3) return;
     setError(null);
+    const adjustment = adjustments.find((item) => item.id === id);
+    if (!adjustment?.version) {
+      setError("Actualice el historial antes de rechazar; falta la versión vigente del ajuste.");
+      return;
+    }
+    const key = adjustmentOperationKeys.current[id] ?? crypto.randomUUID();
+    adjustmentOperationKeys.current[id] = key;
+    setAdjustmentAction(`reject:${id}`);
     try {
-      await adjustmentsApi.reject(id, rejectReason.trim());
+      await adjustmentsApi.reject(id, rejectReason.trim(), adjustment.version, key);
+      delete adjustmentOperationKeys.current[id];
       setRejectingId(null);
       setRejectReason("");
       await loadAdjustmentsAndBalance();
+      success("Ajuste rechazado.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo rechazar el ajuste");
-    }
+    } finally { setAdjustmentAction(null); }
   }
 
   if (!ready || loading) {
     return (
       <AdminShell title="Detalle de empleado">
-        <p className="muted">Cargando…</p>
+        <DetailSkeleton sections={4} />
       </AdminShell>
     );
   }
@@ -470,11 +581,11 @@ export default function EmployeeDetailPage() {
 
       <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.8rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.9rem" }}>
+          <div className="employee-profile-identity" style={{ display: "flex", alignItems: "center", gap: "0.9rem" }}>
             <div className="avatar" style={{ width: 48, height: 48, fontSize: "1.15rem" }}>
               {employee.first_name.charAt(0).toUpperCase()}
             </div>
-            <div>
+            <div className="employee-profile-identity-copy">
               <h1 style={{ fontSize: "1.25rem" }}>
                 {employee.first_name} {employee.last_name}
               </h1>
@@ -520,30 +631,35 @@ export default function EmployeeDetailPage() {
                 style={{ display: "block" }}
               />
             ) : (
-              <span className="muted" style={{ fontSize: "0.72rem" }}>Cargando…</span>
+              <Skeleton width={108} height={108} />
             )}
           </div>
           <div style={{ display: "grid", gap: "0.35rem" }}>
             <p className="muted" style={{ fontSize: "0.78rem", maxWidth: 260 }}>
               Código QR único para este empleado. Úsalo para marcar asistencia o imprimirlo en su credencial.
             </p>
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleDownloadQr}
-              disabled={downloadingQr}
-              style={{ width: "fit-content" }}
-            >
-              <Download size={14} />
-              {downloadingQr ? "Descargando…" : "Descargar QR"}
-            </button>
+            <div className="button-row" aria-label="Descargar código QR">
+              <button
+                className="btn btn-outline btn-sm"
+                type="button"
+                onClick={() => void handleDownloadQr("png")}
+                disabled={downloadingQr}
+              >
+                {downloadingQr ? <Spinner /> : <Download size={14} />}
+                {downloadingQr ? "Descargando…" : "PNG 5 × 5 cm"}
+              </button>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("svg")} disabled={downloadingQr}>SVG</button>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("jpg")} disabled={downloadingQr}>JPG</button>
+            </div>
             {canManage && (
               <button
                 className="btn btn-outline btn-sm"
-                onClick={() => void handleRotateQr()}
+                onClick={() => setConfirmQrRotation(true)}
                 disabled={rotatingQr}
                 style={{ width: "fit-content" }}
               >
-                {rotatingQr ? "Rotando…" : "Rotar QR"}
+                {rotatingQr ? <Spinner /> : null}
+                {rotatingQr ? "Rotando QR…" : "Rotar QR"}
               </button>
             )}
           </div>
@@ -556,47 +672,55 @@ export default function EmployeeDetailPage() {
         )}
       </div>
 
+      {canManage && <EmployeeAttendanceWorkspace ref={workspaceRef} employeeId={employeeId} onAdjustmentMutated={refreshAdjustmentSurfaces} />}
+
       {/* Jornada laboral */}
       <div className="card card-pad" style={{ marginBottom: "1.1rem" }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "0.6rem", marginBottom: "0.9rem" }}>
           <div>
             <h2 className="card-title">Jornada laboral</h2>
-            <p className="card-sub">Minutos pactados por día; el cambio de jornada preserva el historial.</p>
+            <p className="card-sub">Horario semanal vigente. Los cambios se guardan sin borrar configuraciones anteriores.</p>
           </div>
           {canManage && (
             <button
               className="btn btn-outline btn-sm"
               onClick={() => {
-                if (!showForm && schedule) {
-                  setForm({ ...defaultForm(), effective_from: dayAfter(schedule.effective_from) });
-                }
-                setShowForm((v) => !v);
+                const initForm = schedule
+                  ? { ...defaultForm(), effective_from: dayAfter(schedule.effective_from) }
+                  : defaultForm();
+                setForm(initForm);
+                setInitialScheduleForm(JSON.stringify(initForm));
+                setShowForm(true);
               }}
             >
-              {showForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Plus size={14} /> Nueva jornada
-                </>
-              )}
+              <><Plus size={14} /> Nueva jornada</>
             </button>
           )}
         </div>
 
-        {canManage && showForm && (
-          <form onSubmit={handleSaveSchedule} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
-            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={handleCancelSchedule} dismissible={!isScheduleDirty && !saving} className="employee-profile-dialog employee-profile-dialog--wide">
+          <form onSubmit={handleSaveSchedule} className="schedule-form">
+            <div className="app-dialog-heading">
               <div>
-                <label className="label">Vigente desde</label>
-                <DateField value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
+                <h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2>
+                <p className="card-sub">El cambio preserva el historial de la jornada anterior.</p>
               </div>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={handleCancelSchedule} disabled={saving}>Cerrar</button>
+            </div>
+            <section className="schedule-form-section">
+              <div>
+                <label className="label" id="schedule-effective-from-label">Vigente desde</label>
+                <DateField aria-label="Vigente desde" value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
+              </div>
+            </section>
+            <section className="schedule-form-section" aria-labelledby="schedule-hours-title">
+              <h3 id="schedule-hours-title" className="label">Horas pactadas por día</h3>
+              <div className="schedule-hours-grid">
               {DAYS.map((day) => (
                 <div key={day.key}>
-                  <label className="label">{day.label} (horas)</label>
+                  <label className="label" htmlFor={`schedule-${day.key}`}>{day.label} (horas)</label>
                   <input
+                    id={`schedule-${day.key}`}
                     type="number"
                     min={0}
                     max={24}
@@ -607,9 +731,15 @@ export default function EmployeeDetailPage() {
                   />
                 </div>
               ))}
+              </div>
+            </section>
+            <section className="schedule-form-section" aria-labelledby="schedule-break-title">
+              <h3 id="schedule-break-title" className="label">Reglas de refrigerio</h3>
+              <div className="schedule-break-grid">
               <div>
-                <label className="label">Refrigerio (min)</label>
+                <label className="label" htmlFor="schedule-break-minutes">Refrigerio (min)</label>
                 <input
+                  id="schedule-break-minutes"
                   type="number"
                   min={0}
                   max={1440}
@@ -620,8 +750,9 @@ export default function EmployeeDetailPage() {
                 />
               </div>
               <div>
-                <label className="label">Aplicar refrigerio desde (min)</label>
+                <label className="label" htmlFor="schedule-break-applies-after">Aplicar refrigerio desde (min)</label>
                 <input
+                  id="schedule-break-applies-after"
                   type="number"
                   min={0}
                   max={1440}
@@ -631,13 +762,17 @@ export default function EmployeeDetailPage() {
                   onChange={(e) => setForm({ ...form, break_applies_after_minutes: Number(e.target.value) })}
                 />
               </div>
+              </div>
+            </section>
+            <div className="app-dialog-actions employee-dialog-sticky-actions">
+              <button type="button" className="btn btn-ghost" onClick={handleCancelSchedule} disabled={saving}>Cancelar</button>
+              <button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
+                {saving ? <Spinner /> : <Check size={15} />}
+                {saving ? "Guardando jornada…" : "Guardar jornada"}
+              </button>
             </div>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={saving || !form.effective_from}>
-              <Check size={15} />
-              {saving ? "Guardando…" : "Guardar jornada"}
-            </button>
           </form>
-        )}
+        </AppDialog>}
 
         {schedule ? (
           <div className="table-wrap">
@@ -695,41 +830,48 @@ export default function EmployeeDetailPage() {
             <button
               className="btn btn-outline btn-sm"
               onClick={() => {
-                if (!showSalaryForm && salary) {
-                  setSalaryForm({
-                    effective_from: dayAfter(salary.effective_from),
-                    monthly_salary: salary.monthly_salary,
-                    overtime_enabled: salary.overtime_enabled,
-                    use_custom_overtime_rates: salary.use_custom_overtime_rates,
-                    custom_first_two_hours_rate: salary.custom_first_two_hours_rate,
-                    custom_additional_hours_rate: salary.custom_additional_hours_rate,
-                  });
-                }
-                setShowSalaryForm((v) => !v);
+                const initSalary: SalaryPayload = salary ? {
+                  effective_from: dayAfter(salary.effective_from),
+                  monthly_salary: salary.monthly_salary,
+                  overtime_enabled: salary.overtime_enabled,
+                  use_custom_overtime_rates: salary.use_custom_overtime_rates,
+                  custom_first_two_hours_rate: salary.custom_first_two_hours_rate,
+                  custom_additional_hours_rate: salary.custom_additional_hours_rate,
+                } : {
+                  effective_from: "",
+                  monthly_salary: "",
+                  overtime_enabled: false,
+                  use_custom_overtime_rates: false,
+                  custom_first_two_hours_rate: null,
+                  custom_additional_hours_rate: null,
+                };
+                setSalaryForm(initSalary);
+                setInitialSalaryForm(JSON.stringify(initSalary));
+                setShowSalaryForm(true);
               }}
             >
-              {showSalaryForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Coins size={14} /> Configurar sueldo
-                </>
-              )}
+              <><Coins size={14} /> Configurar sueldo</>
             </button>
           </div>
 
-          {showSalaryForm && (
-            <form onSubmit={handleSaveSalary} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={handleCancelSalary} dismissible={!isSalaryDirty && !savingSalary} className="employee-profile-dialog">
+            <form onSubmit={handleSaveSalary} className="schedule-form">
+              <div className="app-dialog-heading">
+                <div>
+                  <h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2>
+                  <p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p>
+                </div>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={handleCancelSalary} disabled={savingSalary}>Cerrar</button>
+              </div>
               <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
                 <div>
-                  <label className="label">Vigente desde</label>
-                  <DateField value={salaryForm.effective_from} onChange={(v) => setSalaryForm({ ...salaryForm, effective_from: v })} required placeholder="Seleccionar" />
+                  <label className="label" id="salary-effective-from-label">Vigente desde</label>
+                  <DateField aria-label="Vigente desde" value={salaryForm.effective_from} onChange={(v) => setSalaryForm({ ...salaryForm, effective_from: v })} required placeholder="Seleccionar" />
                 </div>
                 <div>
-                  <label className="label">Sueldo mensual (S/)</label>
+                  <label className="label" htmlFor="salary-monthly-amount">Sueldo mensual (S/)</label>
                   <input
+                    id="salary-monthly-amount"
                     type="number"
                     min={0.01}
                     step={0.01}
@@ -774,8 +916,9 @@ export default function EmployeeDetailPage() {
                     {salaryForm.use_custom_overtime_rates && (
                       <>
                         <div>
-                          <label className="label">Primeras 2 h (%)</label>
+                          <label className="label" htmlFor="salary-first-two-hours">Primeras 2 h (%)</label>
                           <input
+                            id="salary-first-two-hours"
                             type="number"
                             min={25}
                             step={0.01}
@@ -787,8 +930,9 @@ export default function EmployeeDetailPage() {
                           <p style={{ fontSize: "0.68rem", color: "var(--muted)", margin: "0.2rem 0 0" }}>Mínimo 25%</p>
                         </div>
                         <div>
-                          <label className="label">Tercera hora en adelante (%)</label>
+                          <label className="label" htmlFor="salary-additional-hours">Tercera hora en adelante (%)</label>
                           <input
+                            id="salary-additional-hours"
                             type="number"
                             min={35}
                             step={0.01}
@@ -804,17 +948,19 @@ export default function EmployeeDetailPage() {
                   </>
                 )}
               </div>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                style={{ marginTop: "0.8rem" }}
-                disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
-              >
-                <Check size={15} />
-                {savingSalary ? "Guardando…" : "Guardar sueldo"}
-              </button>
+              <div className="app-dialog-actions employee-dialog-sticky-actions">
+                <button type="button" className="btn btn-ghost" onClick={handleCancelSalary} disabled={savingSalary}>Cancelar</button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
+                >
+                  {savingSalary ? <Spinner /> : <Check size={15} />}
+                  {savingSalary ? "Guardando sueldo…" : "Guardar sueldo"}
+                </button>
+              </div>
             </form>
-          )}
+          </AppDialog>}
 
           {salary ? (
             <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", marginBottom: 0 }}>
@@ -861,16 +1007,8 @@ export default function EmployeeDetailPage() {
             <p className="card-sub">Saldo = trabajado − esperado + ajustes (sin horas extra). Las HE aprobadas se muestran aparte.</p>
           </div>
           {canManage && (
-            <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm((v) => !v)}>
-              {showAdjForm ? (
-                <>
-                  <X size={14} /> Cancelar
-                </>
-              ) : (
-                <>
-                  <Plus size={14} /> Nuevo ajuste
-                </>
-              )}
+            <button className="btn btn-outline btn-sm" onClick={() => setShowAdjForm(true)}>
+              <Plus size={14} /> Nuevo ajuste
             </button>
           )}
         </div>
@@ -926,15 +1064,15 @@ export default function EmployeeDetailPage() {
                 }}
                 disabled={detecting}
               >
-                <Zap size={14} />
-                {detecting ? "Consultando…" : "Detectar sobretiempo del mes"}
+                {detecting ? <Spinner /> : <Zap size={14} />}
+                {detecting ? "Consultando sobretiempo…" : "Detectar sobretiempo del mes"}
               </button>
             </div>
 
             {overtimeValue && overtimeValue.overtime_minutes > 0 && (
               <div className="card" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.6rem", boxShadow: "none", display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem", fontSize: "0.82rem" }}>
                 <span className="muted">
-                  Minutos aprobados: <strong style={{ color: "var(--text)" }}>{overtimeValue.overtime_minutes}</strong>
+                  Tiempo aprobado: <strong style={{ color: "var(--text)" }}>{signedMinutes(overtimeValue.overtime_minutes)}</strong>
                 </span>
                 <span className="muted">
                   Valor: <strong style={{ color: "var(--dark-green)" }}>S/ {Number(overtimeValue.value).toFixed(2)}</strong>
@@ -959,40 +1097,67 @@ export default function EmployeeDetailPage() {
                       </span>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
                         <strong style={{ color: "var(--primary-blue)" }}>+{signedMinutes(day.extra_minutes)}</strong>
-                        <button className="btn btn-primary btn-sm" onClick={() => registerOvertime(day)}>
-                          Registrar como HE
-                        </button>
+                        {activeOvertimeByDate.get(day.work_date) ? (
+                          <span className={`badge ${activeOvertimeByDate.get(day.work_date)?.status === "APPROVED" ? "badge-green" : "badge-amber"}`}>
+                            {activeOvertimeByDate.get(day.work_date)?.status === "APPROVED" ? "Aprobada" : "Pendiente"}
+                          </span>
+                        ) : (
+                          <button className="btn btn-primary btn-sm" onClick={() => void registerOvertime(day)} disabled={registeringOvertimeDay === day.work_date}>
+                            {registeringOvertimeDay === day.work_date ? "Registrando…" : "Registrar como HE"}
+                          </button>
+                        )}
                       </span>
                     </li>
                   ))}
                 </ul>
               ))}
           </div>
-        )}
+      )}
 
-        {canManage && showAdjForm && (
-          <form onSubmit={handleCreateAdjustment} className="card" style={{ padding: "0.9rem", marginBottom: "1rem", background: "var(--gray-100)", boxShadow: "none" }}>
+      {confirmQrRotation && (
+        <AppDialog labelledBy="rotate-qr-title" onClose={() => setConfirmQrRotation(false)} dismissible={!rotatingQr}>
+          <h2 id="rotate-qr-title" className="card-title">¿Rotar el código QR?</h2>
+          <p className="card-sub">El QR actual dejará de identificar a este empleado. Usa esta acción solo si se perdió o comprometió la credencial.</p>
+          <div className="app-dialog-actions employee-dialog-sticky-actions">
+            <AppDialogCloseButton className="btn btn-outline" disabled={rotatingQr}>Cancelar</AppDialogCloseButton>
+            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr} aria-busy={rotatingQr}>{rotatingQr ? <Spinner /> : null}{rotatingQr ? "Rotando QR…" : "Rotar QR"}</button>
+          </div>
+        </AppDialog>
+      )}
+
+        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={handleCancelAdjustment} dismissible={!isAdjDirty && !savingAdj} className="employee-profile-dialog">
+          <form onSubmit={handleCreateAdjustment} className="schedule-form">
+            <div className="app-dialog-heading">
+              <div>
+                <h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2>
+                <p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p>
+              </div>
+              <AppDialogCloseButton type="button" className="btn btn-ghost btn-sm" onClick={requestAdjustmentClose} disabled={savingAdj}>Cerrar</AppDialogCloseButton>
+            </div>
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
-                <label className="label">Fecha</label>
-                <DateField value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
+                <label className="label" id="adj-date-label">Fecha</label>
+                <DateField aria-label="Fecha del ajuste" value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
               </div>
               <div>
-                <label className="label">Minutos (±)</label>
+                <label className="label" htmlFor="adjustment-minutes">Tiempo a sumar o descontar (minutos)</label>
                 <input
+                  id="adjustment-minutes"
                   type="number"
                   min={-1440}
                   max={1440}
+                  step={1}
                   className="input"
                   value={adjForm.minutes}
-                  onChange={(e) => setAdjForm({ ...adjForm, minutes: Number(e.target.value) })}
+                  onChange={(e) => setAdjForm({ ...adjForm, minutes: e.target.value })}
                   required
                 />
+                <small className="muted">Ejemplo: 420 suma 7 horas; -420 descuenta 7 horas.</small>
               </div>
               <div>
-                <label className="label">Tipo</label>
+                <label className="label" id="adj-type-label" htmlFor="adj-type-trigger">Tipo</label>
                 <Select value={adjForm.adjustment_type} onValueChange={(v) => setAdjForm({ ...adjForm, adjustment_type: v as HourAdjustment["adjustment_type"] })}>
-                  <SelectTrigger aria-label="Tipo de ajuste">
+                  <SelectTrigger id="adj-type-trigger" aria-label="Tipo de ajuste">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1004,8 +1169,9 @@ export default function EmployeeDetailPage() {
                 </Select>
               </div>
               <div>
-                <label className="label">Motivo</label>
+                <label className="label" htmlFor="adjustment-reason">Motivo</label>
                 <input
+                  id="adjustment-reason"
                   type="text"
                   className="input"
                   value={adjForm.reason}
@@ -1016,12 +1182,15 @@ export default function EmployeeDetailPage() {
                 />
               </div>
             </div>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.8rem" }} disabled={savingAdj || adjForm.reason.trim().length < 3}>
-              <Plus size={15} />
-              {savingAdj ? "Guardando…" : "Crear ajuste (pendiente)"}
-            </button>
+            <div className="app-dialog-actions employee-dialog-sticky-actions">
+              <AppDialogCloseButton type="button" className="btn btn-ghost" onClick={requestAdjustmentClose} disabled={savingAdj}>Cancelar</AppDialogCloseButton>
+              <button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3 || !/^-?\d+$/.test(adjForm.minutes.trim()) || Number(adjForm.minutes) < -1440 || Number(adjForm.minutes) > 1440}>
+                {savingAdj ? <Spinner /> : <Plus size={15} />}
+                {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
+              </button>
+            </div>
           </form>
-        )}
+        </AppDialog>}
 
         {adjustments.length === 0 ? (
           <p className="muted" style={{ fontSize: "0.85rem" }}>Sin ajustes registrados.</p>
@@ -1050,11 +1219,17 @@ export default function EmployeeDetailPage() {
                     ) : (
                       <span className="badge badge-amber">Pendiente</span>
                     )}
+                    {canManage && !adj.voided_at && (
+                      <span className="button-row">
+                        <button className="btn btn-outline btn-sm" type="button" onClick={() => workspaceRef.current?.editAdjustment(adj)} disabled={adjustmentAction !== null}>Editar</button>
+                        <button className="btn btn-danger btn-sm" type="button" onClick={() => workspaceRef.current?.voidAdjustment(adj)} disabled={adjustmentAction !== null}>Eliminar</button>
+                      </span>
+                    )}
                     {canManage && adj.status === "PENDING" && (
                       <>
-                        <button className="btn btn-green btn-sm" onClick={() => handleApproveAdjustment(adj.id)}>
-                          <Check size={13} />
-                          Aprobar
+                        <button className="btn btn-green btn-sm" onClick={() => handleApproveAdjustment(adj.id)} disabled={adjustmentAction !== null} aria-busy={adjustmentAction === `approve:${adj.id}`}>
+                          {adjustmentAction === `approve:${adj.id}` ? <Spinner /> : <Check size={13} />}
+                          {adjustmentAction === `approve:${adj.id}` ? "Aprobando…" : "Aprobar"}
                         </button>
                         {rejectingId === adj.id ? (
                           <span style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
@@ -1066,8 +1241,8 @@ export default function EmployeeDetailPage() {
                               onChange={(e) => setRejectReason(e.target.value)}
                               placeholder="Motivo del rechazo…"
                             />
-                            <button className="btn btn-danger btn-sm" onClick={() => handleRejectAdjustment(adj.id)} disabled={rejectReason.trim().length < 3}>
-                              Confirmar
+                            <button className="btn btn-danger btn-sm" onClick={() => handleRejectAdjustment(adj.id)} disabled={rejectReason.trim().length < 3 || adjustmentAction !== null} aria-busy={adjustmentAction === `reject:${adj.id}`}>
+                              {adjustmentAction === `reject:${adj.id}` && <Spinner />}{adjustmentAction === `reject:${adj.id}` ? "Rechazando…" : "Confirmar"}
                             </button>
                             <button
                               className="btn btn-ghost btn-sm"
@@ -1100,6 +1275,7 @@ export default function EmployeeDetailPage() {
           </ul>
         )}
       </div>
+
     </AdminShell>
   );
 }

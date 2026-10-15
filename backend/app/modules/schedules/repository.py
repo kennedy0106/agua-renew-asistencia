@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import date
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,6 +44,34 @@ class WorkScheduleRepository:
             )
         )
 
+    def list_overlapping(
+        self,
+        employee_ids: Iterable[uuid.UUID],
+        date_from: date,
+        date_to: date,
+    ) -> list[WorkSchedule]:
+        """Jornadas que pueden aplicar a cualquiera de las fechas pedidas.
+
+        Las lecturas de panel suelen contener muchas filas y antes resolvían
+        una jornada por fila.  Esta consulta conserva la misma regla de
+        vigencia, pero trae el historial relevante en una sola ida a BD.
+        """
+        identifiers = list(set(employee_ids))
+        if not identifiers:
+            return []
+        return list(
+            self.db.scalars(
+                select(WorkSchedule)
+                .where(
+                    WorkSchedule.employee_id.in_(identifiers),
+                    WorkSchedule.effective_from <= date_to,
+                    (WorkSchedule.effective_to.is_(None))
+                    | (WorkSchedule.effective_to >= date_from),
+                )
+                .order_by(WorkSchedule.employee_id, WorkSchedule.effective_from)
+            )
+        )
+
     def create(
         self,
         *,
@@ -57,7 +86,15 @@ class WorkScheduleRepository:
         sunday_minutes: int = 0,
         break_minutes: int = 0,
         break_applies_after_minutes: int = 360,
+        commit: bool = True,
     ) -> WorkSchedule:
+        """Crea una jornada.
+
+        ``commit=False`` deja la fila en la transacción abierta (solo ``flush``)
+        para que el caso de uso que invalida valoraciones y audita confirme todo
+        de forma atómica; si algo falla, el ``rollback`` no deja la jornada ni
+        el cierre de la anterior persistidos.
+        """
         schedule = WorkSchedule(
             employee_id=employee_id,
             effective_from=effective_from,
@@ -72,8 +109,11 @@ class WorkScheduleRepository:
             break_applies_after_minutes=break_applies_after_minutes,
         )
         self.db.add(schedule)
-        self.db.commit()
-        self.db.refresh(schedule)
+        if commit:
+            self.db.commit()
+            self.db.refresh(schedule)
+        else:
+            self.db.flush()
         return schedule
 
     def close_active(self, employee_id: uuid.UUID, until: date) -> None:

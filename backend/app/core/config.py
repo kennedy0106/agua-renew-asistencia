@@ -38,6 +38,21 @@ class Settings(BaseSettings):
     session_cookie_samesite: str = "lax"
     terminal_token_days: int = 180
     attempt_recovery_minutes: int = 30
+    object_store_endpoint: str = ""
+    object_store_access_key: str = ""
+    object_store_secret_key: str = ""
+    object_store_bucket: str = "asistencia-evidence"
+    object_store_region: str = "us-east-1"
+    object_store_create_bucket: bool = False
+    # Consulta manual de identidad al dar de alta a un empleado. La clave nunca
+    # se expone al navegador ni se usa en el flujo público de asistencia.
+    decolecta_api_key: str = ""
+    decolecta_timeout_seconds: float = 5.0
+
+    # --- Instrumentación de tiempos (opt-in, local) ---
+    # Apagado por defecto. Cuando se activa, GET /api/v1/attendance/summary
+    # responde con una cabecera Server-Timing numérica (sin datos sensibles).
+    summary_timing_enabled: bool = False
 
     @field_validator("secret_key")
     @classmethod

@@ -56,3 +56,32 @@ export function Spinner({ size = 15 }: { size?: number }) {
     </svg>
   );
 }
+
+/** Esqueleto de una superficie de detalle; preserva la geometría al navegar. */
+export function DetailSkeleton({ sections = 3 }: { sections?: number }) {
+  return (
+    <div className="detail-skeleton" aria-busy="true" aria-label="Cargando detalle">
+      <div className="detail-skeleton__identity">
+        <Skeleton width={48} height={48} round />
+        <div>
+          <Skeleton width={220} height={20} />
+          <Skeleton width={180} height={12} />
+        </div>
+      </div>
+      {Array.from({ length: sections }).map((_, index) => (
+        <section className="detail-skeleton__section" key={index}>
+          <Skeleton width={index % 2 ? 150 : 190} height={17} />
+          <div className="detail-skeleton__grid">
+            <Skeleton height={72} />
+            <Skeleton height={72} />
+            <Skeleton height={72} />
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+export function InlineLoading({ label = "Actualizando…" }: { label?: string }) {
+  return <span className="toolbar-status" role="status"><Spinner /> {label}</span>;
+}

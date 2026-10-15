@@ -13,6 +13,7 @@ from datetime import datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.core.timezone import lima_tz
 from app.modules.employees.models import Employee
@@ -42,14 +43,12 @@ class EmployeeService:
         self,
         *,
         dni: str,
-        employee_code: str,
         first_name: str,
         last_name: str,
         job_role_id: uuid.UUID,
         hire_date=None,
     ) -> Employee:
         dni = dni.strip()
-        employee_code = employee_code.strip()
         first_name = first_name.strip()
         last_name = last_name.strip()
 
@@ -63,33 +62,27 @@ class EmployeeService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Nombres y apellidos son obligatorios",
             )
-        if not employee_code:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="El código interno es obligatorio",
-            )
-        self._ensure_unique(dni=dni, employee_code=employee_code)
+        self._ensure_unique(dni=dni)
         self._ensure_job_role_exists(job_role_id)
 
         # Token QR único (server-side, aleatorio, impredecible).
         qr_token = secrets.token_urlsafe(32)
 
-        return self.repo.create(
-            dni=dni,
-            employee_code=employee_code,
-            first_name=first_name,
-            last_name=last_name,
-            job_role_id=job_role_id,
-            hire_date=hire_date,
-            qr_token=qr_token,
-        )
+        # El código es un correlativo de servidor. La restricción única de la BD
+        # arbitra carreras entre dos altas simultáneas; se vuelve a calcular y reintenta.
+        for _ in range(4):
+            employee_code = self._next_employee_code()
+            try:
+                return self.repo.create(dni=dni, employee_code=employee_code, first_name=first_name, last_name=last_name, job_role_id=job_role_id, hire_date=hire_date, qr_token=qr_token)
+            except IntegrityError:
+                self.db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No se pudo asignar un código interno; inténtelo nuevamente")
 
     def update(
         self,
         employee_id: uuid.UUID,
         *,
         dni: str | None = None,
-        employee_code: str | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
         job_role_id: uuid.UUID | None = None,
@@ -103,18 +96,12 @@ class EmployeeService:
             if not _DNI_RE.fullmatch(dni):
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El DNI debe tener exactamente 8 dígitos")
             self._ensure_unique(dni=dni, exclude_employee_id=employee_id)
-        if employee_code is not None:
-            employee_code = employee_code.strip()
-            if not employee_code:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El código interno es obligatorio")
-            self._ensure_unique(employee_code=employee_code, exclude_employee_id=employee_id)
         if job_role_id is not None:
             self._ensure_job_role_exists(job_role_id)
 
         return self.repo.update(
             employee,
             dni=dni,
-            employee_code=employee_code,
             first_name=first_name.strip() if first_name is not None else None,
             last_name=last_name.strip() if last_name is not None else None,
             job_role_id=job_role_id,
@@ -156,6 +143,10 @@ class EmployeeService:
         return employee
 
     # --- helpers ---
+
+    def _next_employee_code(self) -> str:
+        numeric_codes = [int(code[4:]) for code in self.repo.employee_codes() if code[4:].isdigit()]
+        return f"EMP-{(max(numeric_codes, default=0) + 1):03d}"
 
     def _ensure_unique(self, *, dni: str | None = None, employee_code: str | None = None, exclude_employee_id: uuid.UUID | None = None) -> None:
         if dni is not None:

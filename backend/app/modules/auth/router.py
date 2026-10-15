@@ -26,6 +26,7 @@ def _to_user_out(user: User) -> UserOut:
         username=user.username,
         role=user.system_role.name,
         active=user.active,
+        must_change_password=user.must_change_password,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
     )

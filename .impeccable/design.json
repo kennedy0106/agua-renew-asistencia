@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-14T00:00:00-05:00",
+  "title": "Design System: Agua ReNew Asistencia",
+  "extensions": {
+    "colorMeta": {
+      "brand-blue": { "role": "primary", "canonical": "#0066cc" },
+      "brand-green": { "role": "secondary", "canonical": "#00c853" },
+      "present": { "role": "success", "canonical": "#00a047" },
+      "incident": { "role": "danger", "canonical": "#b42318" }
+    },
+    "typographyMeta": { "family": "Geist Variable", "timeValue": "tabular-nums" },
+    "shadows": { "surface": "0 16px 32px -26px rgba(0,102,204,.45)", "cta": "0 10px 22px -14px rgba(0,102,204,.7)" },
+    "motion": { "interactive": "160ms cubic-bezier(.2,.8,.2,1)", "drawer": "220ms cubic-bezier(.2,.8,.2,1)", "reducedMotion": "Sin movimiento decorativo" },
+    "breakpoints": { "mobile": "919px", "coarsePointer": "sin blur" }
+  },
+  "components": [
+    { "name": "ds-primary-action", "html": "<button class=\"ds-primary-action\">Registrar entrada</button>", "css": ".ds-primary-action{min-height:44px;padding:0 1rem;border:0;border-radius:.35rem;background:#0066cc;color:#fff}.ds-primary-action:hover{background:#0057b0}.ds-primary-action:active{transform:scale(.98)}.ds-primary-action:focus-visible{outline:3px solid #67c3f3;outline-offset:2px}@media(prefers-reduced-motion:reduce){.ds-primary-action:active{transform:none}}" },
+    { "name": "ds-time-value", "html": "<output class=\"ds-time-value\">08:24:31</output>", "css": ".ds-time-value{font:740 clamp(1.5rem,7vw,3.5rem)/1 Geist,sans-serif;font-variant-numeric:tabular-nums;color:#154399}" },
+    { "name": "ds-present-status", "html": "<span class=\"ds-present-status\"><svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"m3 8 3 3 7-7\"/></svg>Presente</span>", "css": ".ds-present-status{display:inline-flex;gap:.35rem;padding:.3rem .55rem;border-radius:999px;background:#e5f8ed;color:#006b31}.ds-present-status svg{width:1rem;fill:none;stroke:currentColor;stroke-width:2}" },
+    { "name": "ds-incident-status", "html": "<span class=\"ds-incident-status\">Requiere revisión</span>", "css": ".ds-incident-status{display:inline-flex;padding:.3rem .55rem;border-radius:999px;background:#fff0ef;color:#b42318}" },
+    { "name": "ds-kiosk-code", "html": "<label class=\"ds-kiosk-code\">Código o DNI<input inputmode=\"numeric\"></label>", "css": ".ds-kiosk-code{display:grid;gap:.45rem}.ds-kiosk-code input{min-height:44px;border:1px solid #b8d8ed;border-radius:.35rem;padding:0 .85rem}.ds-kiosk-code input:focus-visible{outline:3px solid #67c3f3}" },
+    { "name": "ds-surface", "html": "<section class=\"ds-surface\">Contenido operativo</section>", "css": ".ds-surface{padding:1.5rem;border-radius:.85rem;background:rgba(255,255,255,.55);backdrop-filter:blur(28px)}@media(pointer:coarse),(prefers-reduced-transparency:reduce){.ds-surface{background:rgba(255,255,255,.96);backdrop-filter:none}}" },
+    { "name": "ds-calendar-day", "html": "<button class=\"ds-calendar-day\" aria-pressed=\"true\">14</button>", "css": ".ds-calendar-day{width:2.25rem;min-height:2.25rem;border:0;border-radius:.35rem}.ds-calendar-day:hover{background:#e8f0fe}.ds-calendar-day[aria-pressed=\"true\"]{background:#0066cc;color:#fff}.ds-calendar-day:focus-visible{outline:3px solid #67c3f3}" },
+    { "name": "ds-recovery-note", "html": "<p class=\"ds-recovery-note\" role=\"status\">Guardaremos esta marcación cuando vuelva la conexión.</p>", "css": ".ds-recovery-note{padding:.85rem;border-left:3px solid #b42318;border-radius:.35rem;background:#fff8f7;color:#6f1d18}@media(prefers-reduced-motion:reduce){.ds-recovery-note{transition:none}}" }
+  ],
+  "narrative": {
+    "northStar": "Agua en operación",
+    "overview": "Asistencia identifica, confirma entrada o salida y supervisa incidencias con agua detrás de superficies legibles.",
+    "keyCharacteristics": ["Geist como única familia", "azul para acciones y foco", "present para éxito", "incident para revisión", "hora Lima y valores tabulares"],
+    "rules": ["El color se acompaña de texto, icono o posición", "En móvil el CTA sigue en flujo", "Sin blur en puntero grueso o transparencia reducida", "El movimiento decorativo respeta reduced-motion"],
+    "dos": ["Mantener foco visible", "Explicar recovery PostgreSQL sin confirmar una marca inexistente", "Conservar DNI, código y QR como identificación"],
+    "donts": ["No apilar vidrio", "No ocultar columnas críticas", "No alterar rutas, permisos, autenticación ni contratos"]
+  }
+}

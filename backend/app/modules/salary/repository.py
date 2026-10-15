@@ -1,6 +1,7 @@
 """Repositorio de configuración salarial."""
 
 import uuid
+from collections.abc import Iterable
 from datetime import date
 from decimal import Decimal
 
@@ -43,6 +44,29 @@ class SalarySettingRepository:
             )
         )
 
+    def list_overlapping(
+        self,
+        employee_ids: Iterable[uuid.UUID],
+        date_from: date,
+        date_to: date,
+    ) -> list[SalarySetting]:
+        """Historial salarial que puede estar vigente dentro del rango."""
+        identifiers = list(set(employee_ids))
+        if not identifiers:
+            return []
+        return list(
+            self.db.scalars(
+                select(SalarySetting)
+                .where(
+                    SalarySetting.employee_id.in_(identifiers),
+                    SalarySetting.effective_from <= date_to,
+                    (SalarySetting.effective_to.is_(None))
+                    | (SalarySetting.effective_to >= date_from),
+                )
+                .order_by(SalarySetting.employee_id, SalarySetting.effective_from)
+            )
+        )
+
     def create(
         self,
         *,
@@ -53,7 +77,15 @@ class SalarySettingRepository:
         use_custom_overtime_rates: bool = False,
         custom_first_two_hours_rate: Decimal | None = None,
         custom_additional_hours_rate: Decimal | None = None,
+        commit: bool = True,
     ) -> SalarySetting:
+        """Crea una vigencia salarial.
+
+        ``commit=False`` deja la fila en la transacción abierta (solo ``flush``)
+        para que el caso de uso que invalida valoraciones y audita confirme todo
+        de forma atómica; si algo falla, el ``rollback`` no deja la vigencia ni
+        el cierre de la anterior persistidos.
+        """
         setting = SalarySetting(
             employee_id=employee_id,
             monthly_salary=monthly_salary,
@@ -64,8 +96,11 @@ class SalarySettingRepository:
             custom_additional_hours_rate=custom_additional_hours_rate,
         )
         self.db.add(setting)
-        self.db.commit()
-        self.db.refresh(setting)
+        if commit:
+            self.db.commit()
+            self.db.refresh(setting)
+        else:
+            self.db.flush()
         return setting
 
     def close_active(self, employee_id: uuid.UUID, until: date) -> None:

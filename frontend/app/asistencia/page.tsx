@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
-import { Check, Clock, Droplet, User } from "@/components/Icons";
+import { Check, ClipboardCheck, Clock, Droplet, Info, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
 type Phase =
@@ -20,10 +20,14 @@ type Phase =
 
 type RecoverOutcome =
   | { kind: "confirmed"; record: AttendanceRecordOut }
-  | { kind: "pending" }
+  | { kind: "pending"; evidenceReady: boolean; writeTokenValid: boolean }
+  | { kind: "expired_unconfirmed"; evidenceReady: boolean }
+  | { kind: "cancelled"; reason: string | null }
+  | { kind: "reviewed"; reason: string | null }
   | { kind: "unauthorized" }
   | { kind: "gone" }
   | { kind: "error" }
+  | { kind: "unknown" }
   | { kind: "stale" };
 
 type BarcodeDetectorLike = {
@@ -38,8 +42,79 @@ function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDet
   return (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector ?? null;
 }
 
-function isE2eKiosk(): boolean {
-  return typeof window !== "undefined" && Boolean((window as unknown as { __E2E_KIOSK?: boolean }).__E2E_KIOSK);
+/** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
+const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
+const CAMERA_COUNTDOWN_SECONDS = 10;
+
+type DeliveryStage = "EVIDENCE_REQUESTED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
+
+type StoredAttempt = {
+  v: 1 | 2;
+  marking_token: string;
+  marking_action: IdentifyResponse["marking_action"];
+  employee: IdentifyResponse["employee"];
+  stage: DeliveryStage;
+};
+
+function nonceFromMarkingToken(token: string): string | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const padded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(padded.padEnd(padded.length + ((4 - (padded.length % 4)) % 4), "="));
+    const payload = JSON.parse(json) as { nonce?: unknown };
+    return typeof payload.nonce === "string" ? payload.nonce : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredAttempt(): StoredAttempt | null {
+  try {
+    const raw = sessionStorage.getItem(KIOSK_ATTEMPT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredAttempt> & { v?: number };
+    if (!parsed?.marking_token || !parsed?.employee?.id) return null;
+    if (parsed.marking_action !== "CHECK_IN" && parsed.marking_action !== "CHECK_OUT") return null;
+    const version = parsed.v === 2 ? 2 : 1;
+    const stage: DeliveryStage =
+      parsed.stage === "EVIDENCE_REQUESTED" || parsed.stage === "EVIDENCE_STORED" || parsed.stage === "MARKING_REQUESTED"
+        ? parsed.stage
+        : "UNKNOWN";
+    return {
+      v: version,
+      marking_token: parsed.marking_token,
+      marking_action: parsed.marking_action,
+      employee: parsed.employee,
+      stage: version === 2 ? stage : "UNKNOWN",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistAttempt(info: IdentifyResponse, stage: DeliveryStage): boolean {
+  try {
+    const payload: StoredAttempt = {
+      v: 2,
+      marking_token: info.marking_token,
+      marking_action: info.marking_action,
+      employee: info.employee,
+      stage,
+    };
+    sessionStorage.setItem(KIOSK_ATTEMPT_KEY, JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStoredAttempt() {
+  try {
+    sessionStorage.removeItem(KIOSK_ATTEMPT_KEY);
+  } catch {
+    // El storage no es autoritativo; el servidor conserva el intento.
+  }
 }
 
 export default function AsistenciaPage() {
@@ -49,22 +124,31 @@ export default function AsistenciaPage() {
   const [info, setInfo] = useState<IdentifyResponse | null>(null);
   const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(3);
+  const [countdown, setCountdown] = useState(CAMERA_COUNTDOWN_SECONDS);
   const [lastPhoto, setLastPhoto] = useState<string | null>(null);
   const [identifying, setIdentifying] = useState(false);
+  const [consulting, setConsulting] = useState(false);
+  const [sending, setSending] = useState(false);
   const [qrSupported, setQrSupported] = useState(true);
   const [now, setNow] = useState<Date>(() => new Date());
   const [serverOffset, setServerOffset] = useState(0);
+  const [attemptSubmitted, setAttemptSubmitted] = useState(false);
+  const [lastAttemptStatus, setLastAttemptStatus] = useState<RecoverOutcome | null>(null);
+  const [idMode, setIdMode] = useState<"dni" | "code">("dni");
+  const [copiedNonce, setCopiedNonce] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const qrStreamRef = useRef<MediaStream | null>(null);
+  const idInputRef = useRef<HTMLInputElement>(null);
+  const incidentAlertRef = useRef<HTMLParagraphElement>(null);
   const captureLock = useRef(false);
   const identifyingRef = useRef(false);
   const sendingRef = useRef(false);
   const recoverLockRef = useRef(false);
   const generationRef = useRef(0);
   const infoRef = useRef<IdentifyResponse | null>(null);
+  const submittedRef = useRef(false);
 
   function bumpGeneration() {
     generationRef.current += 1;
@@ -80,8 +164,43 @@ export default function AsistenciaPage() {
   }
 
   useEffect(() => {
+    if (phase === "incidencia") {
+      const timer = window.setTimeout(() => {
+        incidentAlertRef.current?.focus();
+      }, 50);
+      return () => window.clearTimeout(timer);
+    }
+  }, [phase]);
+
+  useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredAttempt();
+    if (!stored) return;
+    const restored: IdentifyResponse = {
+      employee: stored.employee,
+      state: {
+        has_open_entry: stored.marking_action === "CHECK_OUT",
+        open_check_in_at: null,
+        last_record: null,
+      },
+      server_time: new Date().toISOString(),
+      server_time_label: "",
+      marking_token: stored.marking_token,
+      marking_action: stored.marking_action,
+    };
+    infoRef.current = restored;
+    submittedRef.current = true;
+    setAttemptSubmitted(true);
+    setInfo(restored);
+    setLastAttemptStatus({ kind: "pending", evidenceReady: stored.stage === "EVIDENCE_STORED" || stored.stage === "MARKING_REQUESTED" || stored.stage === "UNKNOWN", writeTokenValid: false });
+    setError(
+      "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. No se afirma que no se haya marcado.",
+    );
+    setPhase("incidencia");
   }, []);
 
   useEffect(() => {
@@ -133,27 +252,39 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     if (phase !== "video_listo") return;
-    if (isE2eKiosk()) {
-      setPhase("capturando");
-      return;
-    }
     const gen = generationRef.current;
     const video = videoRef.current;
-    if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
-      const wait = window.setTimeout(() => {
-        if (gen !== generationRef.current) return;
-        if (videoRef.current && videoRef.current.videoWidth >= 320) {
-          setPhase("cuenta_regresiva");
-          setCountdown(3);
-        } else {
-          setError("La cámara no entregó un cuadro válido. No se tomó foto.");
-          setPhase("incidencia");
-        }
-      }, 800);
-      return () => window.clearTimeout(wait);
+    let cancelled = false;
+
+    const proceed = () => {
+      if (cancelled || gen !== generationRef.current) return;
+      const current = videoRef.current;
+      if (current && current.videoWidth >= 320 && current.videoHeight >= 240) {
+        setPhase("cuenta_regresiva");
+        setCountdown(CAMERA_COUNTDOWN_SECONDS);
+        return;
+      }
+      setError("La cámara no entregó un cuadro válido. No se tomó foto.");
+      setPhase("incidencia");
+    };
+
+    if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
+      proceed();
+      return;
     }
-    setPhase("cuenta_regresiva");
-    setCountdown(3);
+    const wait = window.setTimeout(proceed, 800);
+    const onMeta = () => {
+      if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
+        window.clearTimeout(wait);
+        proceed();
+      }
+    };
+    video?.addEventListener("loadedmetadata", onMeta);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(wait);
+      video?.removeEventListener("loadedmetadata", onMeta);
+    };
   }, [phase]);
 
   useEffect(() => {
@@ -258,6 +389,7 @@ export default function AsistenciaPage() {
       setServerOffset(new Date(result.server_time).getTime() - Date.now());
       setIdentifier("");
       setLastPhoto(null);
+      setLastAttemptStatus(null);
       captureLock.current = false;
       setPhase("abriendo_camara");
     } catch (err) {
@@ -286,15 +418,7 @@ export default function AsistenciaPage() {
   function grabFrame(): string | null {
     const video = videoRef.current;
     if (!video || video.videoWidth < 320 || video.videoHeight < 240) {
-      if (!isE2eKiosk()) return null;
-      const canvas = document.createElement("canvas");
-      canvas.width = 320;
-      canvas.height = 240;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      ctx.fillStyle = "#224466";
-      ctx.fillRect(0, 0, 320, 240);
-      return canvas.toDataURL("image/jpeg", 0.8).split(",")[1] ?? null;
+      return null;
     }
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
@@ -313,7 +437,23 @@ export default function AsistenciaPage() {
       if (frozen.state === "CONFIRMED" && frozen.record) {
         return { kind: "confirmed", record: frozen.record };
       }
-      return { kind: "pending" };
+      if (frozen.state === "PENDING") {
+        return {
+          kind: "pending",
+          evidenceReady: Boolean(frozen.evidence_ready),
+          writeTokenValid: Boolean(frozen.write_token_valid),
+        };
+      }
+      if (frozen.state === "EXPIRED_UNCONFIRMED") {
+        return { kind: "expired_unconfirmed", evidenceReady: Boolean(frozen.evidence_ready) };
+      }
+      if (frozen.state === "CANCELLED") {
+        return { kind: "cancelled", reason: frozen.reason ?? null };
+      }
+      if (frozen.state === "REVIEWED") {
+        return { kind: "reviewed", reason: frozen.reason ?? null };
+      }
+      return { kind: "unknown" };
     } catch (err) {
       if (gen !== generationRef.current) return { kind: "stale" };
       if (err instanceof ApiError && err.status === 401) return { kind: "unauthorized" };
@@ -324,8 +464,19 @@ export default function AsistenciaPage() {
 
   function showConfirmed(result: AttendanceRecordOut) {
     releaseAllCameras();
+    submittedRef.current = false;
+    setAttemptSubmitted(false);
+    setLastAttemptStatus({ kind: "confirmed", record: result });
+    clearStoredAttempt();
     setRecord(result);
     setPhase("confirmado");
+  }
+
+  function rememberSubmittedAttempt() {
+    const current = infoRef.current;
+    if (!current) return;
+    submittedRef.current = true;
+    setAttemptSubmitted(true);
   }
 
   function showUncertain(message: string) {
@@ -334,46 +485,92 @@ export default function AsistenciaPage() {
     captureLock.current = false;
   }
 
+  function applyReadOnlyAttemptOutcome(outcome: RecoverOutcome) {
+    if (outcome.kind === "stale") return;
+    setLastAttemptStatus(outcome);
+    if (outcome.kind === "confirmed") {
+      showConfirmed(outcome.record);
+      return;
+    }
+    if (outcome.kind === "pending") {
+      showUncertain(
+        outcome.evidenceReady
+          ? "El intento sigue pendiente. Si la foto ya está guardada, complete la marcación sin tomar otra."
+          : "El intento sigue pendiente. Conserve esta referencia; no se inició una marcación nueva.",
+      );
+      return;
+    }
+    if (outcome.kind === "expired_unconfirmed") {
+      showUncertain(
+        "El permiso de este intento ya venció. Resuélvalo aquí para identificarse de nuevo. No se afirma que no se haya marcado.",
+      );
+      return;
+    }
+    if (outcome.kind === "cancelled") {
+      showUncertain("Este intento quedó cerrado. Pulse volver al inicio para identificarse de nuevo.");
+      return;
+    }
+    if (outcome.kind === "reviewed") {
+      showUncertain("Un jefe revisó este intento. Pulse volver al inicio. No se registró una marcación nueva.");
+      return;
+    }
+    if (outcome.kind === "unauthorized") {
+      showUncertain(
+        "Este equipo no está autorizado para consultar el intento. Conserve esta referencia y pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+      );
+      return;
+    }
+    if (outcome.kind === "gone") {
+      showUncertain(
+        "El plazo para recuperar este intento ya venció. Pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+      );
+      return;
+    }
+    showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
+  }
+
   async function sendPhoto(imageBase64: string, markingToken: string, markingAction: string, gen: number) {
     if (gen !== generationRef.current) return;
     if (sendingRef.current) return;
+    const current = infoRef.current;
+    if (!current || current.marking_token !== markingToken) return;
     sendingRef.current = true;
+    setSending(true);
+    rememberSubmittedAttempt();
+    if (!persistAttempt(current, "EVIDENCE_REQUESTED")) {
+      showUncertain(
+        "No se pudo guardar la referencia de este intento. No se envió la fotografía ni la marcación.",
+      );
+      sendingRef.current = false;
+      setSending(false);
+      return;
+    }
     setPhase("enviando");
     try {
       await attendanceApi.captureEvidence(markingToken, imageBase64);
       if (gen !== generationRef.current) return;
+      persistAttempt(current, "EVIDENCE_STORED");
+      if (!persistAttempt(current, "MARKING_REQUESTED")) {
+        setLastAttemptStatus({ kind: "pending", evidenceReady: true, writeTokenValid: true });
+        showUncertain("La foto se guardó. Consulte o complete este intento. No se envió la marcación.");
+        return;
+      }
       const result =
         markingAction === "CHECK_OUT"
           ? await attendanceApi.checkOut(markingToken)
           : await attendanceApi.checkIn(markingToken);
       if (gen !== generationRef.current) return;
       showConfirmed(result);
-    } catch (err) {
+    } catch {
       if (gen !== generationRef.current) return;
       const recovered = await recoverAttempt(markingToken, gen);
       if (recovered.kind === "stale") return;
-      if (recovered.kind === "confirmed") {
-        showConfirmed(recovered.record);
-        return;
-      }
-      if (recovered.kind === "pending" || recovered.kind === "error") {
-        showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
-        return;
-      }
-      if (recovered.kind === "unauthorized") {
-        setPhase("pairing");
-        setError("Este equipo no está autorizado para consultar el intento.");
-        return;
-      }
-      if (recovered.kind === "gone") {
-        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : "No se pudo registrar la marcación");
-      setPhase("incidencia");
-      captureLock.current = false;
+      applyReadOnlyAttemptOutcome(recovered);
     } finally {
-      if (gen === generationRef.current) sendingRef.current = false;
+      if (gen === generationRef.current) {
+        sendingRef.current = false;
+        setSending(false);
+      }
     }
   }
 
@@ -394,11 +591,36 @@ export default function AsistenciaPage() {
     await sendPhoto(imageBase64, current.marking_token, current.marking_action, gen);
   }
 
+  function captureNow() {
+    if ((phase !== "video_listo" && phase !== "cuenta_regresiva") || !infoRef.current || captureLock.current) return;
+    setPhase("capturando");
+  }
+
   useEffect(() => {
     if (phase !== "capturando") return;
     void captureAndMark();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
+
+  async function consultAttempt() {
+    const current = infoRef.current;
+    if (!current || sendingRef.current || recoverLockRef.current) return;
+    const gen = generationRef.current;
+    const token = current.marking_token;
+    recoverLockRef.current = true;
+    setConsulting(true);
+    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === token;
+    try {
+      const outcome = await recoverAttempt(token, gen);
+      if (!isCurrent() || outcome.kind === "stale") return;
+      applyReadOnlyAttemptOutcome(outcome);
+    } finally {
+      if (isCurrent()) {
+        recoverLockRef.current = false;
+        setConsulting(false);
+      }
+    }
+  }
 
   async function resendSamePhoto() {
     const current = infoRef.current;
@@ -407,50 +629,181 @@ export default function AsistenciaPage() {
     if (sendingRef.current || recoverLockRef.current) return;
     recoverLockRef.current = true;
     setError(null);
+    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === current.marking_token;
     try {
       const recovered = await recoverAttempt(current.marking_token, gen);
-      if (gen !== generationRef.current || recovered.kind === "stale") return;
-      if (recovered.kind === "confirmed") {
-        showConfirmed(recovered.record);
+      if (!isCurrent() || recovered.kind === "stale") return;
+      if (recovered.kind !== "pending" || !recovered.writeTokenValid) {
+        applyReadOnlyAttemptOutcome(recovered);
         return;
       }
-      if (recovered.kind === "unauthorized") {
-        setPhase("pairing");
-        setError("Este equipo no está autorizado para consultar el intento.");
+      if (!lastPhoto) {
+        applyReadOnlyAttemptOutcome(recovered);
         return;
       }
-      if (recovered.kind === "gone") {
-        showUncertain("El plazo para recuperar este intento ya venció. No se afirma que no se haya marcado.");
-        return;
-      }
-      if (recovered.kind === "error") {
-        showUncertain("No se pudo confirmar si la marcación quedó registrada. Consulte de nuevo este mismo intento.");
-        return;
-      }
+      recoverLockRef.current = false;
       await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
     } finally {
-      if (gen === generationRef.current) recoverLockRef.current = false;
+      if (isCurrent()) recoverLockRef.current = false;
     }
   }
 
-  function takeAnotherPhoto() {
-    bumpGeneration();
-    releaseAllCameras();
-    infoRef.current = null;
-    setInfo(null);
-    setLastPhoto(null);
+  async function completeAttempt() {
+    const current = infoRef.current;
+    if (!current || sendingRef.current || recoverLockRef.current) return;
+    const gen = generationRef.current;
+    const token = current.marking_token;
+    sendingRef.current = true;
+    setSending(true);
+    rememberSubmittedAttempt();
+    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === token;
+    if (!persistAttempt(current, "MARKING_REQUESTED")) {
+      showUncertain("No se pudo guardar la referencia. No se envió la marcación.");
+      sendingRef.current = false;
+      setSending(false);
+      return;
+    }
+    setPhase("enviando");
+    try {
+      const result =
+        current.marking_action === "CHECK_OUT"
+          ? await attendanceApi.checkOut(token)
+          : await attendanceApi.checkIn(token);
+      if (!isCurrent()) return;
+      showConfirmed(result);
+    } catch {
+      if (!isCurrent()) return;
+      const recovered = await recoverAttempt(token, gen);
+      if (recovered.kind === "stale" || !isCurrent()) return;
+      applyReadOnlyAttemptOutcome(recovered);
+    } finally {
+      if (isCurrent()) {
+        sendingRef.current = false;
+        setSending(false);
+      }
+    }
+  }
+
+  async function resolveKioskAttempt(reasonCode: "TOKEN_EXPIRED" | "PHOTO_RETAKE" | "USER_CANCELLED") {
+    const current = infoRef.current;
+    if (!current || sendingRef.current || recoverLockRef.current) return;
+    const gen = generationRef.current;
+    const token = current.marking_token;
+    recoverLockRef.current = true;
+    setConsulting(true);
+    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === token;
+    try {
+      const frozen = await attendanceApi.resolveAttempt(token, reasonCode);
+      if (!isCurrent()) return;
+      if (frozen.state === "CONFIRMED" && frozen.record) {
+        showConfirmed(frozen.record);
+        return;
+      }
+      const mapped: RecoverOutcome =
+        frozen.state === "CANCELLED"
+          ? { kind: "cancelled", reason: frozen.reason ?? reasonCode }
+          : frozen.state === "REVIEWED"
+            ? { kind: "reviewed", reason: frozen.reason ?? null }
+            : frozen.state === "PENDING"
+              ? { kind: "pending", evidenceReady: Boolean(frozen.evidence_ready), writeTokenValid: Boolean(frozen.write_token_valid) }
+              : frozen.state === "EXPIRED_UNCONFIRMED"
+                ? { kind: "expired_unconfirmed", evidenceReady: Boolean(frozen.evidence_ready) }
+                : { kind: "unknown" };
+      applyReadOnlyAttemptOutcome(mapped);
+    } catch (err) {
+      if (!isCurrent()) return;
+      if (err instanceof ApiError && err.status === 401) {
+        applyReadOnlyAttemptOutcome({ kind: "unauthorized" });
+        return;
+      }
+      if (err instanceof ApiError && err.status === 410) {
+        applyReadOnlyAttemptOutcome({ kind: "gone" });
+        return;
+      }
+      applyReadOnlyAttemptOutcome({ kind: "error" });
+    } finally {
+      if (isCurrent()) {
+        recoverLockRef.current = false;
+        setConsulting(false);
+      }
+    }
+  }
+
+  function releaseInFlightLocks() {
     captureLock.current = false;
     identifyingRef.current = false;
     sendingRef.current = false;
     recoverLockRef.current = false;
     setIdentifying(false);
+    setConsulting(false);
+    setSending(false);
+  }
+
+  function restartResolvedAttempt() {
+    if (lastAttemptStatus?.kind !== "cancelled" && lastAttemptStatus?.kind !== "reviewed") return;
+    bumpGeneration();
+    releaseAllCameras();
+    releaseInFlightLocks();
+    submittedRef.current = false;
+    setAttemptSubmitted(false);
+    clearStoredAttempt();
+    infoRef.current = null;
+    setInfo(null);
+    setRecord(null);
     setError(null);
+    setLastPhoto(null);
+    setLastAttemptStatus(null);
+    setServerOffset(0);
+    setPhase("identificando");
+  }
+
+  async function takeAnotherPhoto() {
+    const current = infoRef.current;
+    const needsResolve =
+      submittedRef.current ||
+      lastAttemptStatus?.kind === "pending" ||
+      lastAttemptStatus?.kind === "expired_unconfirmed" ||
+      lastAttemptStatus?.kind === "error" ||
+      lastAttemptStatus?.kind === "unknown" ||
+      lastAttemptStatus?.kind === "gone";
+    const reason: "TOKEN_EXPIRED" | "PHOTO_RETAKE" =
+      lastAttemptStatus?.kind === "expired_unconfirmed" ? "TOKEN_EXPIRED" : "PHOTO_RETAKE";
+    bumpGeneration();
+    releaseAllCameras();
+    releaseInFlightLocks();
+    setError(null);
+    setLastPhoto(null);
+    if (needsResolve && current) {
+      infoRef.current = current;
+      setInfo(current);
+      await resolveKioskAttempt(reason);
+      return;
+    }
+    if (current) {
+      infoRef.current = current;
+      setPhase("abriendo_camara");
+      return;
+    }
     setPhase("identificando");
   }
 
   function reset() {
     bumpGeneration();
     releaseAllCameras();
+    releaseInFlightLocks();
+    if (submittedRef.current && phase !== "confirmado") {
+      setError(
+        "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. Cancelar no borra una asistencia ya registrada.",
+      );
+      setPhase("incidencia");
+      return;
+    }
+    if (phase === "confirmado") {
+      submittedRef.current = false;
+      setAttemptSubmitted(false);
+      setLastAttemptStatus(null);
+      clearStoredAttempt();
+    }
     setPhase("identificando");
     infoRef.current = null;
     setInfo(null);
@@ -458,11 +811,29 @@ export default function AsistenciaPage() {
     setError(null);
     setLastPhoto(null);
     setServerOffset(0);
-    captureLock.current = false;
-    identifyingRef.current = false;
-    sendingRef.current = false;
-    recoverLockRef.current = false;
-    setIdentifying(false);
+    setCopiedNonce(false);
+  }
+
+  async function copyNonceToClipboard() {
+    if (!attemptNonce) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(attemptNonce);
+      } else if (typeof document !== "undefined") {
+        const textArea = document.createElement("textarea");
+        textArea.value = attemptNonce;
+        textArea.style.position = "fixed";
+        textArea.style.opacity = "0";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+      setCopiedNonce(true);
+      window.setTimeout(() => setCopiedNonce(false), 2000);
+    } catch {
+      // Ignorar restricciones de portapapeles
+    }
   }
 
   function startQrScan() {
@@ -496,6 +867,11 @@ export default function AsistenciaPage() {
   const firstName = info?.employee.first_name ?? "";
   const initials = firstName.charAt(0).toUpperCase() || "?";
   const cameraOpen = phase === "abriendo_camara" || phase === "video_listo" || phase === "cuenta_regresiva" || phase === "capturando";
+  const attemptNonce = info ? nonceFromMarkingToken(info.marking_token) : null;
+  const canComplete =
+    lastAttemptStatus?.kind === "pending" && lastAttemptStatus.evidenceReady && lastAttemptStatus.writeTokenValid;
+  const canResolveExpired = lastAttemptStatus?.kind === "expired_unconfirmed";
+  const canRestartResolved = lastAttemptStatus?.kind === "cancelled" || lastAttemptStatus?.kind === "reviewed";
 
   return (
     <div className="kiosk">
@@ -505,14 +881,24 @@ export default function AsistenciaPage() {
 
       <div className="kiosk-card" data-phase={phase}>
         {phase === "pairing" && (
-          <form onSubmit={handlePair} style={{ display: "grid", gap: "0.7rem" }}>
+          <form onSubmit={handlePair} className="kiosk-form" style={{ display: "grid", gap: "0.7rem" }}>
             <p className="kiosk-date">Este equipo necesita un código de emparejamiento de un solo uso.</p>
+            <label className="label" htmlFor="kiosk-pairing">
+              Código de emparejamiento
+            </label>
             <input
+              id="kiosk-pairing"
               className="input"
+              type="text"
               value={pairingCode}
               onChange={(e) => setPairingCode(e.target.value)}
               placeholder="Código emitido por administración"
               autoFocus
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              enterKeyHint="go"
             />
             {error && (
               <p className="alert alert-error" role="alert">
@@ -533,38 +919,84 @@ export default function AsistenciaPage() {
             <div className="kiosk-date" suppressHydrationWarning>
               {dateLabel}
             </div>
-            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }} data-testid="kiosk-identify-form">
+            <form onSubmit={handleIdentify} className="kiosk-form" style={{ display: "grid", gap: "0.7rem" }} data-testid="kiosk-identify-form">
+              <div className="kiosk-id-mode-group" role="tablist" aria-label="Modo de ingreso">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={idMode === "dni"}
+                  className={`btn btn-sm ${idMode === "dni" ? "btn-primary" : "btn-outline"} kiosk-mode-tab`}
+                  onClick={() => {
+                    setIdMode("dni");
+                    idInputRef.current?.focus();
+                  }}
+                >
+                  DNI (números)
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={idMode === "code"}
+                  className={`btn btn-sm ${idMode === "code" ? "btn-primary" : "btn-outline"} kiosk-mode-tab`}
+                  onClick={() => {
+                    setIdMode("code");
+                    idInputRef.current?.focus();
+                  }}
+                >
+                  Código / AR: (texto)
+                </button>
+              </div>
               <label className="label" htmlFor="kiosk-id">
-                DNI, código interno o QR
+                {idMode === "dni" ? "Número de DNI (8 dígitos)" : "Código de trabajador o QR"}
               </label>
               <input
+                ref={idInputRef}
                 id="kiosk-id"
                 className="input"
                 type="text"
+                inputMode={idMode === "dni" ? "numeric" : "text"}
+                enterKeyHint="go"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="Ej. 71112233, EMP-002 o AR:…"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setIdentifier(val);
+                  if (/[^0-9\s]/.test(val) && idMode === "dni") {
+                    setIdMode("code");
+                  }
+                }}
+                placeholder={idMode === "dni" ? "Ej. 71112233" : "Ej. EMP-002 o AR:…"}
                 autoFocus
                 autoComplete="off"
                 disabled={identifying}
                 data-testid="kiosk-identifier"
-                style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
               />
               {error && (
                 <p className="alert alert-error" role="alert">
-                  <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
-                  {error}
+                  <Droplet size={15} />
+                  <span>{error}</span>
                 </p>
               )}
               <button type="submit" className="btn btn-primary kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
                 {identifying ? <Spinner size={18} /> : <User size={18} />}
                 {identifying ? "Verificando…" : "Identificarme"}
               </button>
-              <button type="button" className="btn btn-outline kiosk-btn" onClick={startQrScan} disabled={identifying} data-testid="kiosk-scan-qr">
+              <button
+                type="button"
+                className="btn btn-outline kiosk-btn"
+                onClick={startQrScan}
+                disabled={identifying || !qrSupported}
+                data-testid="kiosk-scan-qr"
+              >
                 Escanear QR con cámara trasera
               </button>
               {!qrSupported && (
-                <p className="muted">El escaneo de QR no está disponible aquí. Escriba el código AR:…</p>
+                <div className="alert alert-notice kiosk-qr-notice" role="status">
+                  <Info size={16} />
+                  <span>El escaneo de QR no está disponible en este dispositivo. Use el teclado arriba.</span>
+                </div>
               )}
             </form>
           </>
@@ -586,7 +1018,7 @@ export default function AsistenciaPage() {
         )}
 
         {cameraOpen && info && (
-          <>
+          <div className="kiosk-camera-view">
             <div className="kiosk-employee">
               <div className="avatar-lg">{initials}</div>
               <div>
@@ -599,12 +1031,23 @@ export default function AsistenciaPage() {
               </div>
             </div>
             <video ref={videoRef} className="kiosk-video" playsInline muted autoPlay />
-            {phase === "cuenta_regresiva" && <p className="kiosk-countdown">{countdown}</p>}
+            {phase === "cuenta_regresiva" && (
+              <p className="kiosk-countdown" role="status" aria-live="polite" aria-label="Cuenta regresiva activa. Puede tomar la foto ahora.">
+                Acomódate frente a la cámara… <span aria-hidden>{countdown}</span> segundos
+              </p>
+            )}
             {phase === "abriendo_camara" && <p className="muted">Abriendo cámara…</p>}
-            <button className="btn btn-outline btn-sm" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
-              Cancelar
-            </button>
-          </>
+            <div className="kiosk-camera-actions">
+              {(phase === "video_listo" || phase === "cuenta_regresiva") && (
+                <button className="btn btn-primary kiosk-btn" type="button" onClick={captureNow} disabled={captureLock.current} data-testid="kiosk-capture-now">
+                  {info.marking_action === "CHECK_OUT" ? "Registrar ahora" : "Tomar foto ahora"}
+                </button>
+              )}
+              <button className="btn btn-outline kiosk-btn" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
+                Cancelar
+              </button>
+            </div>
+          </div>
         )}
 
         {phase === "enviando" && (
@@ -614,21 +1057,108 @@ export default function AsistenciaPage() {
         )}
 
         {phase === "incidencia" && (
-          <>
+          <div className="kiosk-incident-view">
             {error && (
-              <p className="alert alert-error" role="alert">
-                {error}
+              <p
+                ref={incidentAlertRef}
+                tabIndex={-1}
+                className="alert alert-error kiosk-incident-alert"
+                role="alert"
+                data-testid="kiosk-incident-message"
+              >
+                <Droplet size={15} />
+                <span>{error}</span>
               </p>
             )}
-            {lastPhoto && info && (
-              <button className="btn btn-primary kiosk-btn" type="button" onClick={() => void resendSamePhoto()} data-testid="kiosk-resend">
-                Reenviar la misma foto
-              </button>
+            {attemptSubmitted && (
+              <p className="muted" data-testid="kiosk-review-hint">
+                Conserve este intento. Un fallo de consulta no demuestra que la marcación no se haya registrado.
+              </p>
             )}
-            <button className="btn btn-outline kiosk-btn" type="button" onClick={takeAnotherPhoto} data-testid="kiosk-take-another">
-              Tomar otra foto
-            </button>
-          </>
+            {attemptNonce && (
+              <div className="kiosk-nonce-row">
+                <p className="muted kiosk-nonce-text" data-testid="kiosk-attempt-nonce">
+                  Referencia para revisión: <code className="kiosk-nonce-code">{attemptNonce}</code>
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm kiosk-nonce-copy-btn"
+                  onClick={() => void copyNonceToClipboard()}
+                  title="Copiar referencia al portapapeles"
+                  aria-label="Copiar código de referencia"
+                >
+                  {copiedNonce ? <Check size={14} /> : <ClipboardCheck size={14} />}
+                  <span>{copiedNonce ? "Copiado" : "Copiar código"}</span>
+                </button>
+              </div>
+            )}
+            <div className="kiosk-incident-actions">
+              {info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void consultAttempt()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-consult-attempt"
+                >
+                  {consulting ? "Consultando…" : "Consultar este intento"}
+                </button>
+              )}
+              {canComplete && info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void completeAttempt()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-complete-attempt"
+                >
+                  Completar este intento
+                </button>
+              )}
+              {lastPhoto && info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void resendSamePhoto()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-resend"
+                >
+                  Reenviar la misma foto
+                </button>
+              )}
+              {canResolveExpired && (
+                <button
+                  className="btn btn-outline kiosk-btn"
+                  type="button"
+                  onClick={() => void resolveKioskAttempt("TOKEN_EXPIRED")}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-resolve-attempt"
+                >
+                  Cerrar intento vencido
+                </button>
+              )}
+              {attemptSubmitted && !canRestartResolved && (
+                <button
+                  className="btn btn-outline kiosk-btn"
+                  type="button"
+                  onClick={() => void resolveKioskAttempt("USER_CANCELLED")}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-cancel-attempt"
+                >
+                  Cerrar este intento
+                </button>
+              )}
+              {canRestartResolved ? (
+                <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
+                  Volver al inicio
+                </button>
+              ) : (
+                <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
+                  Tomar otra foto
+                </button>
+              )}
+            </div>
+          </div>
         )}
 
         {phase === "confirmado" && record && (
@@ -636,17 +1166,18 @@ export default function AsistenciaPage() {
             <div className={`big-icon ${(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? "ok" : "blue"}`}>
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? <Droplet size={26} /> : <Check size={26} />}
             </div>
-            <h2>
+            <h2 data-testid="kiosk-confirmed-title">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? "Entrada registrada"
                 : "Salida registrada"}
             </h2>
+            {info && <p className="kiosk-confirmed-employee" data-testid="kiosk-confirmed-employee">{info.employee.first_name} {info.employee.last_name}</p>}
             <p className="detail">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? `Ingresaste a las ${formatTime(record.check_in_at)}.`
                 : `Saliste a las ${formatTime(record.check_out_at)} · ${fmtMin(record.worked_minutes)} trabajadas.`}
             </p>
-            <button className="btn btn-outline kiosk-btn" onClick={reset}>
+            <button className="btn btn-outline kiosk-btn" onClick={reset} data-testid="kiosk-new-marking">
               <Clock size={17} />
               Nueva marcación
             </button>

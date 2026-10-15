@@ -7,10 +7,12 @@ una conexión eterna: ``pool_pre_ping`` valida antes de cada uso.
 
 from collections.abc import Generator
 
+from fastapi import Request
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.core.request_timing import collector_from_request
 
 _settings = get_settings()
 
@@ -41,12 +43,33 @@ SessionLocal = (
 )
 
 
-def get_db() -> Generator[Session, None, None]:
-    """Dependencia FastAPI: entrega una sesión y la cierra al terminar."""
+def get_db(request: Request) -> Generator[Session, None, None]:
+    """Dependencia FastAPI: entrega una sesión y la cierra al terminar.
+
+    Instrumentación opt-in: solo con un acumulador en el estado de la petición
+    (ruta objetivo y flag activo) se fuerza la adquisición explícita de la
+    conexión y se miden sus cursores. La adquisición es explícita aquí porque
+    ``pool_pre_ping`` y el setup del checkout ocurren dentro de
+    ``Session.connection()``, no en la primera consulta diferida.
+    """
     if SessionLocal is None:
         raise RuntimeError("DATABASE_URL no está configurado")
+    collector = collector_from_request(request)
     db = SessionLocal()
     try:
+        if collector is not None:
+            started = collector.begin_acquisition()
+            try:
+                connection = db.connection()
+            finally:
+                collector.finish_acquisition(started)
+            collector.attach(connection)
         yield db
     finally:
-        db.close()
+        try:
+            if collector is not None:
+                # Retirar listeners antes de devolver la conexión al pool.
+                collector.detach()
+        finally:
+            # Cerrar siempre, incluso si ``detach`` fallara.
+            db.close()

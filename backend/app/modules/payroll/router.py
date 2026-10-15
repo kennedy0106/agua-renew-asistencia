@@ -16,9 +16,11 @@ from app.modules.payroll.schemas import (
     ManualAdjustmentRequest,
     PayrollPeriodCreate,
     PayrollPeriodOut,
+    PayrollDailyReportOut,
     PayrollReadinessOut,
     PayrollRecordOut,
     PayrollSummaryOut,
+    PayrollMonthConsolidationOut,
     RectificationRequest,
 )
 from app.modules.payroll.service import PayrollService
@@ -35,6 +37,8 @@ def _period_out(period) -> PayrollPeriodOut:
         name=period.name,
         start_date=period.start_date,
         end_date=period.end_date,
+        payroll_month_id=period.payroll_month_id,
+        period_kind=period.period_kind,
         status=period.status,
         root_period_id=period.root_period_id,
         version=period.version,
@@ -60,6 +64,7 @@ def _record_out(record) -> PayrollRecordOut:
         expected_minutes=record.expected_minutes,
         overtime_minutes=record.overtime_minutes,
         overtime_amount=record.overtime_amount,
+        special_day_amount=record.special_day_amount,
         adjustment_minutes=record.adjustment_minutes,
         adjustment_amount=record.adjustment_amount,
         base_salary=record.base_salary,
@@ -82,7 +87,8 @@ def create_period(
 ) -> PayrollPeriodOut:
     return _period_out(
         PayrollService(db).create_period(
-            name=payload.name, start_date=payload.start_date, end_date=payload.end_date
+            name=payload.name, start_date=payload.start_date, end_date=payload.end_date,
+            year=payload.year, month=payload.month, period_kind=payload.period_kind,
         )
     )
 
@@ -118,6 +124,26 @@ def period_summary(
     _: object = Depends(require_salary_access),
 ) -> PayrollSummaryOut:
     return PayrollService(db).summary(period_id)
+
+
+@router.get("/months/{year}/{month}/consolidation", response_model=PayrollMonthConsolidationOut)
+def month_consolidation(
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_salary_access),
+) -> PayrollMonthConsolidationOut:
+    return PayrollService(db).monthly_consolidation(year, month)
+
+
+@router.get("/periods/{period_id}/daily-report", response_model=PayrollDailyReportOut)
+def period_daily_report(
+    period_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_salary_access),
+) -> PayrollDailyReportOut:
+    """Desglose diario informativo anclado al snapshot del periodo."""
+    return PayrollService(db).daily_report(period_id)
 
 
 @router.get("/periods/{period_id}/readiness", response_model=PayrollReadinessOut)

@@ -33,6 +33,8 @@ from app.db.base import Base
 
 ATTENDANCE_OPEN = "OPEN"
 ATTENDANCE_COMPLETE = "COMPLETE"
+STORAGE_DATABASE = "DATABASE"
+STORAGE_S3 = "S3"
 
 
 class AttendanceRecord(Base):
@@ -67,6 +69,32 @@ class AttendanceRecord(Base):
     )
 
     employee = relationship("Employee")
+
+
+class AttendanceBreakOverride(Base):
+    """Refrigerio real decidido después de cerrar una jornada.
+
+    El valor solicitado se conserva incluso si una corrección posterior deja
+    menos minutos brutos; el cálculo operativo usa el mínimo seguro.
+    """
+
+    __tablename__ = "attendance_break_overrides"
+    __table_args__ = (
+        UniqueConstraint("employee_id", "work_date", name="uq_attendance_break_override_employee_day"),
+        CheckConstraint("requested_break_minutes >= 0 AND requested_break_minutes <= 1440", name="ck_attendance_break_override_minutes"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    work_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    requested_break_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    employee = relationship("Employee")
+    created_by_user = relationship("User")
 
 
 class AttendanceDevice(Base):
@@ -134,9 +162,22 @@ class AttendanceConsumedNonce(Base):
 
 
 class AttendanceEvidence(Base):
-    """Foto de marcación (bytes privados; no es reconocimiento facial)."""
+    """Foto de marcación (objeto privado S3/R2; no es reconocimiento facial)."""
 
     __tablename__ = "attendance_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "("
+            "storage_backend = 'DATABASE' AND image_bytes IS NOT NULL AND object_key IS NULL"
+            ") OR ("
+            "storage_backend = 'S3' AND object_key IS NOT NULL AND storage_bucket IS NOT NULL "
+            "AND image_sha256 IS NOT NULL AND byte_size IS NOT NULL AND image_bytes IS NULL"
+            ") OR ("
+            "storage_backend IS NULL"
+            ")",
+            name="ck_attendance_evidence_location",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     nonce: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
@@ -146,7 +187,44 @@ class AttendanceEvidence(Base):
     )
     device_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attendance_devices.id"), nullable=True, index=True)
     content_type: Mapped[str] = mapped_column(String(40), nullable=False)
-    image_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    image_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    storage_backend: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    storage_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     exception_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class AttendanceAttemptResolution(Base):
+    """Invalidación o revisión durable de un intento de kiosco (un nonce)."""
+
+    __tablename__ = "attendance_attempt_resolutions"
+    __table_args__ = (
+        CheckConstraint("action IN ('CHECK_IN', 'CHECK_OUT')", name="ck_attempt_resolution_action"),
+        CheckConstraint(
+            "resolution IN ('CANCELLED_UNCONFIRMED', 'REVIEWED_CONFIRMED')",
+            name="ck_attempt_resolution_kind",
+        ),
+        CheckConstraint(
+            "(resolution <> 'CANCELLED_UNCONFIRMED') OR (attendance_record_id IS NULL)",
+            name="ck_attempt_resolution_cancelled_without_record",
+        ),
+        CheckConstraint(
+            "(resolution <> 'REVIEWED_CONFIRMED') OR (resolved_by_user_id IS NOT NULL AND attendance_record_id IS NOT NULL)",
+            name="ck_attempt_resolution_reviewed_has_actor_and_record",
+        ),
+    )
+
+    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    device_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("attendance_devices.id"), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    resolution: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_records.id"), nullable=True, index=True
+    )
+    resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -5,14 +5,20 @@ Endpoints de esta fase:
 - GET /health/db  → verifica conexión real a PostgreSQL (DATABASE_URL)
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.core.object_store import ObjectStoreError, get_object_store
+from app.core.request_timing import SummaryTimingMiddleware
 from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
+from app.modules.attendance.manual_router import router as manual_attendance_router
+from app.modules.attendance.agenda_router import router as attendance_agenda_router
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
 from app.modules.devices.router import router as devices_router
@@ -26,16 +32,30 @@ from app.modules.salary.router import router as salary_router
 from app.modules.schedules.router import router as schedules_router
 from app.modules.system_roles.router import router as system_roles_router
 from app.modules.users.router import router as users_router
+from app.modules.work_calendar.router import router as work_calendar_router
 
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        get_object_store()
+    except ObjectStoreError as exc:
+        raise RuntimeError(f"Almacén de evidencias no disponible: {exc}") from exc
+    yield
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 # CORS: solo orígenes conocidos (nunca "*" en producción con cookies).
 if settings.environment == "production":
     origins = [settings.frontend_url]
 else:
     origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    extra = (settings.frontend_url or "").strip()
+    if extra and extra not in origins:
+        origins.append(extra)
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,6 +64,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Instrumentación opt-in (flag apagado por defecto) solo para el resumen.
+app.add_middleware(SummaryTimingMiddleware)
 
 
 @app.get("/health")
@@ -76,6 +98,8 @@ app.include_router(employees_router)
 app.include_router(schedules_router)
 app.include_router(salary_router)
 app.include_router(attendance_router)
+app.include_router(manual_attendance_router)
+app.include_router(attendance_agenda_router)
 app.include_router(devices_router)
 app.include_router(audit_router)
 app.include_router(adjustments_router)
@@ -85,3 +109,4 @@ app.include_router(payroll_router)
 app.include_router(users_router)
 app.include_router(system_roles_router)
 app.include_router(exports_router)
+app.include_router(work_calendar_router)

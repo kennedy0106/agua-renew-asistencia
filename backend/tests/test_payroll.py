@@ -3,9 +3,16 @@
 import csv as csv_module
 import io
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import select
 
 from app.core.timezone import lima_tz
+import app.modules.payroll.service as payroll_service
+from app.modules.attendance.models import AttendanceBreakOverride, AttendanceRecord
+from app.modules.users.models import User
 
 
 def _login(client, username: str, password: str) -> None:
@@ -53,6 +60,24 @@ def _set_salary(client, employee_id: str, **overrides):
     assert response.status_code == 201, response.text
 
 
+def _approve(client, adjustment: dict):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/approve", json={
+        "expected_version": adjustment["version"], "expected_snapshot": adjustment["approval_snapshot"],
+        "idempotency_key": f"payroll-approve-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+    return response
+
+
+def _reject(client, adjustment: dict, reason: str = "No corresponde"):
+    response = client.patch(f"/api/v1/adjustments/{adjustment['id']}/reject", json={
+        "reason": reason, "expected_version": adjustment["version"],
+        "idempotency_key": f"payroll-reject-{adjustment['id']}",
+    })
+    assert response.status_code == 200, response.text
+    return response
+
+
 def _add_approved_overtime(client, employee_id: str, minutes: int = 60) -> str:
     response = client.post(
         f"/api/v1/employees/{employee_id}/adjustments",
@@ -64,9 +89,9 @@ def _add_approved_overtime(client, employee_id: str, minutes: int = 60) -> str:
         },
     )
     assert response.status_code == 201, response.text
-    adj_id = response.json()["id"]
-    client.patch(f"/api/v1/adjustments/{adj_id}/approve")
-    return adj_id
+    adjustment = response.json()
+    _approve(client, adjustment)
+    return adjustment["id"]
 
 
 def _create_period(client, name: str = "Agosto 2026", start: str = "2026-08-01", end: str = "2026-08-31") -> dict:
@@ -211,11 +236,75 @@ def test_prorratea_alta_y_cambios_de_sueldo(client, db_session):
     period = _create_period(client)
 
     record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
-    # 8 días a 1550/31 + 8 días a 3100/31, alta inclusiva del 16 al 31.
-    assert record["base_salary"] == "1200.00"
+    # Periodo parcial con treintavos legales (sueldo / 30): 8 días a 1550/30 +
+    # 8 días a 3100/30, alta inclusiva del 16 al 31. El divisor no es 31.
+    assert record["base_salary"] == "1240.00"
 
 
-def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
+def test_tramo_parcial_no_recorta_un_aumento_posterior(client, db_session):
+    """Un tramo parcial de <=30 días no lleva tope al primer sueldo histórico."""
+    _login(client, "admin", "Admin123!")
+    response = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": "72845699", "employee_code": "EMP-RAISE", "first_name": "Raúl",
+            "last_name": "Aumento", "job_role_id": str(db_session._test_job_roles["Operario"]),
+            "hire_date": "2026-08-02",
+        },
+    )
+    assert response.status_code == 201, response.text
+    emp = response.json()["id"]
+    _set_salary(client, emp, monthly_salary="1550.00")
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": "2026-08-03", "monthly_salary": "3100.00", "overtime_enabled": False},
+    ).status_code == 201
+    period = _create_period(client)
+
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    # 1 × 1550/30 + 29 × 3100/30 = 3048.33. Un tope al primer sueldo lo
+    # recortaría a 1550.00 y perdería el aumento.
+    assert record["base_salary"] == "3048.33"
+
+
+@pytest.mark.parametrize("month", [1, 2, 8])
+def test_mes_completo_con_aumento_dia16_normaliza_30_dias(client, db_session, month):
+    """Mes completo con aumento el 16: 650 -> 700 da 675.00 en 28 y 31 días.
+
+    El mes se modela como 30 días legales: se suman los treintavos por fecha y
+    se normaliza al cierre con el sueldo vigente a fin de mes. Un día 31 no
+    paga un treintavo extra y febrero completa los 30 días.
+    """
+    _login(client, "admin", "Admin123!")
+    response = client.post(
+        "/api/v1/employees",
+        json={
+            "dni": f"7285{month:04d}", "employee_code": f"EMP-{month:02d}",
+            "first_name": "Mes", "last_name": "Aumento",
+            "job_role_id": str(db_session._test_job_roles["Operario"]),
+            "hire_date": "2026-01-01",
+        },
+    )
+    assert response.status_code == 201, response.text
+    emp = response.json()["id"]
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": "2026-01-01", "monthly_salary": "650.00", "overtime_enabled": False},
+    ).status_code == 201
+    assert client.post(
+        f"/api/v1/employees/{emp}/salary-settings",
+        json={"effective_from": f"2026-{month:02d}-16", "monthly_salary": "700.00", "overtime_enabled": False},
+    ).status_code == 201
+    period = client.post("/api/v1/payroll/periods", json={"year": 2026, "month": month}).json()
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    # 15 × 650/30 + 15 × 700/30 = 325.00 + 350.00 = 675.00.
+    assert record["base_salary"] == "675.00"
+
+
+def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session, monkeypatch):
+    # El cierre es el primer día del periodo: ninguna fecha queda en el pasado y
+    # el escenario sigue aislando el bloqueo por ajuste pendiente.
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -231,7 +320,7 @@ def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
     assert any(issue["code"] == "PENDING_ADJUSTMENT" for issue in readiness["blockers"])
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
-    client.patch(f"/api/v1/adjustments/{pending['id']}/reject", json={"reason": "No corresponde"})
+    _reject(client, pending)
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 200
     rectified = client.post(
         f"/api/v1/payroll/periods/{period['id']}/rectifications",
@@ -288,7 +377,9 @@ def test_ajuste_manual_negativo(client, db_session):
 
 # --- Cierre ---
 
-def test_confirmar_cierra_periodo_y_registros(client, db_session):
+def test_confirmar_cierra_periodo_y_registros(client, db_session, monkeypatch):
+    # Sin jornadas pasadas: el cierre no acumula bloqueos de asistencia.
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -303,7 +394,8 @@ def test_confirmar_cierra_periodo_y_registros(client, db_session):
     assert records[0]["status"] == "CONFIRMED"
 
 
-def test_no_recalcular_tras_cierre(client, db_session):
+def test_no_recalcular_tras_cierre(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -320,7 +412,8 @@ def test_confirmar_sin_calcular_conflict(client):
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
 
-def test_ajuste_manual_tras_cierre_409(client, db_session):
+def test_ajuste_manual_tras_cierre_409(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -389,6 +482,271 @@ def test_summary_supervisor_forbidden(client, db_session):
 def test_summary_periodo_inexistente_404(client):
     _login(client, "admin", "Admin123!")
     assert client.get(f"/api/v1/payroll/periods/{uuid.uuid4()}/summary").status_code == 404
+
+
+def test_reporte_diario_atribuye_base_por_calendario_y_resume_por_empleado(client, db_session):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    _add_approved_overtime(client, emp, minutes=60)
+    adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-26",
+            "minutes": 30,
+            "adjustment_type": "OTRO",
+            "reason": "Recuperación aprobada sin valor monetario automático",
+        },
+    ).json()
+    _approve(client, adjustment)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    assert client.patch(
+        f"/api/v1/payroll/records/{record['id']}/adjustment",
+        json={"amount": "50.00", "notes": "Bono del periodo"},
+    ).status_code == 200
+
+    response = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report")
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["period_id"] == period["id"]
+    assert len(report["employees"]) == 1
+    summary = report["employees"][0]
+    assert summary["programmed_base_amount"] == "1500.00"
+    assert summary["recognized_overtime_amount"] == "7.81"
+    assert summary["approved_adjustment_minutes"] == 30  # HE se informa en su propia columna.
+    assert summary["approved_adjustment_amount"] == "0.00"
+    assert summary["manual_adjustment"] == "50.00"
+    assert Decimal(summary["recognized_total_amount"]) == (
+        Decimal(summary["recognized_base_amount"]) + Decimal(summary["recognized_overtime_amount"])
+    )
+    assert summary["official_total_snapshot"] == "1557.81"
+    # Agosto 2026 tiene 31 fechas: cada una aporta el treintavo legal (1500/30 =
+    # 50.00), así que la base de calendario es 1550.00 y una regularización de
+    # cierre de -50.00 la concilia con el snapshot oficial (1500.00). No hay
+    # reparto de la base entre jornadas programadas.
+    assert sum(Decimal(row["base_amount"]) for row in report["daily"]) == Decimal("1550.00")
+    assert sum(Decimal(row["regularization_amount"]) for row in report["daily"]) == Decimal("-50.00")
+    assert Decimal(summary["calendar_base_amount"]) == Decimal("1550.00")
+    assert Decimal(summary["regularization_amount"]) == Decimal("-50.00")
+    assert (
+        Decimal(summary["calendar_base_amount"]) + Decimal(summary["regularization_amount"])
+        == Decimal(summary["programmed_base_amount"])
+        == Decimal("1500.00")
+    )
+    assert sum(Decimal(row["overtime_amount"]) for row in report["daily"]) == Decimal("7.81")
+    assert sum(Decimal(row["recognized_total_amount"]) for row in report["daily"]) == Decimal(summary["recognized_total_amount"])
+    overtime_day = next(row for row in report["daily"] if row["work_date"] == "2026-08-25")
+    assert overtime_day["overtime_amount"] == "7.81"
+
+
+def test_reporte_diario_reconoce_solo_jornadas_cerradas(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(emp),
+            work_date=date(2026, 8, 3),
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=datetime(2026, 8, 3, 17, tzinfo=timezone.utc),
+            worked_minutes=240,
+            status="COMPLETE",
+        )
+    )
+    db_session.commit()
+    adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-04",
+            "minutes": 480,
+            "adjustment_type": "OTRO",
+            "reason": "Jornada cubierta por ajuste aprobado",
+        },
+    ).json()
+    _approve(client, adjustment)
+    overtime_adjustment = client.post(
+        f"/api/v1/employees/{emp}/adjustments",
+        json={
+            "adjustment_date": "2026-08-05",
+            "minutes": 60,
+            "adjustment_type": "OVERTIME",
+            "reason": "HE cerrada y aprobada",
+        },
+    ).json()
+    _approve(client, overtime_adjustment)
+    period = _create_period(client)
+    record = client.post(f"/api/v1/payroll/periods/{period['id']}/calculate").json()[0]
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 15))
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    days = {item["work_date"]: item for item in report["daily"]}
+    no_attendance = days["2026-08-06"]
+    partial = days["2026-08-03"]
+    adjusted = days["2026-08-04"]
+    overtime = days["2026-08-05"]
+    future = days["2026-08-17"]
+
+    assert no_attendance["status"] == "NO_ATTENDANCE"
+    assert no_attendance["recognized_minutes"] == 0
+    assert no_attendance["recognized_base_amount"] == "0.00"
+    # La revisión se valora a valor día legal (1500/30), no a la cuota de reparto.
+    assert Decimal(no_attendance["review_difference_amount"]) == Decimal("50.00")
+    assert partial["status"] == "PARTIAL"
+    assert partial["recognized_minutes"] == 240
+    # Media jornada reconocida = 240/480 × (1500/30) = 25.00.
+    assert Decimal(partial["recognized_base_amount"]) == Decimal("25.00")
+    assert adjusted["status"] == "RECOGNIZED"
+    assert adjusted["recognized_minutes"] == 480
+    # Jornada completa reconocida = 1500/30 = 50.00, no una cuota del tramo.
+    assert adjusted["recognized_base_amount"] == "50.00"
+    # La base diaria es el treintavo legal de la fecha, no 1500/21.
+    assert Decimal(adjusted["base_amount"]) == Decimal("50.00")
+    assert Decimal(adjusted["legal_daily_value"]) == Decimal("50.0000")
+    assert overtime["recognized_overtime_amount"] == "7.81"
+    assert future["status"] == "FUTURE_PENDING"
+    assert future["recognized_minutes"] == 0
+    assert future["recognized_total_amount"] == "0.00"
+
+    summary = report["employees"][0]
+    assert Decimal(summary["programmed_base_amount"]) == Decimal("1500.00")
+    assert Decimal(summary["recognized_base_amount"]) > Decimal("0.00")
+    assert summary["recognized_overtime_amount"] == "7.81"
+    assert Decimal(summary["future_pending_base_amount"]) > Decimal("0.00")
+    assert Decimal(summary["review_difference_amount"]) > Decimal("0.00")
+    after = client.get(f"/api/v1/payroll/periods/{period['id']}/records").json()[0]
+    assert after["id"] == record["id"]
+    assert after["total"] == record["total"]
+    assert after["base_salary"] == record["base_salary"]
+
+
+def test_reporte_diario_reconoce_hoy_cuando_todas_las_sesiones_terminaron(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(employee_id),
+            work_date=today,
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=datetime(2026, 8, 3, 22, tzinfo=timezone.utc),
+            worked_minutes=480,
+            status="COMPLETE",
+        )
+    )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "RECOGNIZED"
+    assert item["recognized_minutes"] == 480
+    # Reconocido por asistencia a valor día legal (1500/30).
+    assert item["recognized_base_amount"] == "50.00"
+
+
+def test_reporte_diario_mantiene_hoy_pendiente_con_entrada_abierta(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    db_session.add(
+        AttendanceRecord(
+            employee_id=uuid.UUID(employee_id),
+            work_date=today,
+            check_in_at=datetime(2026, 8, 3, 13, tzinfo=timezone.utc),
+            check_out_at=None,
+            worked_minutes=0,
+            status="OPEN",
+        )
+    )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "PENDING"
+    assert item["recognized_minutes"] == 0
+    assert item["recognized_total_amount"] == "0.00"
+
+
+def test_reporte_diario_mantiene_hoy_pendiente_sin_asistencia(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    employee_id = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, employee_id)
+    today = date(2026, 8, 3)
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: today)
+
+    report = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    item = next(row for row in report["daily"] if row["work_date"] == today.isoformat())
+
+    assert item["status"] == "PENDING"
+    assert item["recognized_minutes"] == 0
+    assert item["recognized_total_amount"] == "0.00"
+
+
+def test_reporte_diario_usa_neto_con_override_y_solapes(client, db_session, monkeypatch):
+    _login(client, "admin", "Admin123!")
+    emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
+    _set_salary(client, emp)
+    day = date(2026, 8, 3)
+    for check_in_hour, check_out_hour in ((13, 17), (16, 22)):
+        db_session.add(
+            AttendanceRecord(
+                employee_id=uuid.UUID(emp),
+                work_date=day,
+                check_in_at=datetime(2026, 8, 3, check_in_hour, tzinfo=timezone.utc),
+                check_out_at=datetime(2026, 8, 3, check_out_hour, tzinfo=timezone.utc),
+                worked_minutes=999,  # El reporte no debe confiar en este valor por sesión.
+                status="COMPLETE",
+            )
+        )
+    db_session.commit()
+    period = _create_period(client)
+    client.post(f"/api/v1/payroll/periods/{period['id']}/calculate")
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 15))
+
+    before = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    before_day = next(item for item in before["daily"] if item["work_date"] == "2026-08-03")
+    # Dos sesiones 08:00–17:00 con una hora de solape = 540 min brutos;
+    # refrigerio programado de 60 min = 480 min netos reconocidos.
+    assert before_day["recognized_minutes"] == 480
+    # 480/480 × (1500/30) = 50.00, no la cuota de reparto del snapshot.
+    assert before_day["recognized_base_amount"] == "50.00"
+
+    admin_id = db_session.scalar(select(User.id).where(User.username == "admin"))
+    assert admin_id is not None
+    db_session.add(
+        AttendanceBreakOverride(
+            employee_id=uuid.UUID(emp),
+            work_date=day,
+            requested_break_minutes=120,
+            reason="Refrigerio real de dos horas",
+            created_by_user_id=admin_id,
+        )
+    )
+    db_session.commit()
+    after = client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").json()
+    after_day = next(item for item in after["daily"] if item["work_date"] == "2026-08-03")
+    assert after_day["recognized_minutes"] == 420
+    assert after_day["status"] == "PARTIAL"
+    assert Decimal("0.00") < Decimal(after_day["recognized_base_amount"]) < Decimal(after_day["base_amount"])
+
+
+def test_reporte_diario_supervisor_forbidden(client, db_session):
+    _login(client, "admin", "Admin123!")
+    period = _create_period(client)
+    _login(client, "supervisor", "Sup123!")
+    assert client.get(f"/api/v1/payroll/periods/{period['id']}/daily-report").status_code == 403
 
 
 def test_esperado_acotado_a_alta(client, db_session):
@@ -465,7 +823,8 @@ def test_recalcular_conserva_bono_de_empleado_inelegible(client, db_session):
     assert summary["total_manual"] == "50.00"
 
 
-def test_confirmar_exige_recalculo_si_cambia_he(client, db_session):
+def test_confirmar_exige_recalculo_si_cambia_he(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -490,7 +849,8 @@ def test_he_aprobada_sin_pago_bloquea_cierre(client, db_session):
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
 
-def test_rectificacion_copia_ajuste_manual(client, db_session):
+def test_rectificacion_copia_ajuste_manual(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -521,4 +881,3 @@ def test_motivo_solo_espacios_es_rechazado(client, db_session):
         json={"amount": "10.00", "notes": "   "},
     )
     assert response.status_code == 422
-

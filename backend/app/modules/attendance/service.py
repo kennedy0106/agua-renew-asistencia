@@ -9,27 +9,41 @@
 """
 
 import base64
+import hashlib
 import uuid
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.images import MAX_INPUT_BYTES, verify_and_normalize
+from app.core.object_store import (
+    ObjectAlreadyExistsError,
+    ObjectNotFoundError,
+    ObjectStoreError,
+    evidence_object_key,
+    get_object_store,
+)
 from app.core.config import get_settings
 from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
+    STORAGE_S3,
+    AttendanceAttemptResolution,
+    AttendanceBreakOverride,
     AttendanceConsumedNonce,
     AttendanceEvent,
     AttendanceEvidence,
     AttendanceRecord,
 )
+from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.attendance.repository import AttendanceRepository
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.repository import EmployeeRepository
+from app.modules.payroll.models import PERIOD_CALCULATED, PERIOD_CLOSED, PERIOD_OPEN, PayrollPeriod
 from app.modules.schedules.repository import WorkScheduleRepository
 from app.modules.schedules.service import ScheduleService
 
@@ -56,10 +70,14 @@ class AttendanceService:
         self.db = db
         self.repo = AttendanceRepository(db)
 
-    def _get_active_employee(self, employee_id: uuid.UUID):
+    def _get_employee_or_404(self, employee_id: uuid.UUID):
         employee = EmployeeRepository(self.db).get_by_id(employee_id)
         if employee is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empleado no encontrado")
+        return employee
+
+    def _get_active_employee(self, employee_id: uuid.UUID):
+        employee = self._get_employee_or_404(employee_id)
         if not employee.active:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -141,8 +159,7 @@ class AttendanceService:
         decoded = decode_attendance_token(marking_token)
         if decoded is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if decoded.get("did") and device_id and str(decoded["did"]) != str(device_id):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self._require_token_terminal(decoded, device_id)
         employee_id = uuid.UUID(str(decoded["sub"]))
         self._get_active_employee(employee_id)
         nonce = str(decoded["nonce"])
@@ -153,9 +170,20 @@ class AttendanceService:
         if len(raw) > MAX_INPUT_BYTES:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El tamaño de la foto no es válido")
         normalized, ctype, digest = verify_and_normalize(raw)
-        existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
-        consumed = self.db.get(AttendanceConsumedNonce, nonce)
+
+        self.repo.lock_employee_for_attempt(employee_id)
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        resolution, consumed, existing = self._fresh_attempt_rows(nonce)
+        if resolution is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este intento ya no admite evidencia; identifique de nuevo",
+            )
         if existing is not None:
+            if existing.employee_id != employee_id:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
             if existing.image_sha256 and existing.image_sha256 != digest:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -167,37 +195,139 @@ class AttendanceService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Esta marcación ya se confirmó; identifique de nuevo para tomar otra foto",
             )
+        try:
+            store = get_object_store()
+        except ObjectStoreError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        object_key = evidence_object_key(str(employee_id), nonce)
+        payload = normalized
+        try:
+            store.put_bytes(object_key, payload, ctype)
+        except ObjectAlreadyExistsError:
+            try:
+                payload = store.get_bytes(object_key, bucket=store.bucket)
+            except ObjectStoreError as exc:
+                self._raise_store_http(exc)
+            stored_digest = hashlib.sha256(payload).hexdigest()
+            if stored_digest != digest:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya hay una foto distinta para este intento; identifique de nuevo",
+                )
+            digest = stored_digest
+        except ObjectStoreError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        if decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         evidence = AttendanceEvidence(
             nonce=nonce,
             employee_id=employee_id,
             device_id=device_id,
             content_type=ctype,
-            image_bytes=normalized,
+            image_bytes=None,
+            object_key=object_key,
+            storage_backend=STORAGE_S3,
+            storage_bucket=store.bucket,
+            byte_size=len(payload),
             image_sha256=digest,
         )
         self.db.add(evidence)
         try:
             self.db.commit()
-        except IntegrityError:
-            self.db.rollback()
-            existing = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        except (IntegrityError, OperationalError, InterfaceError):
+            # Después de un PUT el resultado SQL es incierto. No se borra el
+            # objeto: se intenta reconciliar una sola vez, sin reutilizar una
+            # transacción que no haya podido volver a un estado válido.
+            session_reusable = True
+            try:
+                self.db.rollback()
+            except (OperationalError, InterfaceError):
+                session_reusable = False
+            self.db.expire_all()
+            existing = self._recover_evidence_after_put(nonce, digest, session_reusable=session_reusable)
             if existing is None:
-                raise
-            if existing.image_sha256 and existing.image_sha256 != digest:
                 raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Ya hay una foto distinta para este intento; identifique de nuevo",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="La foto se almacenó pero no se publicó; reintente la misma foto",
                 )
             return existing
         self.db.refresh(evidence)
         return evidence
 
+    def _recover_evidence_after_put(
+        self, nonce: str, digest: str, *, session_reusable: bool = True
+    ) -> AttendanceEvidence | None:
+        try:
+            existing = self.repo.get_evidence_by_nonce(nonce) if session_reusable else None
+        except (OperationalError, InterfaceError):
+            # La conexión que falló al confirmar puede seguir caída. Una sola
+            # sesión nueva permite detectar un commit que sí llegó al servidor.
+            existing = None
+        if existing is None:
+            existing = self._lookup_evidence_via_new_session(nonce)
+        if existing is None:
+            return None
+        if existing.image_sha256 and existing.image_sha256 != digest:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya hay una foto distinta para este intento; identifique de nuevo",
+            )
+        return existing
+
+    def _lookup_evidence_via_new_session(self, nonce: str) -> AttendanceEvidence | None:
+        try:
+            bind = self.db.get_bind()
+            if bind is None:
+                return None
+            with Session(bind) as other:
+                # Se devuelve la fila de la sesión alternativa para no volver a
+                # consultar la sesión original, potencialmente inválida.
+                return other.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        except (OperationalError, InterfaceError):
+            return None
+
+    def _raise_store_http(self, exc: ObjectStoreError) -> None:
+        if isinstance(exc, ObjectNotFoundError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada") from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "Almacén de evidencias no disponible",
+        ) from exc
+
     def _evidence_or_400(self, nonce: str, employee_id: uuid.UUID) -> AttendanceEvidence:
-        evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+        evidence = self.repo.get_evidence_by_nonce(nonce)
         if evidence is None or evidence.employee_id != employee_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Debe capturar una foto nueva antes de marcar",
+            )
+        if evidence.image_bytes:
+            return evidence
+        if not evidence.object_key or not evidence.storage_bucket:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
+            )
+        try:
+            meta = get_object_store().head_object(evidence.object_key, bucket=evidence.storage_bucket)
+        except ObjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
+            ) from exc
+        except ObjectStoreError as exc:
+            self._raise_store_http(exc)
+        size = meta.get("ContentLength")
+        if evidence.byte_size is not None and size is not None and int(size) != evidence.byte_size:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La foto no está disponible; identifique de nuevo o pida revisión",
             )
         return evidence
 
@@ -219,7 +349,7 @@ class AttendanceService:
         }
 
     def _replay_nonce(self, nonce: str, action: str, employee_id: uuid.UUID) -> dict | None:
-        existing = self.db.get(AttendanceConsumedNonce, nonce)
+        existing = self.repo.get_consumed_nonce(nonce)
         if existing is None:
             return None
         if existing.action != action or existing.employee_id != employee_id:
@@ -239,34 +369,356 @@ class AttendanceService:
             )
         return self._record_snapshot(record, event_type=action)
 
-    def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
-        decoded = decode_attendance_token_for_recovery(marking_token)
-        if decoded is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        employee_id = uuid.UUID(str(decoded["sub"]))
-        self._get_active_employee(employee_id)
-        nonce = str(decoded["nonce"])
-        consumed = self.db.get(AttendanceConsumedNonce, nonce)
-        if consumed is None or not consumed.result_payload:
-            return {"state": "PENDING", "record": None}
-        if consumed.employee_id != employee_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
-        if consumed.device_id is not None:
-            if device_id is None or consumed.device_id != device_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="El token no corresponde a este terminal",
-                )
+    @staticmethod
+    def _require_token_terminal(decoded: dict, device_id: uuid.UUID | None) -> None:
+        token_did = decoded.get("did")
+        if token_did and device_id and str(device_id) != str(token_did):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
+
+    def _require_kiosk_device(self, decoded: dict, device_id: uuid.UUID | None) -> uuid.UUID:
+        if device_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Este equipo no está autorizado para consultar el intento",
+            )
+        token_did = decoded.get("did")
+        if not token_did or str(token_did) != str(device_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
+        return device_id
+
+    def _fresh_attempt_rows(self, nonce: str):
+        return (
+            self.repo.get_resolution(nonce),
+            self.repo.get_consumed_nonce(nonce),
+            self.repo.get_evidence_by_nonce(nonce),
+        )
+
+    def _reject_cancelled(self, resolution: AttendanceAttemptResolution | None) -> None:
+        if resolution is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este intento ya fue resuelto; identifique de nuevo",
+            )
+
+    def _confirmed_within_window(self, consumed: AttendanceConsumedNonce) -> bool:
         created_at = consumed.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
         window = timedelta(minutes=get_settings().attempt_recovery_minutes)
-        if datetime.now(timezone.utc) - created_at > window:
+        return datetime.now(timezone.utc) - created_at <= window
+
+    def _status_from_rows(
+        self,
+        *,
+        nonce: str,
+        employee_id: uuid.UUID,
+        action: str,
+        device_id: uuid.UUID,
+        write_token_valid: bool,
+        resolution: AttendanceAttemptResolution | None,
+        consumed: AttendanceConsumedNonce | None,
+        evidence: AttendanceEvidence | None,
+    ) -> dict:
+        if evidence is not None and (
+            evidence.employee_id != employee_id or (evidence.device_id is not None and evidence.device_id != device_id)
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if resolution is not None:
+            if resolution.employee_id != employee_id or resolution.action != action:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+            if resolution.device_id != device_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="El token no corresponde a este terminal",
+                )
+            if consumed is not None and consumed.result_payload and resolution.resolution == "CANCELLED_UNCONFIRMED":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="El intento tiene una confirmación y una cancelación incompatibles; requiere revisión",
+                )
+            if resolution.resolution == "CANCELLED_UNCONFIRMED":
+                return {
+                    "state": "CANCELLED",
+                    "record": None,
+                    "evidence_ready": evidence is not None,
+                    "write_token_valid": False,
+                    "can_restart": True,
+                    "nonce": nonce,
+                    "resolution_id": nonce,
+                    "reason": resolution.reason,
+                }
+            return {
+                "state": "REVIEWED",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": False,
+                "can_restart": True,
+                "nonce": nonce,
+                "resolution_id": nonce,
+                "reason": resolution.reason,
+            }
+        if consumed is not None:
+            if consumed.employee_id != employee_id or consumed.action != action:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+            if consumed.device_id is None or consumed.device_id != device_id:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="El token no corresponde a este terminal",
+                )
+            if not consumed.result_payload:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="El intento quedó inconsistente; pida revisión autorizada",
+                )
+            if not self._confirmed_within_window(consumed):
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail="El plazo para recuperar este intento ya venció",
+                )
+            return {
+                "state": "CONFIRMED",
+                "record": consumed.result_payload,
+                "evidence_ready": True,
+                "write_token_valid": write_token_valid,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+            }
+        if write_token_valid:
+            return {
+                "state": "PENDING",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": True,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+            }
+        return {
+            "state": "EXPIRED_UNCONFIRMED",
+            "record": None,
+            "evidence_ready": evidence is not None,
+            "write_token_valid": False,
+            "can_restart": False,
+            "nonce": nonce,
+            "resolution_id": None,
+            "reason": None,
+        }
+
+    def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
+        decoded = decode_attendance_token_for_recovery(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        device = self._require_kiosk_device(decoded, device_id)
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        self._get_employee_or_404(employee_id)
+        nonce = str(decoded["nonce"])
+        action = str(decoded.get("action") or "")
+        write_token_valid = decode_attendance_token(marking_token) is not None
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        return self._status_from_rows(
+            nonce=nonce,
+            employee_id=employee_id,
+            action=action,
+            device_id=device,
+            write_token_valid=write_token_valid,
+            resolution=resolution,
+            consumed=consumed,
+            evidence=evidence,
+        )
+
+    def resolve_attempt(
+        self,
+        marking_token: str,
+        *,
+        reason_code: str,
+        device_id: uuid.UUID | None = None,
+    ) -> dict:
+        if reason_code not in {"TOKEN_EXPIRED", "PHOTO_RETAKE", "USER_CANCELLED"}:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Motivo de resolución no permitido")
+        decoded = decode_attendance_token_for_recovery(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        device = self._require_kiosk_device(decoded, device_id)
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        action = str(decoded.get("action") or "")
+        nonce = str(decoded["nonce"])
+        self.repo.lock_employee_for_attempt(employee_id)
+        self._get_employee_or_404(employee_id)
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        if evidence is not None and evidence.employee_id != employee_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        status_payload = self._status_from_rows(
+            nonce=nonce,
+            employee_id=employee_id,
+            action=action,
+            device_id=device,
+            write_token_valid=decode_attendance_token(marking_token) is not None,
+            resolution=resolution,
+            consumed=consumed,
+            evidence=evidence,
+        )
+        if status_payload["state"] == "CONFIRMED":
+            return status_payload
+        if status_payload["state"] in {"CANCELLED", "REVIEWED"}:
+            return status_payload
+        row = AttendanceAttemptResolution(
+            nonce=nonce,
+            employee_id=employee_id,
+            device_id=device,
+            action=action,
+            resolution="CANCELLED_UNCONFIRMED",
+            reason=reason_code,
+            resolved_by_user_id=None,
+            attendance_record_id=None,
+        )
+        self.db.add(row)
+        AuditRepository(self.db).create(
+            entity_type="attendance_attempt",
+            entity_id=employee_id,
+            action="ATTEMPT_CANCELLED",
+            old_values=None,
+            new_values={"nonce": nonce, "reason": reason_code, "action": action},
+            reason=reason_code,
+            performed_by=None,
+            commit=False,
+        )
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repo.get_resolution(nonce)
+            if existing is None:
+                raise
+            return self.attempt_status(marking_token, device_id=device)
+        return {
+            "state": "CANCELLED",
+            "record": None,
+            "evidence_ready": evidence is not None,
+            "write_token_valid": False,
+            "can_restart": True,
+            "nonce": nonce,
+            "resolution_id": nonce,
+            "reason": reason_code,
+        }
+
+    def inspect_attempt_admin(self, nonce: str) -> dict:
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        employee_id = None
+        action = None
+        device_id = None
+        if resolution is not None:
+            employee_id = resolution.employee_id
+            action = resolution.action
+            device_id = resolution.device_id
+        elif consumed is not None:
+            employee_id = consumed.employee_id
+            action = consumed.action
+            device_id = consumed.device_id
+        elif evidence is not None:
+            employee_id = evidence.employee_id
+            device_id = evidence.device_id
+        if employee_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Intento no encontrado")
+        employee = EmployeeRepository(self.db).get_by_id(employee_id)
+        device = None
+        if device_id is not None:
+            from app.modules.attendance.models import AttendanceDevice
+
+            device = self.db.get(AttendanceDevice, device_id)
+        automatable = device_id is not None
+        state = "UNKNOWN"
+        record = None
+        if resolution is not None:
+            state = "CANCELLED" if resolution.resolution == "CANCELLED_UNCONFIRMED" else "REVIEWED"
+        elif consumed is not None and consumed.result_payload:
+            state = "CONFIRMED"
+            record = consumed.result_payload
+            if not self._confirmed_within_window(consumed):
+                state = "CONFIRMED_WINDOW_ELAPSED"
+        elif consumed is not None:
+            state = "INCONSISTENT"
+            automatable = False
+        elif evidence is not None:
+            state = "EVIDENCE_ONLY"
+        return {
+            "nonce": nonce,
+            "employee_id": str(employee_id),
+            "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None,
+            "action": action,
+            "device_id": str(device_id) if device_id else None,
+            "device_name": device.name if device is not None else None,
+            "state": state,
+            "automatable": automatable,
+            "record": record,
+            "evidence_ready": evidence is not None,
+            "resolution": resolution.resolution if resolution is not None else None,
+        }
+
+    def review_attempt(self, nonce: str, *, reason: str, user_id: uuid.UUID) -> dict:
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        employee_id = consumed.employee_id if consumed is not None else (evidence.employee_id if evidence is not None else None)
+        if employee_id is None and resolution is not None:
+            employee_id = resolution.employee_id
+        if employee_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Intento no encontrado")
+        self.repo.lock_employee_for_attempt(employee_id)
+        resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        if resolution is not None:
+            return self.inspect_attempt_admin(nonce)
+        if consumed is None or not consumed.result_payload:
             raise HTTPException(
-                status_code=status.HTTP_410_GONE,
-                detail="El plazo para recuperar este intento ya venció",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No hay una confirmación verificable para revisar; el terminal debe resolver el intento",
             )
-        return {"state": "CONFIRMED", "record": consumed.result_payload}
+        if consumed.device_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Este registro histórico no tiene terminal demostrable; no se automatiza la pertenencia",
+            )
+        record_id = consumed.attendance_record_id
+        if record_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El intento quedó inconsistente; requiere revisión manual fuera de este mecanismo",
+            )
+        row = AttendanceAttemptResolution(
+            nonce=nonce,
+            employee_id=consumed.employee_id,
+            device_id=consumed.device_id,
+            action=consumed.action,
+            resolution="REVIEWED_CONFIRMED",
+            reason=reason,
+            resolved_by_user_id=user_id,
+            attendance_record_id=record_id,
+        )
+        self.db.add(row)
+        AuditRepository(self.db).create(
+            entity_type="attendance_attempt",
+            entity_id=consumed.employee_id,
+            action="ATTEMPT_REVIEWED",
+            old_values={"record_id": str(record_id)},
+            new_values={"nonce": nonce, "reason": reason},
+            reason=reason,
+            performed_by=user_id,
+            commit=False,
+        )
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repo.get_resolution(nonce)
+            if existing is None:
+                raise
+        return self.inspect_attempt_admin(nonce)
 
     def _consume_nonce(
         self,
@@ -300,11 +752,17 @@ class AttendanceService:
         require_evidence: bool = False,
         device_id: uuid.UUID | None = None,
         token_device_id: str | None = None,
+        marking_token: str | None = None,
     ) -> AttendanceRecord | dict:
         self._get_active_employee(employee_id)
         if token_device_id and device_id and str(device_id) != str(token_device_id):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self.repo.lock_employee_for_attempt(employee_id)
+        if marking_token and decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         if nonce:
+            resolution, _consumed, _evidence = self._fresh_attempt_rows(nonce)
+            self._reject_cancelled(resolution)
             replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
             if replay is not None:
                 return replay
@@ -319,6 +777,20 @@ class AttendanceService:
 
         now = datetime.now(timezone.utc)
         work_date = now.astimezone(lima_tz()).date()
+        # A historical administrative day and a kiosk session are mutually
+        # exclusive sources for one employee/date.  Both services lock the
+        # employee first, so this check remains valid through the commit.
+        if self.db.scalar(
+            select(ManualAttendanceDay.id).where(
+                ManualAttendanceDay.employee_id == employee_id,
+                ManualAttendanceDay.work_date == work_date,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La jornada tiene una carga histórica; no se mezclan fuentes",
+            )
         try:
             record = AttendanceRecord(
                 employee_id=employee_id,
@@ -330,7 +802,7 @@ class AttendanceService:
             self.db.flush()
             if nonce:
                 self._consume_nonce(nonce, "CHECK_IN", employee_id, record, device_id=device_id)
-                evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+                evidence = self.repo.get_evidence_by_nonce(nonce)
                 if evidence is not None:
                     evidence.attendance_record_id = record.id
             self._record_event(record, "CHECK_IN", now, external_event_id=nonce, device_id=device_id)
@@ -342,10 +814,13 @@ class AttendanceService:
                 replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
                 if replay is not None:
                     return replay
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Ya tiene una entrada abierta; marque su salida primero",
-            ) from exc
+            detail = str(getattr(exc, "orig", exc))
+            if "uq_attendance_one_open" in detail or "UNIQUE constraint failed" in detail:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya tiene una entrada abierta; marque su salida primero",
+                ) from exc
+            raise
         return record
 
     def check_out(
@@ -357,11 +832,17 @@ class AttendanceService:
         device_id: uuid.UUID | None = None,
         token_device_id: str | None = None,
         record_id: uuid.UUID | None = None,
+        marking_token: str | None = None,
     ) -> AttendanceRecord | dict:
         self._get_active_employee(employee_id)
         if token_device_id and device_id and str(device_id) != str(token_device_id):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+        self.repo.lock_employee_for_attempt(employee_id)
+        if marking_token and decode_attendance_token(marking_token) is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
         if nonce:
+            resolution, _consumed, _evidence = self._fresh_attempt_rows(nonce)
+            self._reject_cancelled(resolution)
             replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
             if replay is not None:
                 return replay
@@ -399,7 +880,7 @@ class AttendanceService:
             self._recompute_day(employee_id, record.work_date, commit=False)
             if nonce:
                 self._consume_nonce(nonce, "CHECK_OUT", employee_id, record, device_id=device_id)
-                evidence = self.db.scalar(select(AttendanceEvidence).where(AttendanceEvidence.nonce == nonce))
+                evidence = self.repo.get_evidence_by_nonce(nonce)
                 if evidence is not None:
                     evidence.attendance_record_id = record.id
             self._record_event(record, "CHECK_OUT", now, external_event_id=nonce, device_id=device_id)
@@ -411,13 +892,14 @@ class AttendanceService:
                 replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
                 if replay is not None:
                     return replay
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="La entrada de este intento ya no está abierta",
-            ) from exc
+            raise
         return record
 
     def list_evidence_for_record(self, record_id: uuid.UUID) -> dict:
+        record = self.repo.get_by_id(record_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+        self.repo.lock_employee_for_attempt(record.employee_id)
         record = self.repo.get_by_id(record_id)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
@@ -461,24 +943,117 @@ class AttendanceService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada")
         return evidence
 
-    def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> int:
+    def get_evidence_payload(self, evidence_id: uuid.UUID) -> tuple[bytes, str]:
+        evidence = self.get_evidence_image(evidence_id)
+        if evidence.image_bytes:
+            return evidence.image_bytes, evidence.content_type
+        if evidence.object_key:
+            if not evidence.storage_bucket:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Ubicación de almacenamiento incompleta; requiere backfill explícito",
+                )
+            try:
+                payload = get_object_store().get_bytes(evidence.object_key, bucket=evidence.storage_bucket)
+            except ObjectNotFoundError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Evidencia no encontrada",
+                ) from exc
+            except ObjectStoreError as exc:
+                self._raise_store_http(exc)
+            return payload, evidence.content_type
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidencia no encontrada")
+
+    MIN_PURGE_HOURS = 24
+
+    def purge_abandoned_evidence(self, *, older_than_hours: int = 24) -> dict:
+        if older_than_hours < self.MIN_PURGE_HOURS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"older_than_hours debe ser al menos {self.MIN_PURGE_HOURS}",
+            )
         cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
-        rows = list(
+        candidates = list(
             self.db.scalars(
-                select(AttendanceEvidence).where(
+                select(AttendanceEvidence)
+                .join(
+                    AttendanceAttemptResolution,
+                    AttendanceAttemptResolution.nonce == AttendanceEvidence.nonce,
+                )
+                .where(
                     AttendanceEvidence.attendance_record_id.is_(None),
                     AttendanceEvidence.captured_at < cutoff,
+                    AttendanceAttemptResolution.resolution == "CANCELLED_UNCONFIRMED",
+                    AttendanceAttemptResolution.resolved_at < cutoff,
                 )
             )
         )
         deleted = 0
-        for row in rows:
-            consumed = self.db.get(AttendanceConsumedNonce, row.nonce)
-            if consumed is None:
-                self.db.delete(row)
-                deleted += 1
-        self.db.commit()
-        return deleted
+        omitted: list[dict[str, str]] = []
+        store = None
+        for snapshot in candidates:
+            self.repo.lock_employee_for_attempt(snapshot.employee_id)
+            resolution, consumed, evidence = self._fresh_attempt_rows(snapshot.nonce)
+            if evidence is None:
+                self.db.commit()
+                continue
+            if evidence.attendance_record_id is not None:
+                self.db.commit()
+                continue
+            if consumed is not None and consumed.attendance_record_id is not None:
+                self.db.commit()
+                continue
+            if resolution is None or resolution.resolution != "CANCELLED_UNCONFIRMED":
+                self.db.commit()
+                continue
+            captured = evidence.captured_at
+            if captured.tzinfo is None:
+                captured = captured.replace(tzinfo=timezone.utc)
+            resolved_at = resolution.resolved_at
+            if resolved_at.tzinfo is None:
+                resolved_at = resolved_at.replace(tzinfo=timezone.utc)
+            if captured >= cutoff or resolved_at >= cutoff:
+                self.db.commit()
+                continue
+            linked_event = self.db.scalar(
+                select(AttendanceEvent).where(AttendanceEvent.external_event_id == evidence.nonce)
+            )
+            if linked_event is not None:
+                self.db.commit()
+                continue
+            if evidence.object_key:
+                bucket = (evidence.storage_bucket or "").strip()
+                if not bucket:
+                    omitted.append(
+                        {"nonce": evidence.nonce, "reason": "incomplete_storage_location"}
+                    )
+                    self.db.commit()
+                    continue
+                if store is None:
+                    try:
+                        store = get_object_store()
+                    except ObjectStoreError as exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=str(exc),
+                        ) from exc
+                try:
+                    store.delete(evidence.object_key, bucket=bucket)
+                except ObjectStoreError as exc:
+                    self.db.rollback()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(exc),
+                    ) from exc
+            self.db.delete(evidence)
+            try:
+                self.db.commit()
+            except (IntegrityError, OperationalError, InterfaceError):
+                self.db.rollback()
+                raise
+            deleted += 1
+        return {"deleted": deleted, "omitted": omitted}
 
 
     def _record_event(
@@ -523,10 +1098,7 @@ class AttendanceService:
             cursor = max(cursor, end) if cursor is not None else end
 
         gross = sum(contributions)
-        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
-        break_to_apply = 0
-        if schedule and gross >= schedule.break_applies_after_minutes:
-            break_to_apply = min(schedule.break_minutes, gross)
+        break_to_apply, _source, _requested, _limited = self._break_details(employee_id, work_date, gross)
         remaining_break = break_to_apply
         for index in range(len(contributions) - 1, -1, -1):
             deducted = min(contributions[index], remaining_break)
@@ -535,11 +1107,348 @@ class AttendanceService:
         for record, minutes in zip(records, contributions, strict=True):
             record.worked_minutes = minutes
             self.db.add(record)
+        # El flush hace visibles los minutos nuevos (la sesión corre sin
+        # autoflush) y deja el commit al final, después de revalorizar.
+        self.db.flush()
+        # Una valoración especial vigente del mismo empleado/día parte de estos
+        # minutos netos ya consolidados: se recalcula (o se exige rectificación
+        # si su planilla está cerrada) sin crear filas ni descontar de nuevo el
+        # refrigerio.  Si revalorizar falla, nada se confirma.
+        from app.modules.work_calendar.service import SpecialDayValuationService
+
+        SpecialDayValuationService(self.db).recompute_for_day(employee_id, work_date)
         if commit:
             self.db.commit()
-        else:
-            self.db.flush()
         return gross - break_to_apply
+
+    def _break_override(self, employee_id: uuid.UUID, work_date: date) -> AttendanceBreakOverride | None:
+        return self.db.scalar(
+            select(AttendanceBreakOverride).where(
+                AttendanceBreakOverride.employee_id == employee_id,
+                AttendanceBreakOverride.work_date == work_date,
+            )
+        )
+
+    def _break_details(self, employee_id: uuid.UUID, work_date: date, gross: int) -> tuple[int, str, int | None, bool]:
+        """Devuelve descuento efectivo y su procedencia sin perder el pedido real."""
+        override = self._break_override(employee_id, work_date)
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        return self._break_details_from_values(override, schedule, gross)
+
+    @staticmethod
+    def _break_details_from_values(
+        override: AttendanceBreakOverride | None, schedule, gross: int
+    ) -> tuple[int, str, int | None, bool]:
+        """Aplica la regla de refrigerio sobre datos ya cargados.
+
+        ``list_daily`` la usa para no consultar override y jornada por cada
+        empleado/día. Las mutaciones siguen pasando por ``_break_details``.
+        """
+        if override is not None:
+            effective = min(override.requested_break_minutes, gross)
+            return effective, "OVERRIDE", override.requested_break_minutes, effective != override.requested_break_minutes
+        if schedule and gross >= schedule.break_applies_after_minutes:
+            return min(schedule.break_minutes, gross), "SCHEDULE", None, False
+        return 0, "NONE", None, False
+
+    def daily_break_plan(
+        self,
+        employee_id: uuid.UUID,
+        work_date: date,
+        *,
+        additional_minutes: int = 0,
+        ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        """Cálculo canónico de la presencia diaria y su único refrigerio.
+
+        Combina las sesiones de kiosco completadas del día, la parte ordinaria
+        de una carga histórica vigente (o la fila candidata que se está
+        previsualizando) y el tiempo adicional solicitado.  La jornada sólo
+        aplica **un** refrigerio: si la presencia ordinaria ya lo activó, el
+        incremental es cero y el adicional se paga completo.
+        """
+        requested = max(0, int(additional_minutes))
+        override = self._break_override(employee_id, work_date)
+        schedule = WorkScheduleRepository(self.db).get_for_date(employee_id, work_date)
+        records = [
+            item
+            for item in self.repo.list_records(
+                employee_id=employee_id, date_from=work_date, date_to=work_date
+            )
+            if item.status == "COMPLETE" and item.check_out_at is not None
+        ]
+        manual = None
+        if ordinary_minutes is None and not records:
+            manual = self.db.scalar(
+                select(ManualAttendanceDay).where(
+                    ManualAttendanceDay.employee_id == employee_id,
+                    ManualAttendanceDay.work_date == work_date,
+                    ManualAttendanceDay.voided_at.is_(None),
+                )
+            )
+        return self.daily_break_plan_from_values(
+            work_date,
+            requested,
+            override=override,
+            schedule=schedule,
+            records=records,
+            manual=manual,
+            ordinary_minutes=ordinary_minutes,
+            ordinary_known_break_minutes=ordinary_known_break_minutes,
+        )
+
+    def break_plan_inputs_for_days(
+        self, employee_id: uuid.UUID, days: Iterable[date]
+    ) -> dict[date, dict]:
+        """Resuelve las entradas del refrigerio de varios días en lote.
+
+        Es solo lectura: trae en una consulta por fuente el override, la
+        jornada, las marcaciones completas y la carga manual vigente que
+        ``daily_break_plan`` resolvería fila a fila, sin cambiar reglas.
+        """
+        unique_days = sorted(set(days))
+        if not unique_days:
+            return {}
+        overrides = self._break_overrides_for_days({employee_id: set(unique_days)})
+        schedules = ScheduleService(self.db).schedules_for_days({employee_id: unique_days})
+        records_by_day: dict[date, list[AttendanceRecord]] = {}
+        for record in self.repo.list_records(
+            employee_id=employee_id, date_from=unique_days[0], date_to=unique_days[-1]
+        ):
+            if record.status == "COMPLETE" and record.check_out_at is not None:
+                records_by_day.setdefault(record.work_date, []).append(record)
+        manual_by_day = {
+            item.work_date: item
+            for item in self.db.scalars(
+                select(ManualAttendanceDay).where(
+                    ManualAttendanceDay.employee_id == employee_id,
+                    ManualAttendanceDay.work_date >= unique_days[0],
+                    ManualAttendanceDay.work_date <= unique_days[-1],
+                    ManualAttendanceDay.voided_at.is_(None),
+                )
+            )
+        }
+        return {
+            day: {
+                "override": overrides.get((employee_id, day)),
+                "schedule": schedules.get((employee_id, day)),
+                "records": records_by_day.get(day, []),
+                "manual": manual_by_day.get(day),
+            }
+            for day in unique_days
+        }
+
+    @staticmethod
+    def daily_break_plan_from_values(
+        work_date: date,
+        requested: int,
+        *,
+        override: AttendanceBreakOverride | None,
+        schedule,
+        records: list[AttendanceRecord],
+        manual: ManualAttendanceDay | None,
+        ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        """Aritmética pura del refrigerio sobre entradas ya resueltas.
+
+        Comparte exactamente la regla escalar: la única diferencia es que no
+        consulta la base; recibe el override, la jornada, las marcaciones
+        completas y la carga manual vigente del día.
+        """
+        if ordinary_minutes is not None:
+            ordinary_gross = max(0, int(ordinary_minutes)) + max(
+                0, int(ordinary_known_break_minutes or 0)
+            )
+            presence_source = "MANUAL"
+        elif records:
+            ordinary_gross = AttendanceService._gross_for_records(records)
+            presence_source = "KIOSK"
+        elif manual is not None:
+            ordinary_gross = int(manual.normal_minutes) + int(manual.known_break_minutes or 0)
+            presence_source = "MANUAL"
+        else:
+            ordinary_gross = 0
+            presence_source = "NONE"
+        break_before, _source_before, _requested_before, _limited_before = AttendanceService._break_details_from_values(
+            override, schedule, ordinary_gross
+        )
+        break_after, source_after, _requested_after, _limited_after = AttendanceService._break_details_from_values(
+            override, schedule, ordinary_gross + requested
+        )
+        scheduled_day_minutes = (
+            getattr(
+                schedule,
+                ("monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes",
+                 "friday_minutes", "saturday_minutes", "sunday_minutes")[work_date.weekday()],
+            )
+            if schedule
+            else 0
+        )
+        if ordinary_gross > 0:
+            # Hay presencia ordinaria registrada: el refrigerio incremental nace
+            # de ella y el adicional se paga completo si el día ya lo activó.
+            incremental = min(requested, max(0, break_after - break_before))
+        elif scheduled_day_minutes <= 0 and requested > 0:
+            # Día sin jornada programada (descanso semanal o feriado) cuyo único
+            # registro es un ajuste OVERTIME: sus minutos representan toda la
+            # presencia del día y activan un único refrigerio al alcanzar el
+            # umbral (Daniel 2026-09-13: 510 -> 60 de refrigerio, 450 pagables).
+            incremental = min(requested, break_after)
+        else:
+            # Día laborable: el ajuste es tiempo adicional sobre una jornada
+            # programada; no se infiere presencia ordinaria ausente ni se
+            # inventa un refrigerio.
+            incremental = 0
+        return {
+            "requested_minutes": requested,
+            "ordinary_gross_minutes": ordinary_gross,
+            "break_before_minutes": break_before,
+            "break_after_minutes": break_after,
+            "break_minutes": incremental,
+            "payable_minutes": requested - incremental,
+            "break_source": source_after,
+            "presence_source": presence_source,
+            "scheduled_day_minutes": scheduled_day_minutes,
+            "schedule_break_minutes": schedule.break_minutes if schedule else 0,
+            "break_applies_after_minutes": schedule.break_applies_after_minutes if schedule else 0,
+        }
+
+    def _break_overrides_for_days(
+        self, employee_days: dict[uuid.UUID, set[date]]
+    ) -> dict[tuple[uuid.UUID, date], AttendanceBreakOverride]:
+        """Carga de una vez los overrides que pueden pertenecer al resumen."""
+        employee_ids = list(employee_days)
+        all_days = [day for days in employee_days.values() for day in days]
+        if not employee_ids or not all_days:
+            return {}
+        overrides = self.db.scalars(
+            select(AttendanceBreakOverride).where(
+                AttendanceBreakOverride.employee_id.in_(employee_ids),
+                AttendanceBreakOverride.work_date >= min(all_days),
+                AttendanceBreakOverride.work_date <= max(all_days),
+            )
+        )
+        requested = {
+            (employee_id, day)
+            for employee_id, days in employee_days.items()
+            for day in days
+        }
+        return {
+            (item.employee_id, item.work_date): item
+            for item in overrides
+            if (item.employee_id, item.work_date) in requested
+        }
+
+    @staticmethod
+    def _gross_for_records(records: list[AttendanceRecord]) -> int:
+        complete = sorted(
+            [item for item in records if item.check_out_at is not None], key=lambda item: _as_utc(item.check_in_at)
+        )
+        gross = 0
+        cursor: datetime | None = None
+        for item in complete:
+            start, end = _as_utc(item.check_in_at), _as_utc(item.check_out_at)
+            effective_start = max(start, cursor) if cursor is not None else start
+            gross += max(0, int((end - effective_start).total_seconds() // 60))
+            cursor = max(cursor, end) if cursor is not None else end
+        return gross
+
+    def _ensure_break_override_allowed(self, employee_id: uuid.UUID, work_date: date) -> list[AttendanceRecord]:
+        today = datetime.now(lima_tz()).date()
+        if work_date > today:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El refrigerio solo se ajusta hasta la fecha actual")
+        self._get_employee_or_404(employee_id)
+        records = self.repo.list_records(employee_id=employee_id, date_from=work_date, date_to=work_date)
+        complete = [record for record in records if record.status == "COMPLETE" and record.check_out_at is not None]
+        if not complete:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Debe existir al menos una sesión completada para ajustar el refrigerio")
+        if any(record.status == "OPEN" or record.check_out_at is None for record in records):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cierre todas las marcaciones del día antes de ajustar el refrigerio")
+        return records
+
+    def _invalidate_open_payroll_for_day(self, work_date: date) -> None:
+        """Evita snapshots obsoletos sin tocar un periodo cerrado.
+
+        Un CLOSED exige una rectificación OPEN/CALCULATED para el mismo root;
+        de existir, esa versión queda OPEN y deberá recalcularse explícitamente.
+        """
+        periods = list(self.db.scalars(select(PayrollPeriod).where(PayrollPeriod.start_date <= work_date, PayrollPeriod.end_date >= work_date)))
+        closed = [period for period in periods if period.status == PERIOD_CLOSED]
+        for period in closed:
+            editable = self.db.scalar(
+                select(PayrollPeriod).where(
+                    PayrollPeriod.root_period_id == period.root_period_id,
+                    PayrollPeriod.status.in_((PERIOD_OPEN, PERIOD_CALCULATED)),
+                    PayrollPeriod.start_date <= work_date,
+                    PayrollPeriod.end_date >= work_date,
+                )
+            )
+            if editable is None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La planilla está cerrada: cree una rectificación antes de ajustar el refrigerio")
+        for period in periods:
+            if period.status == PERIOD_CALCULATED:
+                period.status = PERIOD_OPEN
+                period.inputs_fingerprint = None
+                self.db.add(period)
+
+    def _daily_item(self, employee_id: uuid.UUID, work_date: date) -> dict:
+        item = next((item for item in self.list_daily(employee_id=employee_id, date_from=work_date, date_to=work_date) if item["work_date"] == work_date), None)
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontró resumen diario")
+        return item
+
+    def set_break_override(self, employee_id: uuid.UUID, work_date: date, *, requested_break_minutes: int, reason: str, current_user_id: uuid.UUID | None) -> dict:
+        records = self._ensure_break_override_allowed(employee_id, work_date)
+        gross = self._gross_for_records(records)
+        if requested_break_minutes > gross:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="El refrigerio no puede superar la presencia efectiva del día")
+        self._invalidate_open_payroll_for_day(work_date)
+        override = self._break_override(employee_id, work_date)
+        old_values = None if override is None else {"requested_break_minutes": override.requested_break_minutes, "reason": override.reason}
+        if override is None:
+            override = AttendanceBreakOverride(employee_id=employee_id, work_date=work_date, requested_break_minutes=requested_break_minutes, reason=reason.strip(), created_by_user_id=current_user_id)
+            self.db.add(override)
+            action = "break_override_created"
+        else:
+            override.requested_break_minutes, override.reason, override.created_by_user_id = requested_break_minutes, reason.strip(), current_user_id
+            self.db.add(override)
+            action = "break_override_updated"
+        # El refrigerio debe estar persistido antes de recalcular: la sesión
+        # corre sin autoflush, y el neto (y su valoración) deben partir del
+        # override nuevo, no del automático previo.
+        self.db.flush()
+        self._recompute_day(employee_id, work_date, commit=False)
+        self.db.flush()
+        AuditRepository(self.db).create(entity_type="attendance_break_override", entity_id=override.id, action=action, old_values=old_values, new_values={"employee_id": str(employee_id), "work_date": work_date.isoformat(), "requested_break_minutes": requested_break_minutes}, reason=reason.strip(), performed_by=current_user_id, commit=False)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El refrigerio fue actualizado por otra operación; vuelva a consultar") from exc
+        return self._daily_item(employee_id, work_date)
+
+    def clear_break_override(self, employee_id: uuid.UUID, work_date: date, *, reason: str, current_user_id: uuid.UUID | None) -> dict:
+        self._ensure_break_override_allowed(employee_id, work_date)
+        self._invalidate_open_payroll_for_day(work_date)
+        override = self._break_override(employee_id, work_date)
+        if override is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La jornada ya usa el cálculo automático de refrigerio")
+        old_values = {"employee_id": str(employee_id), "work_date": work_date.isoformat(), "requested_break_minutes": override.requested_break_minutes, "reason": override.reason}
+        override_id = override.id
+        self.db.delete(override)
+        self.db.flush()
+        self._recompute_day(employee_id, work_date, commit=False)
+        gross = self._gross_for_records(self.repo.list_records(employee_id=employee_id, date_from=work_date, date_to=work_date))
+        _effective, break_source, _requested, _limited = self._break_details(employee_id, work_date, gross)
+        AuditRepository(self.db).create(entity_type="attendance_break_override", entity_id=override_id, action="break_override_cleared", old_values=old_values, new_values={"break_source": break_source}, reason=reason.strip(), performed_by=current_user_id, commit=False)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El refrigerio fue actualizado por otra operación; vuelva a consultar") from exc
+        return self._daily_item(employee_id, work_date)
 
     # --- Panel administrativo (Fase 7) ---
 
@@ -555,10 +1464,15 @@ class AttendanceService:
         records = self.repo.list_records(
             employee_id=employee_id, date_from=date_from, date_to=date_to, status=status_filter
         )
-        schedules = ScheduleService(self.db)
+        employee_days: dict[uuid.UUID, set[date]] = {}
+        for record in records:
+            employee_days.setdefault(record.employee_id, set()).add(record.work_date)
+        expected_by_day = ScheduleService(self.db).expected_minutes_for_days(
+            employee_days
+        )
         result = []
         for record in records:
-            expected = schedules.expected_minutes(record.employee_id, record.work_date)
+            expected = expected_by_day[(record.employee_id, record.work_date)]
             result.append(
                 {
                     "id": record.id,
@@ -608,7 +1522,34 @@ class AttendanceService:
         groups: dict[tuple[uuid.UUID, date], list[AttendanceRecord]] = {}
         for record in records:
             groups.setdefault((record.employee_id, record.work_date), []).append(record)
+        manual_query = (
+            select(ManualAttendanceDay)
+            .options(joinedload(ManualAttendanceDay.employee))
+            .where(ManualAttendanceDay.voided_at.is_(None))
+        )
+        if employee_id is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.employee_id == employee_id)
+        if date_from is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date >= date_from)
+        if date_to is not None:
+            manual_query = manual_query.where(ManualAttendanceDay.work_date <= date_to)
+        manual_rows = list(self.db.scalars(manual_query))
+
+        employee_days: dict[uuid.UUID, set[date]] = {}
+        for group_employee_id, work_date in groups:
+            employee_days.setdefault(group_employee_id, set()).add(work_date)
+        for item in manual_rows:
+            employee_days.setdefault(item.employee_id, set()).add(item.work_date)
         schedules = ScheduleService(self.db)
+        schedules_by_day = schedules.schedules_for_days(employee_days)
+        expected_by_day = {
+            (item_employee_id, item_day): (
+                getattr(schedule, ("monday_minutes", "tuesday_minutes", "wednesday_minutes", "thursday_minutes", "friday_minutes", "saturday_minutes", "sunday_minutes")[item_day.weekday()])
+                if schedule else 0
+            )
+            for (item_employee_id, item_day), schedule in schedules_by_day.items()
+        }
+        overrides_by_day = self._break_overrides_for_days(employee_days)
         result: list[dict] = []
         for (group_employee_id, work_date), sessions in groups.items():
             complete = sorted(
@@ -631,8 +1572,14 @@ class AttendanceService:
             has_open = any(item.check_out_at is None for item in sessions)
             if has_open:
                 incidents.add("OPEN_ATTENDANCE")
-            worked = sum(item.worked_minutes or 0 for item in complete)
-            expected = schedules.expected_minutes(group_employee_id, work_date)
+            break_minutes, break_source, override_requested_minutes, override_limited = self._break_details_from_values(
+                overrides_by_day.get((group_employee_id, work_date)),
+                schedules_by_day[(group_employee_id, work_date)], gross
+            )
+            # El neto se deriva del total efectivo y conserva coherencia incluso
+            # si una fila antigua fue creada antes del recálculo diario.
+            worked = gross - break_minutes
+            expected = expected_by_day[(group_employee_id, work_date)]
             employee = sessions[0].employee
             result.append(
                 {
@@ -641,14 +1588,29 @@ class AttendanceService:
                     "work_date": work_date,
                     "session_count": len(sessions),
                     "gross_minutes": gross,
-                    "break_minutes": max(0, gross - worked),
+                    "break_minutes": break_minutes,
+                    "break_source": break_source,
+                    "override_requested_minutes": override_requested_minutes,
+                    "override_limited": override_limited,
                     "worked_minutes": worked,
+                    # Las sesiones del kiosco son presencia ordinaria.  No
+                    # depender de los defaults del schema: estos valores se
+                    # consumen junto con las filas históricas W/N/P/R.
+                    "ordinary_minutes": worked,
+                    "additional_minutes": 0,
+                    "recovery_minutes": 0,
                     "expected_minutes": expected,
                     "difference_minutes": worked - expected,
                     "has_open_entry": has_open,
                     "incident_codes": sorted(incidents),
                 }
             )
+        # Las cargas históricas son presencia real declarada, pero nunca se
+        # someten por segunda vez al descuento de refrigerio de sesiones.
+        for item in manual_rows:
+            employee = item.employee
+            expected = expected_by_day[(item.employee_id, item.work_date)]
+            result.append({"employee_id": item.employee_id, "employee_name": f"{employee.first_name} {employee.last_name}" if employee else None, "work_date": item.work_date, "session_count": 0, "gross_minutes": item.worked_minutes_net, "break_minutes": 0, "break_source": "NONE", "override_requested_minutes": None, "override_limited": False, "worked_minutes": item.worked_minutes_net, "ordinary_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "expected_minutes": expected, "difference_minutes": item.normal_minutes - expected, "has_open_entry": False, "incident_codes": ["HISTORICAL_MANUAL"]})
         return sorted(result, key=lambda item: (item["work_date"], str(item["employee_id"])), reverse=True)
 
     # --- Correcciones y auditoría (Fase 8) ---
@@ -691,6 +1653,20 @@ class AttendanceService:
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
 
+        # Todos los escritores que pueden decidir entre kiosco y carga
+        # histórica toman primero la fila Employee.  Tomarla antes de mutar
+        # work_date/corroborar ManualAttendanceDay evita que una corrección
+        # cruce de fecha mientras batch decide que esa fecha está libre.
+        self.repo.lock_employee_for_attempt(record.employee_id)
+        record = self.db.scalar(
+            select(AttendanceRecord)
+            .where(AttendanceRecord.id == record_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Registro no encontrado")
+
         old_date = record.work_date
         old_status = record.status
         old_values = self._serialize(record)
@@ -726,6 +1702,16 @@ class AttendanceService:
         else:
             record.worked_minutes = compute_worked_minutes(record.check_in_at, record.check_out_at, 0)
             record.status = "COMPLETE"
+
+        manual_conflict = self.db.scalar(
+            select(ManualAttendanceDay.id).where(
+                ManualAttendanceDay.employee_id == record.employee_id,
+                ManualAttendanceDay.work_date == record.work_date,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+        )
+        if manual_conflict is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="La fecha tiene carga histórica administrativa; no se pueden mezclar fuentes")
 
         if old_values == self._serialize(record) and old_date == record.work_date and old_status == record.status:
             raise HTTPException(
