@@ -7,7 +7,7 @@ name: CI
 #   -> Playwright UI -> gate `dist` sin __E2E_KIOSK -> artifact candidato.
 #   El bundle candidato se construye con la URL pública HTTPS documentada del
 #   API (nunca loopback) y solo se publica con la UI en verde.
-# Gate de integración real (FastAPI + Postgres + MinIO):
+# Gate de integración real (FastAPI + Postgres + S3 local):
 #   frontend-react/app construido con VITE_API_URL=127.0.0.1 (API del runner)
 #   + Playwright integración (*.integration.spec.ts). Este dist es SOLO
 #   evidencia local y NO se publica como artefacto promovible.
@@ -234,8 +234,9 @@ jobs:
       - name: Arrancar S3 local y FastAPI
         working-directory: backend
         run: |
-          # Quay dejó de permitir pull anónimo de MinIO. LocalStack ofrece el
-          # mismo contrato S3 que ejercita el backend y se fija por digest OCI.
+          # El tag anterior de MinIO no está disponible para pull anónimo en
+          # CI. LocalStack ofrece el mismo contrato S3 que ejercita el backend
+          # y se fija por digest OCI.
           docker run -d --name asistencia-ci-s3 -p 4566:4566 \
             -e SERVICES=s3 \
             -e AWS_DEFAULT_REGION=us-east-1 \
