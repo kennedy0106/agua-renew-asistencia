@@ -390,6 +390,20 @@ class EmployeeAgendaService:
             regularization_by_day[anchor] = regularization_by_day.get(anchor, Decimal("0.00")) + residual
         # Regularización visible total = base conciliada - treintavos mostrados.
         closing_regularization = (base_total - rounded_base_total).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        # El pendiente legado OVERTIME se valoraba fila a fila contra sueldo,
+        # jornada, política, refrigerio y marcaciones.  Se resuelven esas
+        # entradas una vez por fecha y se reutilizan para cada fila, de modo
+        # que el presupuesto de consultas no dependa del número de pendientes.
+        pending_requests = [
+            (work_date, overtime.minutes)
+            for work_date, day_rows in legacy_by_day.items()
+            for overtime in day_rows
+            if overtime.status == "PENDING"
+        ]
+        pending_estimates = (
+            ManualAttendanceService(self.db).estimate_payments_batch(employee_id, pending_requests)
+            if pending_requests else {}
+        )
         daily: list[dict] = []
         approved_total = Decimal("0.00")
         pending_total = Decimal("0.00")
@@ -406,7 +420,7 @@ class EmployeeAgendaService:
                 pending += Decimal(str(amount)) if amount is not None else Decimal("0.00")
             for overtime in legacy_by_day.get(work_date, []):
                 if overtime.status == "PENDING":
-                    estimate = ManualAttendanceService(self.db).estimate_payment(employee_id, work_date, overtime.minutes)
+                    estimate = pending_estimates[(work_date, overtime.minutes)]
                     if estimate.get("amount") is not None:
                         pending += Decimal(str(estimate["amount"]))
             approved_total += approved

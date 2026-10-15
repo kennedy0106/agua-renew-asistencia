@@ -6,6 +6,7 @@ import AdminShell from "@/components/AdminShell";
 import { AsyncButton } from "@/components/AsyncButton";
 import { InlineLoading } from "@/components/Loading";
 import { ArrowLeft, Clock, Info } from "@/components/Icons";
+import DateField from "@/components/DateField";
 import { formatOperationalDate } from "@/lib/dates";
 import {
   ApiError,
@@ -177,6 +178,9 @@ export default function HistoricalAttendancePage() {
   const [editPreview, setEditPreview] = useState<PreviewRow | null>(null);
   const [editPreviewToken, setEditPreviewToken] = useState<string | null>(null);
   const editPreviewRequest = useRef(0);
+  const editPanelRef = useRef<HTMLElement | null>(null);
+  const editTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editHoursInputRef = useRef<HTMLInputElement | null>(null);
   const [commitmentEmployee, setCommitmentEmployee] = useState("");
   const [commitmentDate, setCommitmentDate] = useState("");
   const [commitmentMinutes, setCommitmentMinutes] = useState("");
@@ -547,7 +551,14 @@ export default function HistoricalAttendancePage() {
     setEditPreviewToken(null);
     setEdit((current) => (current ? { ...current, ...patch } : current));
   };
-  const openEdit = async (id: string) => {
+  const closeEdit = () => {
+    setEdit(null);
+    setEditPreview(null);
+    setEditPreviewToken(null);
+    window.requestAnimationFrame(() => editTriggerRef.current?.focus());
+  };
+  const openEdit = async (id: string, trigger?: HTMLButtonElement) => {
+    if (trigger) editTriggerRef.current = trigger;
     setBusy(true);
     editPreviewRequest.current += 1;
     setMessage("");
@@ -566,6 +577,10 @@ export default function HistoricalAttendancePage() {
       });
       setEditPreview(null);
       setEditPreviewToken(null);
+      window.requestAnimationFrame(() => {
+        editPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        editHoursInputRef.current?.focus();
+      });
     } catch (error) {
       setMessage(
         error instanceof ApiError
@@ -576,6 +591,16 @@ export default function HistoricalAttendancePage() {
       setBusy(false);
     }
   };
+  useEffect(() => {
+    if (!edit) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !busy) {
+        closeEdit();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [edit, busy]);
   const previewEdit = async () => {
     if (!edit) return;
     const row = editRow();
@@ -651,9 +676,7 @@ export default function HistoricalAttendancePage() {
         return;
       }
       clearHistoricalOperation(operationUserId, frozen.idempotency_key);
-      setEdit(null);
-      setEditPreview(null);
-      setEditPreviewToken(null);
+      closeEdit();
       setMessage(await loadHistory()
         ? "Corrección versionada guardada. El historial se actualizó."
         : "Corrección versionada guardada; no se pudo actualizar el historial.");
@@ -811,21 +834,21 @@ export default function HistoricalAttendancePage() {
       </ol>
       <section className="panel historical-compose">
         <div className="historical-compose-head">
-          <label className="historical-date-field">
+          <div className="historical-date-field">
             <span className="label">Fecha trabajada</span>
-            <input
-              className="input"
-              type="date"
+            <DateField
               value={workDate}
-              onChange={(event) => {
+              onChange={(iso) => {
                 previewRequest.current += 1;
-                setWorkDate(event.target.value);
+                setWorkDate(iso);
                 setPreview(null);
                 setPreviewToken(null);
                 setBatchKey(crypto.randomUUID());
               }}
+              aria-label="Fecha trabajada"
+              placeholder="Seleccionar fecha"
             />
-          </label>
+          </div>
           <div className="historical-guidance">
             <Info size={18} />
             <p>
@@ -989,58 +1012,94 @@ export default function HistoricalAttendancePage() {
                             placeholder="Recuperación"
                           />
                           {row.recovery_minutes > 0 && (
-                            <select
-                              className="select"
-                              aria-label="Compromiso mixto"
-                              onChange={(event) =>
-                                update(index, {
-                                  recovery_allocations: event.target.value
-                                    ? [
-                                        {
-                                          commitment_id: event.target.value,
-                                          minutes: row.recovery_minutes,
-                                        },
-                                      ]
-                                    : [],
-                                })
-                              }
-                            >
-                              <option value="">Seleccione el permiso que recupera</option>
-                              {commitmentsFor(row.employee_id).map((commitment) => (
-                                  <option
-                                    key={commitment.id}
-                                    value={commitment.id}
-                                  >
-                                    {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
-                                  </option>
-                                ))}
-                            </select>
+                            commitmentsFor(row.employee_id).length > 0 ? (
+                              <select
+                                className="select"
+                                aria-label="Compromiso mixto"
+                                onChange={(event) =>
+                                  update(index, {
+                                    recovery_allocations: event.target.value
+                                      ? [
+                                          {
+                                            commitment_id: event.target.value,
+                                            minutes: row.recovery_minutes,
+                                          },
+                                        ]
+                                      : [],
+                                  })
+                                }
+                              >
+                                <option value="">Seleccione el permiso que recupera</option>
+                                {commitmentsFor(row.employee_id).map((commitment) => (
+                                    <option
+                                      key={commitment.id}
+                                      value={commitment.id}
+                                    >
+                                      {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
+                                    </option>
+                                  ))}
+                              </select>
+                            ) : (
+                              <div className="historical-recovery-empty-hint">
+                                <span>Sin permisos pendientes. </span>
+                                <a
+                                  href="#registro-permisos"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setCommitmentEmployee(row.employee_id);
+                                    document.getElementById("registro-permisos")?.scrollIntoView({ behavior: "smooth" });
+                                  }}
+                                  className="historical-recovery-link"
+                                >
+                                  Registre uno abajo
+                                </a>{" "}
+                                <span>para asociarlo.</span>
+                              </div>
+                            )
                           )}
                         </>
                       ) : row.treatment === "RECOVERY" ? (
-                        <select
-                          className="select"
-                          aria-label="Compromiso"
-                          onChange={(event) =>
-                            update(index, {
-                              recovery_allocations: event.target.value
-                                ? [
-                                    {
-                                      commitment_id: event.target.value,
-                                      minutes: total,
-                                    },
-                                  ]
-                                : [],
-                            })
-                          }
-                        >
-                          <option value="">Seleccione el permiso que recupera</option>
-                          {commitmentsFor(row.employee_id).map((commitment) => (
-                              <option key={commitment.id} value={commitment.id}>
-                                {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
-                              </option>
-                            ))}
-                        </select>
+                        commitmentsFor(row.employee_id).length > 0 ? (
+                          <select
+                            className="select"
+                            aria-label="Compromiso"
+                            onChange={(event) =>
+                              update(index, {
+                                recovery_allocations: event.target.value
+                                  ? [
+                                      {
+                                        commitment_id: event.target.value,
+                                        minutes: total,
+                                      },
+                                    ]
+                                  : [],
+                              })
+                            }
+                          >
+                            <option value="">Seleccione el permiso que recupera</option>
+                            {commitmentsFor(row.employee_id).map((commitment) => (
+                                <option key={commitment.id} value={commitment.id}>
+                                  {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
+                                </option>
+                              ))}
+                          </select>
+                        ) : (
+                          <div className="historical-recovery-empty-hint">
+                            <span>Sin permisos pendientes. </span>
+                            <a
+                              href="#registro-permisos"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                setCommitmentEmployee(row.employee_id);
+                                document.getElementById("registro-permisos")?.scrollIntoView({ behavior: "smooth" });
+                              }}
+                              className="historical-recovery-link"
+                            >
+                              Registre uno abajo
+                            </a>{" "}
+                            <span>para asociarlo.</span>
+                          </div>
+                        )
                       ) : (
                         "—"
                       )}
@@ -1219,7 +1278,7 @@ export default function HistoricalAttendancePage() {
           </div>
         )}
       </section>
-      <section className="panel historical-recovery-panel">
+      <section className="panel historical-recovery-panel" id="registro-permisos">
         <div className="historical-section-head">
           <div>
         <h2>Registrar un permiso pendiente de recuperar</h2>
@@ -1251,15 +1310,15 @@ export default function HistoricalAttendancePage() {
               ))}
             </select>
           </label>
-          <label>
-            Fecha del permiso
-            <input
+          <div className="historical-recovery-date">
+            <span className="label">Fecha del permiso</span>
+            <DateField
               aria-label="Fecha del permiso"
-              type="date"
               value={commitmentDate}
-              onChange={(event) => setCommitmentDate(event.target.value)}
+              onChange={setCommitmentDate}
+              placeholder="Seleccionar fecha"
             />
-          </label>
+          </div>
           <label>
             Tiempo pendiente
             <span className="historical-duration-fields">
@@ -1312,7 +1371,7 @@ export default function HistoricalAttendancePage() {
           </label>
         </div>
         {history.length ? (<>
-          <div className="table-wrap">
+          <div className="table-wrap attendance-responsive-wrap">
             <table className="table historical-history-table">
               <thead>
                 <tr>
@@ -1334,7 +1393,7 @@ export default function HistoricalAttendancePage() {
                   );
                   return (
                     <tr key={item.id}>
-                      <td>
+                      <td data-label="Fecha / empleado">
                         <strong>Carga histórica administrativa</strong>
                         <br />
                         {formatOperationalDate(item.work_date)}
@@ -1345,17 +1404,17 @@ export default function HistoricalAttendancePage() {
                             : item.employee_id}
                         </small>
                       </td>
-                      <td>{formatDuration(item.worked_minutes_net)}</td>
-                      <td>{formatDuration(item.normal_minutes)}</td>
-                      <td>{formatDuration(item.additional_minutes)}</td>
-                      <td>{formatDuration(item.recovery_minutes)}</td>
-                      <td>
+                      <td data-label="Total trabajado">{formatDuration(item.worked_minutes_net)}</td>
+                      <td data-label="Jornada regular">{formatDuration(item.normal_minutes)}</td>
+                      <td data-label="Horas adicionales">{formatDuration(item.additional_minutes)}</td>
+                      <td data-label="Horas recuperadas">{formatDuration(item.recovery_minutes)}</td>
+                      <td data-label="Horarios conocidos">
                         Entrada: {knownTimeLabel(item.known_check_in_at)}
                         <br />
                         Salida: {knownTimeLabel(item.known_check_out_at)}
                       </td>
-                      <td>{item.reason}</td>
-                      <td>
+                      <td data-label="Motivo">{item.reason}</td>
+                      <td data-label="Pago / versión">
                         {paymentLabel(
                           item.payment_snapshot
                             ? {
@@ -1368,16 +1427,18 @@ export default function HistoricalAttendancePage() {
                         <br />
                         <small>Versión {item.version}</small>
                       </td>
-                      <td>
+                      <td data-label="Acciones">
                         <button
                           className="btn btn-ghost btn-sm"
+                          type="button"
                           disabled={busy}
-                          onClick={() => void openEdit(item.id)}
+                          onClick={(event) => void openEdit(item.id, event.currentTarget)}
                         >
                           Editar
                         </button>{" "}
                         <button
                           className="btn btn-ghost btn-sm"
+                          type="button"
                           disabled={busy}
                           onClick={() => void voidItem(item)}
                         >
@@ -1387,6 +1448,7 @@ export default function HistoricalAttendancePage() {
                           item.payment_snapshot && (
                             <button
                               className="btn btn-ghost btn-sm"
+                              type="button"
                               disabled={busy}
                               onClick={() => void approveItem(item)}
                             >
@@ -1410,12 +1472,11 @@ export default function HistoricalAttendancePage() {
       </section>
       {edit && (
         <section
+          ref={editPanelRef}
           className="panel historical-edit-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Editar carga histórica"
+          aria-labelledby="historical-edit-heading"
         >
-          <h2>Editar carga histórica</h2>
+          <h2 id="historical-edit-heading">Editar carga histórica</h2>
           <p className="muted">
             Guardaremos la corrección sin borrar el registro anterior. El empleado y la fecha no se pueden cambiar aquí.
           </p>
@@ -1443,6 +1504,7 @@ export default function HistoricalAttendancePage() {
             <label>
               Horas
               <input
+                ref={editHoursInputRef}
                 aria-label="Horas editadas"
                 type="number"
                 min="0"
@@ -1537,33 +1599,51 @@ export default function HistoricalAttendancePage() {
             (edit.treatment === "MIXED" && edit.recovery_minutes > 0)) && (
             <label>
               Permiso que recupera
-              <select
-                aria-label="Compromiso editado"
-                value={edit.recovery_allocations[0]?.commitment_id ?? ""}
-                onChange={(event) =>
-                  updateEdit({
-                    recovery_allocations: event.target.value
-                      ? [
-                          {
-                            commitment_id: event.target.value,
-                            minutes:
-                              edit.treatment === "RECOVERY"
-                                ? Number(edit.hours || 0) * 60 +
-                                  Number(edit.minutes || 0)
-                                : edit.recovery_minutes,
-                          },
-                        ]
-                      : [],
-                  })
-                }
-              >
-                <option value="">Seleccione el permiso que recupera</option>
-                {commitmentsFor(edit.employee_id).map((commitment) => (
-                    <option key={commitment.id} value={commitment.id}>
-                      {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
-                    </option>
-                  ))}
-              </select>
+              {commitmentsFor(edit.employee_id).length > 0 ? (
+                <select
+                  aria-label="Compromiso editado"
+                  value={edit.recovery_allocations[0]?.commitment_id ?? ""}
+                  onChange={(event) =>
+                    updateEdit({
+                      recovery_allocations: event.target.value
+                        ? [
+                            {
+                              commitment_id: event.target.value,
+                              minutes:
+                                edit.treatment === "RECOVERY"
+                                  ? Number(edit.hours || 0) * 60 +
+                                    Number(edit.minutes || 0)
+                                  : edit.recovery_minutes,
+                            },
+                          ]
+                        : [],
+                    })
+                  }
+                >
+                  <option value="">Seleccione el permiso que recupera</option>
+                  {commitmentsFor(edit.employee_id).map((commitment) => (
+                      <option key={commitment.id} value={commitment.id}>
+                        {commitment.reference} · faltan {formatDuration(commitment.pending_minutes)}
+                      </option>
+                    ))}
+                </select>
+              ) : (
+                <div className="historical-recovery-empty-hint">
+                  <span>Sin permisos pendientes para este empleado. </span>
+                  <a
+                    href="#registro-permisos"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setCommitmentEmployee(edit.employee_id);
+                      document.getElementById("registro-permisos")?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    className="historical-recovery-link"
+                  >
+                    Registre uno abajo
+                  </a>{" "}
+                  <span>para asociarlo.</span>
+                </div>
+              )}
             </label>
           )}
           {(edit.treatment === "ADDITIONAL" ||
@@ -1696,11 +1776,9 @@ export default function HistoricalAttendancePage() {
             </button>
             <button
               className="btn btn-ghost"
+              type="button"
               disabled={busy}
-              onClick={() => {
-                setEdit(null);
-                setEditPreview(null);
-              }}
+              onClick={closeEdit}
             >
               Cancelar
             </button>

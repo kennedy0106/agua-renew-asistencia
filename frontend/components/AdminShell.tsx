@@ -7,6 +7,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { clearAdminSessionHint, useAdminSession } from "./AdminSession";
+import AppDialog, { AppDialogCloseButton } from "./AppDialog";
 import IntentLink from "./IntentLink";
 import {
   Briefcase,
@@ -88,6 +89,7 @@ export default function AdminShell({
   const [menuOpen, setMenuOpen] = useState(false);
   const [topbarCompact, setTopbarCompact] = useState(false);
   const [navigating, setNavigating] = useState(false);
+  const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const navigationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -267,7 +269,7 @@ export default function AdminShell({
               </div>
             </IntentLink>
             <button
-              onClick={handleLogout}
+              onClick={() => setConfirmLogoutOpen(true)}
               className="btn btn-danger sidebar-logout"
               aria-label="Cerrar sesión"
             >
@@ -277,6 +279,39 @@ export default function AdminShell({
           </div>
         )}
       </aside>
+
+      {confirmLogoutOpen && (
+        <AppDialog
+          labelledBy="logout-dialog-title"
+          describedBy="logout-dialog-desc"
+          onClose={() => setConfirmLogoutOpen(false)}
+        >
+          <div className="app-dialog-heading">
+            <h2 id="logout-dialog-title" className="card-title">
+              ¿Cerrar sesión?
+            </h2>
+            <p id="logout-dialog-desc" className="card-sub">
+              Se cerrará la sesión de <strong>{user?.username}</strong>. Si tienes cambios sin guardar en pantalla, se descartarán.
+            </p>
+          </div>
+          <div className="app-dialog-actions" style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
+            <AppDialogCloseButton className="btn btn-outline" onClick={() => setConfirmLogoutOpen(false)}>
+              Cancelar
+            </AppDialogCloseButton>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => {
+                setConfirmLogoutOpen(false);
+                void handleLogout();
+              }}
+            >
+              <Logout size={16} />
+              <span>Sí, salir</span>
+            </button>
+          </div>
+        </AppDialog>
+      )}
 
       <div className={`main${navigating ? " is-navigating" : ""}`} aria-busy={navigating}>
         <header className={`topbar${topbarCompact ? " is-compact" : ""}`}>

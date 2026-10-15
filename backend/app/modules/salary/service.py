@@ -114,33 +114,47 @@ class SalaryService:
             custom_additional_hours_rate=custom_additional_hours_rate,
         )
 
-        if active is not None:
-            self.repo.close_active(employee_id, effective_from - timedelta(days=1))
+        # Creación/cierre de vigencias, invalidación dependiente y auditoría se
+        # confirman en una sola transacción. Si la invalidación rechaza la
+        # operación (p. ej. periodo cerrado) o falla cualquier escritura, el
+        # rollback deja intacto el estado anterior: no queda una vigencia nueva
+        # sin invalidar valoraciones ni un cierre de la anterior a medias.
+        try:
+            if active is not None:
+                self.repo.close_active(employee_id, effective_from - timedelta(days=1))
 
-        created = self.repo.create(
-            employee_id=employee_id,
-            monthly_salary=monthly_salary,
-            effective_from=effective_from,
-            overtime_enabled=overtime_enabled,
-            use_custom_overtime_rates=use_custom_overtime_rates,
-            custom_first_two_hours_rate=custom_first_two_hours_rate,
-            custom_additional_hours_rate=custom_additional_hours_rate,
-        )
+            created = self.repo.create(
+                employee_id=employee_id,
+                monthly_salary=monthly_salary,
+                effective_from=effective_from,
+                overtime_enabled=overtime_enabled,
+                use_custom_overtime_rates=use_custom_overtime_rates,
+                custom_first_two_hours_rate=custom_first_two_hours_rate,
+                custom_additional_hours_rate=custom_additional_hours_rate,
+                commit=False,
+            )
 
-        # Importación local para no crear un ciclo de módulos al registrar
-        # modelos. La configuración cambia previews, nunca snapshots cerrados.
-        from app.modules.work_calendar.service import WorkCalendarService
-        WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
+            # Importación local para no crear un ciclo de módulos al registrar
+            # modelos. La configuración cambia previews, nunca snapshots cerrados.
+            from app.modules.work_calendar.service import WorkCalendarService
+            WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
 
-        AuditRepository(self.db).create(
-            entity_type="salary",
-            entity_id=created.id,
-            action="set_salary",
-            old_values=self._serialize(active),
-            new_values=self._serialize(created),
-            reason=f"Nuevo sueldo vigente desde {effective_from.isoformat()}",
-            performed_by=performed_by,
-        )
+            AuditRepository(self.db).create(
+                entity_type="salary",
+                entity_id=created.id,
+                action="set_salary",
+                old_values=self._serialize(active),
+                new_values=self._serialize(created),
+                reason=f"Nuevo sueldo vigente desde {effective_from.isoformat()}",
+                performed_by=performed_by,
+                commit=False,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        self.db.refresh(created)
         return created
 
     @staticmethod

@@ -90,6 +90,20 @@ export default function DateField({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
+  // Cerrar al presionar Escape sin propagar al modal/diálogo anfitrión.
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeCalendar({ returnFocus: true });
+      }
+    }
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {

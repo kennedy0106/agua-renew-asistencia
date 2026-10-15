@@ -10,7 +10,7 @@ from sqlalchemy import event, select
 
 from app.modules.attendance.manual_models import ManualAttendanceDay
 from app.modules.attendance.models import AttendanceRecord
-from app.modules.attendance import agenda_service as agenda_module
+from app.modules.attendance import agenda_service as agenda_module, manual_service as manual_module
 from app.modules.attendance.agenda_service import EmployeeAgendaService
 from app.modules.attendance.service import AttendanceService
 from app.modules.attendance.totals import special_day_known_minutes
@@ -73,10 +73,23 @@ def _select_count(db_session, call):
     return result, statements
 
 
-def test_multi_is_atomic_idempotent_and_feed_employee_agenda(client, db_session):
+def _freeze_clocks(monkeypatch, moment):
+    """Fija el reloj de las reglas HST y de la agenda al mismo instante."""
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment if tz else moment.replace(tzinfo=None)
+
+    monkeypatch.setattr(manual_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(agenda_module, "lima_now", lambda: moment)
+
+
+def test_multi_is_atomic_idempotent_and_feed_employee_agenda(client, db_session, monkeypatch):
     _login(client)
     employee = _employee(client, db_session)
     _configure(client, employee)
+    _freeze_clocks(monkeypatch, datetime(2026, 10, 1, 12, tzinfo=timezone.utc))
     payload = _multi(employee)
     preview = client.post("/api/v1/attendance/manual-days/multi/preview", json=payload)
     assert preview.status_code == 200, preview.text
@@ -725,10 +738,11 @@ def test_legacy_adjustment_update_approval_and_void_are_versioned(client, db_ses
     assert day["adjustment_history"][0]["voided_at"] is not None
 
 
-def test_accrual_excludes_rejected_and_post_cutoff_additional(client, db_session):
+def test_accrual_excludes_rejected_and_post_cutoff_additional(client, db_session, monkeypatch):
     _login(client)
     employee = _employee(client, db_session)
     _configure(client, employee)
+    _freeze_clocks(monkeypatch, datetime(2026, 10, 1, 12, tzinfo=timezone.utc))
     rejected = client.post(f"/api/v1/employees/{employee}/adjustments", json={
         "adjustment_date": "2026-08-12", "minutes": 60, "adjustment_type": "OVERTIME",
         "reason": "Adicional rechazado",

@@ -158,30 +158,44 @@ class ScheduleService:
                 ),
             )
 
-        # Cerrar la vigente el día anterior al inicio de la nueva (historial).
-        if active is not None:
-            self.repo.close_active(employee_id, effective_from - timedelta(days=1))
+        # Creación/cierre de vigencias, invalidación dependiente y auditoría se
+        # confirman en una sola transacción. Si la invalidación rechaza la
+        # operación (p. ej. periodo cerrado) o falla cualquier escritura, el
+        # rollback deja intacto el estado anterior: no queda una jornada nueva
+        # sin invalidar valoraciones ni un cierre de la anterior a medias.
+        try:
+            # Cerrar la vigente el día anterior al inicio de la nueva (historial).
+            if active is not None:
+                self.repo.close_active(employee_id, effective_from - timedelta(days=1))
 
-        created = self.repo.create(
-            employee_id=employee_id,
-            effective_from=effective_from,
-            break_minutes=break_minutes,
-            break_applies_after_minutes=break_applies_after_minutes,
-            **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
-        )
+            created = self.repo.create(
+                employee_id=employee_id,
+                effective_from=effective_from,
+                break_minutes=break_minutes,
+                break_applies_after_minutes=break_applies_after_minutes,
+                **{field: minutes.get(field, 0) for field in _DAY_FIELDS},
+                commit=False,
+            )
 
-        from app.modules.work_calendar.service import WorkCalendarService
-        WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
+            from app.modules.work_calendar.service import WorkCalendarService
+            WorkCalendarService(self.db).invalidate_dependent_valuations(employee_id, effective_from)
 
-        AuditRepository(self.db).create(
-            entity_type="schedule",
-            entity_id=created.id,
-            action="set_schedule",
-            old_values=self._serialize(active),
-            new_values=self._serialize(created),
-            reason=f"Nueva jornada vigente desde {effective_from.isoformat()}",
-            performed_by=performed_by,
-        )
+            AuditRepository(self.db).create(
+                entity_type="schedule",
+                entity_id=created.id,
+                action="set_schedule",
+                old_values=self._serialize(active),
+                new_values=self._serialize(created),
+                reason=f"Nueva jornada vigente desde {effective_from.isoformat()}",
+                performed_by=performed_by,
+                commit=False,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+        self.db.refresh(created)
         return created
 
     @staticmethod

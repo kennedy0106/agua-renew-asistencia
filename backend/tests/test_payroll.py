@@ -301,7 +301,10 @@ def test_mes_completo_con_aumento_dia16_normaliza_30_dias(client, db_session, mo
     assert record["base_salary"] == "675.00"
 
 
-def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session):
+def test_readiness_bloquea_pendientes_y_rectifica_version(client, db_session, monkeypatch):
+    # El cierre es el primer día del periodo: ninguna fecha queda en el pasado y
+    # el escenario sigue aislando el bloqueo por ajuste pendiente.
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -374,7 +377,9 @@ def test_ajuste_manual_negativo(client, db_session):
 
 # --- Cierre ---
 
-def test_confirmar_cierra_periodo_y_registros(client, db_session):
+def test_confirmar_cierra_periodo_y_registros(client, db_session, monkeypatch):
+    # Sin jornadas pasadas: el cierre no acumula bloqueos de asistencia.
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -389,7 +394,8 @@ def test_confirmar_cierra_periodo_y_registros(client, db_session):
     assert records[0]["status"] == "CONFIRMED"
 
 
-def test_no_recalcular_tras_cierre(client, db_session):
+def test_no_recalcular_tras_cierre(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -406,7 +412,8 @@ def test_confirmar_sin_calcular_conflict(client):
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
 
-def test_ajuste_manual_tras_cierre_409(client, db_session):
+def test_ajuste_manual_tras_cierre_409(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -816,7 +823,8 @@ def test_recalcular_conserva_bono_de_empleado_inelegible(client, db_session):
     assert summary["total_manual"] == "50.00"
 
 
-def test_confirmar_exige_recalculo_si_cambia_he(client, db_session):
+def test_confirmar_exige_recalculo_si_cambia_he(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)
@@ -841,7 +849,8 @@ def test_he_aprobada_sin_pago_bloquea_cierre(client, db_session):
     assert client.post(f"/api/v1/payroll/periods/{period['id']}/confirm").status_code == 409
 
 
-def test_rectificacion_copia_ajuste_manual(client, db_session):
+def test_rectificacion_copia_ajuste_manual(client, db_session, monkeypatch):
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     _login(client, "admin", "Admin123!")
     emp = _create_employee(client, str(db_session._test_job_roles["Operario"]))
     _set_salary(client, emp)

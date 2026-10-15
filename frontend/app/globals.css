@@ -674,6 +674,66 @@ textarea {
   .responsive-table-card__footer { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; padding-top: 0.65rem; border-top: 1px solid var(--line-subtle); }
   .responsive-table-card__footer .btn { min-height: 2.75rem; }
   .responsive-table-card__footer.attendance-record-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 0.3rem; }
+
+  /* Historial de cargas: <1440 se apila en tarjetas usando data-label, sin
+     duplicar el DOM. En escritorio (>=1440) la tabla permanece intacta. */
+  .historical-history-panel .attendance-responsive-wrap { display: block; overflow: visible; }
+  .historical-history-table,
+  .historical-history-table > tbody,
+  .historical-history-table > tbody > tr,
+  .historical-history-table > tbody > tr > td { display: block; width: 100%; }
+  .historical-history-table > thead { display: none; }
+  .historical-history-table > tbody { display: grid; gap: 0.7rem; }
+  .historical-history-table > tbody > tr {
+    overflow: hidden;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--line-subtle);
+    border-radius: var(--radius-panel);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+  .historical-history-table > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, 40%) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.45rem 0;
+    border: 0;
+    text-align: right !important;
+  }
+  .historical-history-table > tbody > tr > td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: 0.055em;
+    line-height: 1.2;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .historical-history-table > tbody > tr > td[data-label="Fecha / empleado"],
+  .historical-history-table > tbody > tr > td[data-label="Horarios conocidos"],
+  .historical-history-table > tbody > tr > td[data-label="Pago / versión"] {
+    display: block;
+    padding-top: 0.55rem;
+    text-align: left !important;
+  }
+  .historical-history-table > tbody > tr > td[data-label="Fecha / empleado"]::before,
+  .historical-history-table > tbody > tr > td[data-label="Horarios conocidos"]::before,
+  .historical-history-table > tbody > tr > td[data-label="Pago / versión"]::before {
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+  .historical-history-table > tbody > tr > td[data-label="Acciones"] {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--line-subtle);
+    text-align: left !important;
+  }
+  .historical-history-table > tbody > tr > td[data-label="Acciones"]::before { flex: 0 0 100%; margin-bottom: 0; }
 }
 
 @media (max-width: 480px) {
@@ -4249,7 +4309,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 
 .dashboard-presence { align-self: start; min-width: 8.25rem; padding: 0.8rem 0 0 1.1rem; border-left: 1px solid rgba(21, 67, 153, 0.14); }
 .dashboard-presence-status { display: inline-flex !important; align-items: center; gap: 0.38rem; margin-bottom: 0.72rem; color: var(--brand-muted); font-size: 0.62rem !important; font-weight: 760 !important; letter-spacing: 0.08em; text-transform: uppercase; }
-.dashboard-presence-status i { width: 0.46rem; height: 0.46rem; border-radius: 50%; background: var(--brand-green); box-shadow: 0 0 0 4px rgba(0, 200, 83, 0.12); }
+.dashboard-presence-status i { width: 0.46rem; height: 0.46rem; border-radius: 50%; background: var(--brand-green); border: 1px solid var(--brand-green-deep, #00a047); box-shadow: 0 0 0 3px rgba(0, 200, 83, 0.15); }
 .dashboard-presence strong { display: block; color: var(--brand-green-deep); font-size: clamp(2.5rem, 4vw, 3.6rem); font-weight: 760; line-height: 0.88; letter-spacing: -0.07em; font-variant-numeric: tabular-nums; }
 .dashboard-presence strong small { color: var(--brand-muted); font-size: 0.48em; font-weight: 650; letter-spacing: -0.04em; }
 .dashboard-presence > span { display: block; margin-top: 0.5rem; color: var(--brand-muted); font-size: 0.72rem; font-weight: 650; }
@@ -4292,6 +4352,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 @media (max-width: 1040px) {
   .dashboard-overview { grid-template-columns: 1fr; }
   .dashboard-attention { min-height: auto; }
+  .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
   .topbar::before { right: 1rem; left: 1rem; }
@@ -4314,13 +4375,28 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 }
 .sidebar-brand { min-height: 6.45rem; padding-top: 1.35rem; }
 .sidebar-brand img { width: 10.3rem; }
-.sidebar-nav { padding: 1.1rem 0.68rem; }
+.sidebar-nav {
+  padding: 1.1rem 0.68rem;
+  mask-image: linear-gradient(to bottom, black calc(100% - 2.5rem), rgba(0, 0, 0, 0.35) calc(100% - 0.75rem), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 2.5rem), rgba(0, 0, 0, 0.35) calc(100% - 0.75rem), transparent 100%);
+}
 .nav-label { margin: 0.45rem 0.42rem 0.5rem; color: var(--brand-muted); font-size: 0.59rem; font-weight: 760; letter-spacing: 0.12em; }
 .nav-link { position: relative; margin-bottom: 0.18rem; padding-inline: 0.78rem; border-radius: 0.58rem; color: #315a8b; font-weight: 650; }
 .nav-link::before { content: ""; position: absolute; top: 0.62rem; bottom: 0.62rem; left: 0; width: 0.2rem; border-radius: 0 2px 2px 0; background: transparent; transition: background-color 180ms var(--ease-water); }
 .nav-link.active { background: #086fcf; box-shadow: 0 15px 25px -20px rgba(0, 73, 170, 0.94), inset 0 1px 0 rgba(255,255,255,0.34); }
-.nav-link.active::before { background: var(--brand-green); }
+.nav-link.active::before { background: var(--brand-green); box-shadow: 0 0 0 1px rgba(0, 160, 71, 0.6); }
 .sidebar-user { margin: 0.7rem; border-color: rgba(21, 67, 153, 0.1); background: rgba(255,255,255,0.7); }
+
+@media (max-height: 600px) {
+  .sidebar-brand { min-height: 4.2rem; padding-top: 0.75rem; padding-bottom: 0.35rem; }
+  .sidebar-brand img { width: 8.2rem; }
+  .sidebar-product { font-size: 0.64rem; }
+  .sidebar-nav { padding: 0.5rem 0.6rem; }
+  .nav-group + .nav-group { margin-top: 0.2rem; padding-top: 0.2rem; }
+  .nav-label { margin: 0.25rem 0.35rem; font-size: 0.56rem; }
+  .nav-link { min-height: 2.3rem; padding-inline: 0.6rem; font-size: 0.82rem; margin-bottom: 0.1rem; }
+  .sidebar-user { margin: 0.4rem; padding: 0.4rem; }
+}
 
 @media (max-width: 919px) {
   .sidebar-brand { min-height: 5.8rem; padding-top: 1.1rem; }
@@ -4340,8 +4416,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
     white-space: nowrap;
   }
 
-  /* Keep the page identity at the top, then collapse it into the one useful action
-     as the operator begins to read the page. */
+  /* Keep the page identity at the top and readable even when compact */
   .topbar {
     top: 3.75rem;
     z-index: 30;
@@ -4356,7 +4431,26 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
     -webkit-backdrop-filter: none;
   }
 
-  .topbar.is-compact .topbar-copy,
+  .topbar.is-compact .topbar-copy {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .topbar.is-compact .topbar-title {
+    font-size: 0.88rem;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .topbar.is-compact .topbar-drop,
+  .topbar.is-compact .topbar-sub,
   .topbar.is-compact::before,
   .topbar.is-compact::after {
     display: none;
@@ -4923,4 +5017,1324 @@ html {
 }
 .app-dialog-actions {
   padding-bottom: max(1.25rem, calc(0.5rem + env(safe-area-inset-bottom)));
+}
+
+/* ============================================================
+   INTEGRACIÓN VISUAL COMPARTIDA (2026-09)
+   Consolidación de estilos de acceso, cuenta, diálogos,
+   navegación adaptativa, tablas responsivas, kiosco y secciones.
+   ============================================================ */
+
+/* --- Raíz HTML y Viewport Móvil Global --- */
+html {
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* --- Acceso (Login), Cuenta y Cambio de Contraseña --- */
+.login-wrap--adaptive {
+  min-height: 100dvh;
+  overflow-y: auto;
+  padding: clamp(1rem, 2.5vh, 2rem) 1.25rem;
+}
+
+/* Los paneles del acceso crecen con su contenido. Cuando la pantalla es
+   realmente baja, el desplazamiento ocurre una sola vez, en el contenedor
+   exterior (.login-wrap--adaptive), nunca dentro de una tarjeta. Forzar
+   max-height + overflow-y:auto en cada panel generaba barras internas aun
+   cuando todo cabía (p. ej. 1400x928) y una barra horizontal al desbordar
+   el halo de 2px de la tarjeta. Por eso no se limita su altura aquí: el
+   hero conserva su overflow:hidden base (recorta sus orbes decorativos) y
+   la tarjeta mantiene overflow:visible para que el halo se dibuje fuera. */
+.login-hero--adaptive,
+.login-card--adaptive {
+  max-height: none;
+}
+
+.login-mobile-context {
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--brand-muted, #5b7294);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.25rem;
+}
+
+.password-change-wrap--adaptive {
+  min-height: 100dvh;
+  overflow-y: auto;
+  padding: clamp(1rem, 3vh, 2rem) 1rem;
+}
+
+.password-change-card--adaptive {
+  max-height: min(100%, calc(100dvh - 2rem));
+  overflow-y: auto;
+}
+
+.account-form--stacked {
+  display: flex;
+  flex-direction: column;
+  max-width: 28rem;
+  gap: 1.1rem;
+}
+
+.account-field-group {
+  width: 100%;
+  max-width: 100%;
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrap .input {
+  width: 100%;
+  padding-right: 2.75rem;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 0.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.password-toggle-btn:hover {
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--text);
+}
+
+.password-strength-container {
+  margin-top: 0.4rem;
+}
+
+.password-strength-meter {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.25rem;
+  height: 0.3rem;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.password-strength-segment {
+  border-radius: 9999px;
+  transition: background-color 200ms ease;
+}
+
+.password-strength-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.password-strength-badge {
+  font-weight: 600;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.field-help--success {
+  color: #10b981;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  font-weight: 500;
+}
+
+.field-help--warning {
+  color: #ef4444;
+  margin-top: 0.25rem;
+}
+
+.account-submit {
+  margin-top: 0.25rem;
+}
+
+/* Acceso y autenticación en pantallas de baja altura (e.g. 976x494) */
+@media (max-height: 620px) {
+  .login-wrap {
+    padding: 0.6rem 1rem;
+  }
+  .login-card {
+    padding: 0.85rem 1.15rem;
+    gap: 0.45rem;
+  }
+  .login-card-heading {
+    margin-bottom: 0.45rem;
+    gap: 0.2rem;
+  }
+  .login-card-heading h2 {
+    font-size: 1.3rem;
+  }
+  .login-card-heading p {
+    font-size: 0.78rem;
+  }
+  .login-form {
+    gap: 0.45rem;
+  }
+  .login-input-wrap .input {
+    min-height: 2.35rem;
+  }
+  .login-submit {
+    min-height: 2.45rem;
+    margin-top: 0.2rem;
+  }
+  .login-security-divider,
+  .login-security {
+    margin-top: 0.35rem;
+  }
+  .password-change-card {
+    padding: 0.9rem 1.15rem;
+    gap: 0.5rem;
+  }
+  .password-change-card h1 {
+    font-size: 1.3rem;
+  }
+  .password-change-icon {
+    width: 2.2rem;
+    height: 2.2rem;
+  }
+  .password-change-form {
+    gap: 0.45rem;
+  }
+}
+
+/* --- Foco y Anclas Accesibles --- */
+#incidents-title:focus-visible,
+#incidencias:focus-visible,
+.operations-panel:focus-visible {
+  outline: 2px solid var(--brand-blue-bright, #0066cc);
+  outline-offset: 3px;
+  border-radius: var(--radius-panel);
+}
+
+/* --- Diálogos Compartidos y Acciones Sticky --- */
+.app-dialog-actions,
+.employee-dialog-sticky-actions,
+.payroll-dialog-sticky-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--surface-raised, #ffffff);
+  padding-top: 0.65rem;
+  padding-bottom: max(0.5rem, calc(0.35rem + env(safe-area-inset-bottom, 0px)));
+  border-top: 1px solid var(--line-subtle, var(--border, #e2e8f0));
+  margin-top: 0.75rem;
+}
+
+@media (max-height: 600px) {
+  .dialog-portal {
+    padding: 0.5rem;
+    align-items: flex-start;
+  }
+  .app-dialog {
+    max-height: calc(100dvh - 1rem);
+    padding: 0.95rem 1.2rem;
+    overflow-y: auto;
+  }
+  .app-dialog-heading {
+    margin-bottom: 0.45rem;
+  }
+  .app-dialog-heading h2 {
+    font-size: 1.15rem;
+  }
+  .employee-profile-dialog,
+  .employee-profile-dialog--wide {
+    max-height: calc(100dvh - 1rem);
+  }
+  .credential-dialog {
+    max-height: calc(100dvh - 1rem);
+    padding: 1rem;
+    overflow-y: auto;
+  }
+}
+
+/* --- Asistencia e Historial --- */
+.historical-recovery-empty-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.35;
+  margin-top: 0.25rem;
+}
+
+.historical-recovery-link {
+  color: var(--brand-blue, #0066cc);
+  text-decoration: underline;
+  font-weight: 600;
+}
+
+.historical-card-meta-muted {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.responsive-table-card__item--full {
+  grid-column: 1 / -1;
+}
+
+.historical-date-field {
+  width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .attendance-responsive-wrap {
+    display: none;
+  }
+}
+
+/* --- Empleados: Edición en Tabla y Perfil --- */
+.employee-edit-input {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.65rem;
+}
+
+.employee-edit-dni {
+  width: 100%;
+  max-width: 100%;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.65rem;
+}
+
+.employee-edit-trigger {
+  width: 100%;
+  min-height: 2.75rem !important;
+  height: auto !important;
+  padding: 0.45rem 0.65rem;
+}
+
+@media (min-width: 641px) {
+  .employee-edit-input {
+    min-height: 2rem;
+    padding: 0.3rem 0.5rem;
+  }
+  .employee-edit-dni {
+    width: 90px;
+    max-width: 90px;
+    min-height: 2rem;
+    padding: 0.3rem 0.5rem;
+  }
+  .employee-edit-trigger {
+    min-height: 2rem !important;
+    height: 2rem !important;
+    padding: 0.3rem 0.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .employee-calendar-day .calendar-state {
+    display: block !important;
+    margin: 3px auto 0 !important;
+    width: 6px !important;
+    height: 6px !important;
+    border-radius: 50% !important;
+  }
+}
+
+/* --- Planilla: Flujo de Cierre y Ajustes Rápidos --- */
+.period-card-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.period-card-buttons .btn {
+  width: 100%;
+}
+
+.payroll-readiness-issues {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.payroll-issue-actions {
+  margin-left: 0.5rem;
+  display: inline-flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+}
+
+.payroll-issue-link {
+  text-decoration: underline;
+  font-weight: 600;
+  color: inherit;
+}
+
+.payroll-issue-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.payroll-adjust-form {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.payroll-adjust-inputs {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.payroll-adjust-amount {
+  width: 90px;
+  padding: 0.35rem 0.5rem;
+}
+
+.payroll-adjust-notes {
+  width: 140px;
+  padding: 0.35rem 0.5rem;
+}
+
+.payroll-adjust-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.payroll-adjust-hint {
+  width: 100%;
+  margin: 0.25rem 0 0;
+  font-size: 0.74rem;
+  color: var(--incident, #dc2626);
+  text-align: right;
+}
+
+.payroll-adjust-cancel-text {
+  display: none;
+}
+
+@media (max-width: 1439px) {
+  .salaries-responsive-table > tbody > tr > td.payroll-adjust-cell.is-editing {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    padding: 0.75rem 0.85rem !important;
+    margin: 0.45rem 0 !important;
+    background: var(--surface, #f8fafc) !important;
+    border: 1px solid var(--border, #e2e8f0) !important;
+    border-radius: var(--radius-sm, 6px) !important;
+    text-align: left !important;
+  }
+  .salaries-responsive-table > tbody > tr > td.payroll-adjust-cell.is-editing::before {
+    text-align: left !important;
+    margin-bottom: 0.4rem;
+  }
+  .payroll-adjust-form {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    width: 100% !important;
+    gap: 0.55rem !important;
+  }
+  .payroll-adjust-inputs {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    gap: 0.5rem !important;
+    width: 100% !important;
+  }
+  .payroll-adjust-input-field {
+    flex: 1 1 130px;
+  }
+  .payroll-adjust-amount,
+  .payroll-adjust-notes {
+    width: 100% !important;
+    min-height: 2.75rem !important;
+    padding: 0.45rem 0.65rem !important;
+  }
+  .payroll-adjust-actions {
+    display: flex !important;
+    gap: 0.5rem !important;
+    width: 100% !important;
+  }
+  .payroll-adjust-save {
+    flex: 1 1 auto !important;
+    min-height: 2.75rem !important;
+  }
+  .payroll-adjust-cancel {
+    min-height: 2.75rem !important;
+    padding: 0 0.85rem !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 0.35rem !important;
+  }
+  .payroll-adjust-cancel-text {
+    display: inline !important;
+  }
+  .payroll-adjust-hint {
+    text-align: left !important;
+  }
+}
+
+@media (max-height: 540px) {
+  .payroll-close-dialog .payroll-close-summary {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.35rem 0.65rem !important;
+  }
+}
+
+/* --- Sueldos por Periodo --- */
+.salaries-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.salaries-toolbar-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+}
+
+.salaries-period-select {
+  min-width: 200px;
+  max-width: 280px;
+  width: auto;
+}
+
+.salaries-search-control {
+  min-width: 200px;
+  max-width: 260px;
+  flex: 1 1 auto;
+}
+
+.salaries-search-control input[type="search"]::-webkit-search-cancel-button,
+.salaries-search-control input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  display: none;
+}
+
+.salaries-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.salary-detail-cell {
+  padding: 0.9rem 1.2rem;
+}
+
+.salary-calc-summary:focus-visible {
+  outline: 2px solid var(--primary-blue, #0066cc);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (max-width: 640px) {
+  .salaries-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    padding: 0.6rem;
+  }
+  .salaries-toolbar-filters {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+    gap: 0.5rem;
+  }
+  .salaries-period-select {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+  .salaries-search-control {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+  .salaries-toolbar-spacer {
+    display: none;
+  }
+  .salaries-toolbar-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    gap: 0.5rem;
+  }
+  .salaries-toolbar-status {
+    font-size: 0.78rem;
+  }
+  .salaries-export-btn {
+    margin-left: auto;
+  }
+  .salary-detail-cell {
+    padding: 0.4rem 0.25rem !important;
+  }
+}
+
+/* --- Reglas Laborales y Horas Extra (Overtime Policy) --- */
+.overtime-alert-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.1rem;
+}
+
+.overtime-alert-body {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 220px;
+}
+
+.overtime-alert-icon {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.overtime-general-policy-card {
+  margin-bottom: 1.1rem;
+}
+
+.overtime-policy-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.overtime-policy-form {
+  padding: 1rem;
+  margin-bottom: 1.1rem;
+  background: var(--surface-raised, #f9fafb);
+  border-radius: var(--radius-panel, 0.85rem);
+  border: 1px solid var(--line-subtle, rgba(0, 0, 0, 0.08));
+}
+
+.overtime-form-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.overtime-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.overtime-required-mark {
+  color: var(--incident);
+}
+
+.overtime-field-hint {
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin: 0.2rem 0 0;
+}
+
+.overtime-form-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.overtime-stat-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.overtime-stat-card .stat-value {
+  margin-top: 0.5rem;
+}
+
+.overtime-stat-card .stat-value.num {
+  font-size: 1.35rem;
+}
+
+.overtime-stat-card .stat-value.stat-value--status {
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  min-height: 2rem;
+}
+
+.overtime-empty-state,
+.overtime-history-empty {
+  padding: 1.25rem;
+  text-align: center;
+  background: var(--surface-raised, rgba(0, 30, 80, 0.02));
+  border-radius: var(--radius-panel, 0.85rem);
+  border: 1px dashed var(--line-subtle, rgba(0, 0, 0, 0.12));
+}
+
+.overtime-history-empty {
+  padding: 2rem 1rem;
+  color: var(--muted);
+}
+
+.overtime-empty-title {
+  margin: 0 0 0.35rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.overtime-empty-desc {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.overtime-history-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.overtime-table-wrap {
+  margin-top: 0.5rem;
+}
+
+.overtime-cell-reason {
+  word-break: break-word;
+}
+
+/* --- Usuarios y Roles --- */
+.users-filters-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.1rem;
+}
+
+.users-search-field {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: 12rem;
+  max-width: 24rem;
+}
+
+.users-field-help {
+  margin: 0.28rem 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+@media (max-width: 640px) {
+  .users-filters-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .users-search-field {
+    max-width: 100%;
+  }
+}
+
+.roles-filters-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.1rem;
+}
+
+.roles-search-field {
+  position: relative;
+  flex: 1 1 14rem;
+  min-width: 12rem;
+  max-width: 24rem;
+}
+
+.roles-row-inactive {
+  opacity: 0.62;
+}
+
+.roles-edit-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.roles-edit-input {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.roles-inline-error {
+  margin: 0;
+  color: var(--incident, #b42318);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.roles-actions-group {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .roles-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .roles-table,
+  .roles-table tbody,
+  .roles-table tr,
+  .roles-table td {
+    display: block;
+    width: 100%;
+  }
+  .roles-table thead {
+    display: none;
+  }
+  .roles-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+  .roles-table tbody tr {
+    padding: 0.4rem 0;
+    border: 1px solid rgba(255, 255, 255, 0.84);
+    border-radius: var(--radius-panel, 0.85rem);
+    background: var(--surface-raised, #ffffff);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+  .roles-table td {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 34%) minmax(0, 1fr);
+    gap: 0.65rem;
+    align-items: center;
+    padding: 0.65rem 0.85rem;
+    border: 0;
+    border-bottom: 1px solid var(--line-subtle, #e2e8f0);
+    text-align: right;
+  }
+  .roles-table td::before {
+    content: attr(data-label);
+    color: var(--muted, #64748b);
+    font-size: 0.68rem;
+    font-weight: 750;
+    letter-spacing: 0.055em;
+    line-height: 1.2;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .roles-table td:last-child {
+    border-bottom: 0;
+  }
+  .roles-table td.empty {
+    display: grid;
+    padding: 2rem 1rem;
+    text-align: center;
+  }
+  .roles-table td.empty::before {
+    content: none;
+  }
+  .roles-actions-group {
+    justify-content: flex-end;
+    width: 100%;
+  }
+  .roles-actions-group .btn {
+    min-height: 2.75rem;
+  }
+  .roles-filters-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .roles-search-field {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .roles-table td {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+    text-align: left;
+  }
+  .roles-actions-group {
+    justify-content: stretch;
+  }
+  .roles-actions-group .btn {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+}
+
+/* --- Terminales y Tablets (Devices) --- */
+.devices-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.devices-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
+.devices-search > svg {
+  position: absolute;
+  left: 0.7rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.devices-search .input {
+  width: 100%;
+  padding-left: 2.1rem;
+  padding-right: 2rem;
+  min-height: 2.5rem;
+}
+
+.devices-search-clear {
+  position: absolute;
+  right: 0.25rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.devices-search-clear:hover {
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--text);
+}
+
+.devices-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.devices-count-meta {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.device-code-badge {
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.25rem;
+  background: rgba(21, 67, 153, 0.08);
+  color: var(--brand-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.84rem;
+}
+
+.device-sync-online {
+  color: var(--dark-green);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.device-sync-offline {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.device-row-actions {
+  display: inline-flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  color: var(--expense-red) !important;
+  background: rgba(180, 35, 24, 0.08) !important;
+}
+
+.issued-code-card {
+  margin-bottom: 1.25rem;
+  border: 1px solid rgba(0, 102, 204, 0.28);
+  background: linear-gradient(180deg, #f7fbff 0%, #edf6ff 100%);
+  display: grid;
+  gap: 0.8rem;
+}
+
+.issued-code-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  border: 1px dashed rgba(0, 102, 204, 0.35);
+  border-radius: var(--radius-control);
+  background: #ffffff;
+}
+
+.issued-code-box {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.issued-code-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.issued-code-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.6rem;
+  letter-spacing: 0.18em;
+  color: var(--brand-blue);
+  font-variant-numeric: tabular-nums;
+}
+
+.issued-code-expiry {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.issued-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.issued-copy-notice {
+  font-size: 0.8rem;
+  color: var(--dark-green);
+  font-weight: 600;
+}
+
+.issued-code-instruction {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--brand-muted);
+}
+
+@media (max-width: 768px) {
+  .devices-table-wrap {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    overflow: visible;
+  }
+  .devices-stack-table,
+  .devices-stack-table > tbody,
+  .devices-stack-table > tbody > tr,
+  .devices-stack-table > tbody > tr > td {
+    display: block;
+    width: 100%;
+  }
+  .devices-stack-table > thead {
+    display: none;
+  }
+  .devices-stack-table > tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+  .devices-stack-table > tbody > tr {
+    overflow: hidden;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--line-subtle);
+    border-radius: var(--radius-panel);
+    background: var(--surface-raised, #ffffff);
+    box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+  .devices-stack-table > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(7.5rem, 40%) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0;
+    border: 0;
+    text-align: right !important;
+  }
+  .devices-stack-table > tbody > tr > td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 750;
+    letter-spacing: 0.05em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .devices-stack-table > tbody > tr > td[data-label="Nombre"] {
+    text-align: left !important;
+    font-size: 1rem;
+  }
+  .devices-stack-table > tbody > tr > td[data-label="Acciones"] {
+    margin-top: 0.35rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    grid-template-columns: 1fr;
+  }
+  .devices-stack-table > tbody > tr > td[data-label="Acciones"]::before {
+    display: none;
+  }
+  .devices-stack-table > tbody > tr > td[data-label="Acciones"] .device-row-actions {
+    display: flex;
+    justify-content: stretch;
+    width: 100%;
+    gap: 0.5rem;
+  }
+  .devices-stack-table > tbody > tr > td[data-label="Acciones"] .btn {
+    flex: 1 1 50%;
+    min-height: 2.75rem;
+  }
+  .devices-stack-table > tbody > tr > td:not([data-label]) {
+    display: block;
+    text-align: center !important;
+  }
+  .devices-stack-table > tbody > tr > td:not([data-label])::before {
+    content: none;
+  }
+}
+
+/* --- Auditoría --- */
+.audit-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.audit-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+}
+
+.audit-search > svg {
+  position: absolute;
+  left: 0.75rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.audit-search .input {
+  width: 100%;
+  padding-left: 2.2rem;
+  padding-right: 2rem;
+  min-height: 2.5rem;
+}
+
+.audit-search-clear {
+  position: absolute;
+  right: 0.25rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.audit-search-clear:hover {
+  background: rgba(0, 102, 204, 0.08);
+  color: var(--text);
+}
+
+.audit-filters-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.audit-filter-item {
+  flex: 1 1 12rem;
+}
+
+.audit-filter-item .select {
+  width: 100%;
+  min-height: 2.5rem;
+}
+
+.audit-date-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.audit-date-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 0.2rem;
+}
+
+.audit-date-input {
+  min-height: 2.5rem;
+  width: auto;
+}
+
+.audit-count-meta {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-skeleton-card {
+  min-height: 5.5rem;
+  pointer-events: none;
+  animation: pulse-skeleton 1.5s ease-in-out infinite;
+}
+
+.audit-skeleton-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.audit-skeleton-bar {
+  border-radius: 0.3rem;
+  background: rgba(21, 67, 153, 0.09);
+}
+
+@keyframes pulse-skeleton {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 0.25; }
+}
+
+@media (max-width: 640px) {
+  .audit-filters-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .audit-filter-item {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+  .audit-date-range {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.4rem;
+    width: 100%;
+  }
+  .audit-date-input {
+    width: 100%;
+  }
+}
+
+/* --- Kiosco Público: Ergonomía Móvil y Tablets Apaisadas --- */
+.kiosk-btn {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.kiosk-btn:active {
+  transform: scale(0.98);
+  transition: transform 80ms var(--ease-water);
+}
+
+.kiosk-date {
+  color: var(--brand-muted, #3f5f86);
+}
+
+@media (max-height: 540px) and (orientation: landscape) {
+  .kiosk {
+    padding: 0.5rem 1rem;
+    justify-content: flex-start;
+    min-height: 100dvh;
+  }
+  .kiosk-brand {
+    margin-bottom: 0.35rem;
+  }
+  .kiosk-brand img {
+    width: 170px;
+    height: auto;
+  }
+  .kiosk-card {
+    padding: 0.75rem 1.1rem;
+    max-width: 520px;
+  }
+  .kiosk-clock {
+    font-size: 1.75rem;
+    line-height: 1;
+  }
+  .kiosk-date {
+    margin-bottom: 0.45rem;
+    font-size: 0.75rem;
+  }
+  .kiosk-video {
+    max-height: 170px;
+    width: auto;
+    margin: 0 auto 0.45rem;
+  }
+  .kiosk-employee {
+    padding: 0.35rem 0.65rem;
+    margin-bottom: 0.35rem;
+  }
+  .kiosk-countdown {
+    margin-bottom: 0.35rem;
+  }
+  .kiosk-btn {
+    min-height: 2.6rem;
+    padding: 0.65rem;
+  }
 }

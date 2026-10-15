@@ -157,6 +157,61 @@ export default function EmployeeDetailPage() {
   const [adjustmentAction, setAdjustmentAction] = useState<string | null>(null);
   const workspaceRef = useRef<EmployeeAttendanceWorkspaceHandle>(null);
 
+  const [initialScheduleForm, setInitialScheduleForm] = useState(JSON.stringify(defaultForm()));
+  const [initialSalaryForm, setInitialSalaryForm] = useState("");
+  const isScheduleDirty = JSON.stringify(form) !== initialScheduleForm;
+  const isSalaryDirty = JSON.stringify(salaryForm) !== initialSalaryForm;
+  const isAdjDirty =
+    adjForm.reason.trim() !== "" || adjForm.minutes !== "0" || adjForm.adjustment_type !== "RECUPERACION";
+
+  function handleCancelSchedule() {
+    if (saving) return;
+    if (isScheduleDirty) {
+      if (!window.confirm("Tienes cambios sin guardar en la jornada laboral. ¿Deseas descartarlos?")) {
+        return;
+      }
+    }
+    setShowForm(false);
+  }
+
+  function handleCancelSalary() {
+    if (savingSalary) return;
+    if (isSalaryDirty) {
+      if (!window.confirm("Tienes cambios sin guardar en la configuración del sueldo. ¿Deseas descartarlos?")) {
+        return;
+      }
+    }
+    setShowSalaryForm(false);
+  }
+
+  // `onClose` se invoca cuando termina la animación de salida del diálogo. La
+  // protección de datos vive en dos capas anteriores: AppDialog impide que
+  // Escape/backdrop cierren mientras `dismissible` sea false, y el botón de
+  // cierre ya confirmó el descarte antes de animar. Por eso aquí solo
+  // desmontamos, sin volver a preguntar (evita confirmaciones duplicadas).
+  function handleCancelAdjustment() {
+    if (savingAdj) return;
+    setShowAdjForm(false);
+  }
+
+  // Cierre explícito del diálogo de "Nuevo ajuste" vía AppDialogCloseButton.
+  // AppDialog separa el cierre implícito (Escape/backdrop, respeta
+  // `dismissible`) del cierre explícito por botón: si no cancelamos con
+  // `preventDefault`, el botón arranca la animación
+  // (data-motion-state="exiting") y solo al terminar llama a `onClose`.
+  function requestAdjustmentClose(event: React.MouseEvent<HTMLButtonElement>) {
+    if (savingAdj) {
+      event.preventDefault();
+      return;
+    }
+    if (!isAdjDirty) return; // limpio: el botón anima la salida y cierra
+    if (!window.confirm("Tienes datos ingresados en el ajuste. ¿Deseas descartarlos?")) {
+      event.preventDefault(); // el usuario conserva los datos
+      return;
+    }
+    // Descarte confirmado: dejamos que el cierre explícito anime y desmonte.
+  }
+
   const [detectedDays, setDetectedDays] = useState<OvertimeDetectItem[] | null>(null);
   const [overtimeValue, setOvertimeValue] = useState<OvertimeValue | null>(null);
   const [detecting, setDetecting] = useState(false);
@@ -590,8 +645,7 @@ export default function EmployeeDetailPage() {
                 onClick={() => void handleDownloadQr("png")}
                 disabled={downloadingQr}
               >
-                <Download size={14} />
-                {downloadingQr && <Spinner />}
+                {downloadingQr ? <Spinner /> : <Download size={14} />}
                 {downloadingQr ? "Descargando…" : "PNG 5 × 5 cm"}
               </button>
               <button className="btn btn-ghost btn-sm" type="button" onClick={() => void handleDownloadQr("svg")} disabled={downloadingQr}>SVG</button>
@@ -604,7 +658,7 @@ export default function EmployeeDetailPage() {
                 disabled={rotatingQr}
                 style={{ width: "fit-content" }}
               >
-                {rotatingQr && <Spinner />}
+                {rotatingQr ? <Spinner /> : null}
                 {rotatingQr ? "Rotando QR…" : "Rotar QR"}
               </button>
             )}
@@ -631,9 +685,11 @@ export default function EmployeeDetailPage() {
             <button
               className="btn btn-outline btn-sm"
               onClick={() => {
-                if (!showForm && schedule) {
-                  setForm({ ...defaultForm(), effective_from: dayAfter(schedule.effective_from) });
-                }
+                const initForm = schedule
+                  ? { ...defaultForm(), effective_from: dayAfter(schedule.effective_from) }
+                  : defaultForm();
+                setForm(initForm);
+                setInitialScheduleForm(JSON.stringify(initForm));
                 setShowForm(true);
               }}
             >
@@ -642,13 +698,19 @@ export default function EmployeeDetailPage() {
           )}
         </div>
 
-        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={() => setShowForm(false)} dismissible={!saving} className="employee-profile-dialog employee-profile-dialog--wide">
+        {canManage && showForm && <AppDialog labelledBy="schedule-dialog-title" onClose={handleCancelSchedule} dismissible={!isScheduleDirty && !saving} className="employee-profile-dialog employee-profile-dialog--wide">
           <form onSubmit={handleSaveSchedule} className="schedule-form">
-            <div className="app-dialog-heading"><div><h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2><p className="card-sub">El cambio preserva el historial de la jornada anterior.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={saving}>Cerrar</AppDialogCloseButton></div>
+            <div className="app-dialog-heading">
+              <div>
+                <h2 id="schedule-dialog-title" className="card-title">Nueva jornada laboral</h2>
+                <p className="card-sub">El cambio preserva el historial de la jornada anterior.</p>
+              </div>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={handleCancelSchedule} disabled={saving}>Cerrar</button>
+            </div>
             <section className="schedule-form-section">
               <div>
-                <label className="label">Vigente desde</label>
-                <DateField value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
+                <label className="label" id="schedule-effective-from-label">Vigente desde</label>
+                <DateField aria-label="Vigente desde" value={form.effective_from} onChange={(v) => setForm({ ...form, effective_from: v })} required placeholder="Seleccionar" />
               </div>
             </section>
             <section className="schedule-form-section" aria-labelledby="schedule-hours-title">
@@ -656,8 +718,9 @@ export default function EmployeeDetailPage() {
               <div className="schedule-hours-grid">
               {DAYS.map((day) => (
                 <div key={day.key}>
-                  <label className="label">{day.label} (horas)</label>
+                  <label className="label" htmlFor={`schedule-${day.key}`}>{day.label} (horas)</label>
                   <input
+                    id={`schedule-${day.key}`}
                     type="number"
                     min={0}
                     max={24}
@@ -674,8 +737,9 @@ export default function EmployeeDetailPage() {
               <h3 id="schedule-break-title" className="label">Reglas de refrigerio</h3>
               <div className="schedule-break-grid">
               <div>
-                <label className="label">Refrigerio (min)</label>
+                <label className="label" htmlFor="schedule-break-minutes">Refrigerio (min)</label>
                 <input
+                  id="schedule-break-minutes"
                   type="number"
                   min={0}
                   max={1440}
@@ -686,8 +750,9 @@ export default function EmployeeDetailPage() {
                 />
               </div>
               <div>
-                <label className="label">Aplicar refrigerio desde (min)</label>
+                <label className="label" htmlFor="schedule-break-applies-after">Aplicar refrigerio desde (min)</label>
                 <input
+                  id="schedule-break-applies-after"
                   type="number"
                   min={0}
                   max={1440}
@@ -699,11 +764,13 @@ export default function EmployeeDetailPage() {
               </div>
               </div>
             </section>
-            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={saving}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
-              <Check size={15} />
-              {saving && <Spinner />}
-              {saving ? "Guardando jornada…" : "Guardar jornada"}
-            </button></div>
+            <div className="app-dialog-actions employee-dialog-sticky-actions">
+              <button type="button" className="btn btn-ghost" onClick={handleCancelSchedule} disabled={saving}>Cancelar</button>
+              <button type="submit" className="btn btn-primary" disabled={saving || !form.effective_from}>
+                {saving ? <Spinner /> : <Check size={15} />}
+                {saving ? "Guardando jornada…" : "Guardar jornada"}
+              </button>
+            </div>
           </form>
         </AppDialog>}
 
@@ -763,16 +830,23 @@ export default function EmployeeDetailPage() {
             <button
               className="btn btn-outline btn-sm"
               onClick={() => {
-                if (!showSalaryForm && salary) {
-                  setSalaryForm({
-                    effective_from: dayAfter(salary.effective_from),
-                    monthly_salary: salary.monthly_salary,
-                    overtime_enabled: salary.overtime_enabled,
-                    use_custom_overtime_rates: salary.use_custom_overtime_rates,
-                    custom_first_two_hours_rate: salary.custom_first_two_hours_rate,
-                    custom_additional_hours_rate: salary.custom_additional_hours_rate,
-                  });
-                }
+                const initSalary: SalaryPayload = salary ? {
+                  effective_from: dayAfter(salary.effective_from),
+                  monthly_salary: salary.monthly_salary,
+                  overtime_enabled: salary.overtime_enabled,
+                  use_custom_overtime_rates: salary.use_custom_overtime_rates,
+                  custom_first_two_hours_rate: salary.custom_first_two_hours_rate,
+                  custom_additional_hours_rate: salary.custom_additional_hours_rate,
+                } : {
+                  effective_from: "",
+                  monthly_salary: "",
+                  overtime_enabled: false,
+                  use_custom_overtime_rates: false,
+                  custom_first_two_hours_rate: null,
+                  custom_additional_hours_rate: null,
+                };
+                setSalaryForm(initSalary);
+                setInitialSalaryForm(JSON.stringify(initSalary));
                 setShowSalaryForm(true);
               }}
             >
@@ -780,17 +854,24 @@ export default function EmployeeDetailPage() {
             </button>
           </div>
 
-          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={() => setShowSalaryForm(false)} dismissible={!savingSalary} className="employee-profile-dialog">
+          {showSalaryForm && <AppDialog labelledBy="salary-dialog-title" onClose={handleCancelSalary} dismissible={!isSalaryDirty && !savingSalary} className="employee-profile-dialog">
             <form onSubmit={handleSaveSalary} className="schedule-form">
-              <div className="app-dialog-heading"><div><h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2><p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={savingSalary}>Cerrar</AppDialogCloseButton></div>
+              <div className="app-dialog-heading">
+                <div>
+                  <h2 id="salary-dialog-title" className="card-title">Configurar sueldo</h2>
+                  <p className="card-sub">El nuevo valor preserva el historial y se aplica desde la fecha indicada.</p>
+                </div>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={handleCancelSalary} disabled={savingSalary}>Cerrar</button>
+              </div>
               <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
                 <div>
-                  <label className="label">Vigente desde</label>
-                  <DateField value={salaryForm.effective_from} onChange={(v) => setSalaryForm({ ...salaryForm, effective_from: v })} required placeholder="Seleccionar" />
+                  <label className="label" id="salary-effective-from-label">Vigente desde</label>
+                  <DateField aria-label="Vigente desde" value={salaryForm.effective_from} onChange={(v) => setSalaryForm({ ...salaryForm, effective_from: v })} required placeholder="Seleccionar" />
                 </div>
                 <div>
-                  <label className="label">Sueldo mensual (S/)</label>
+                  <label className="label" htmlFor="salary-monthly-amount">Sueldo mensual (S/)</label>
                   <input
+                    id="salary-monthly-amount"
                     type="number"
                     min={0.01}
                     step={0.01}
@@ -835,8 +916,9 @@ export default function EmployeeDetailPage() {
                     {salaryForm.use_custom_overtime_rates && (
                       <>
                         <div>
-                          <label className="label">Primeras 2 h (%)</label>
+                          <label className="label" htmlFor="salary-first-two-hours">Primeras 2 h (%)</label>
                           <input
+                            id="salary-first-two-hours"
                             type="number"
                             min={25}
                             step={0.01}
@@ -848,8 +930,9 @@ export default function EmployeeDetailPage() {
                           <p style={{ fontSize: "0.68rem", color: "var(--muted)", margin: "0.2rem 0 0" }}>Mínimo 25%</p>
                         </div>
                         <div>
-                          <label className="label">Tercera hora en adelante (%)</label>
+                          <label className="label" htmlFor="salary-additional-hours">Tercera hora en adelante (%)</label>
                           <input
+                            id="salary-additional-hours"
                             type="number"
                             min={35}
                             step={0.01}
@@ -865,15 +948,17 @@ export default function EmployeeDetailPage() {
                   </>
                 )}
               </div>
-              <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingSalary}>Cancelar</AppDialogCloseButton><button
-                type="submit"
-                className="btn btn-primary"
-                disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
-              >
-                <Check size={15} />
-                {savingSalary && <Spinner />}
-                {savingSalary ? "Guardando sueldo…" : "Guardar sueldo"}
-              </button></div>
+              <div className="app-dialog-actions employee-dialog-sticky-actions">
+                <button type="button" className="btn btn-ghost" onClick={handleCancelSalary} disabled={savingSalary}>Cancelar</button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={savingSalary || !salaryForm.effective_from || !salaryForm.monthly_salary}
+                >
+                  {savingSalary ? <Spinner /> : <Check size={15} />}
+                  {savingSalary ? "Guardando sueldo…" : "Guardar sueldo"}
+                </button>
+              </div>
             </form>
           </AppDialog>}
 
@@ -979,8 +1064,7 @@ export default function EmployeeDetailPage() {
                 }}
                 disabled={detecting}
               >
-                <Zap size={14} />
-                {detecting && <Spinner />}
+                {detecting ? <Spinner /> : <Zap size={14} />}
                 {detecting ? "Consultando sobretiempo…" : "Detectar sobretiempo del mes"}
               </button>
             </div>
@@ -1034,19 +1118,25 @@ export default function EmployeeDetailPage() {
         <AppDialog labelledBy="rotate-qr-title" onClose={() => setConfirmQrRotation(false)} dismissible={!rotatingQr}>
           <h2 id="rotate-qr-title" className="card-title">¿Rotar el código QR?</h2>
           <p className="card-sub">El QR actual dejará de identificar a este empleado. Usa esta acción solo si se perdió o comprometió la credencial.</p>
-          <div className="app-dialog-actions">
+          <div className="app-dialog-actions employee-dialog-sticky-actions">
             <AppDialogCloseButton className="btn btn-outline" disabled={rotatingQr}>Cancelar</AppDialogCloseButton>
-            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr} aria-busy={rotatingQr}>{rotatingQr && <Spinner />}{rotatingQr ? "Rotando QR…" : "Rotar QR"}</button>
+            <button className="btn btn-danger" type="button" onClick={async () => { await handleRotateQr(); setConfirmQrRotation(false); }} disabled={rotatingQr} aria-busy={rotatingQr}>{rotatingQr ? <Spinner /> : null}{rotatingQr ? "Rotando QR…" : "Rotar QR"}</button>
           </div>
         </AppDialog>
       )}
 
-        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={() => setShowAdjForm(false)} dismissible={!savingAdj} className="employee-profile-dialog">
+        {canManage && showAdjForm && <AppDialog labelledBy="adjustment-create-dialog-title" onClose={handleCancelAdjustment} dismissible={!isAdjDirty && !savingAdj} className="employee-profile-dialog">
           <form onSubmit={handleCreateAdjustment} className="schedule-form">
-            <div className="app-dialog-heading"><div><h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2><p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" disabled={savingAdj}>Cerrar</AppDialogCloseButton></div>
+            <div className="app-dialog-heading">
+              <div>
+                <h2 id="adjustment-create-dialog-title" className="card-title">Nuevo ajuste</h2>
+                <p className="card-sub">El ajuste queda pendiente de aprobación y conserva una traza auditable.</p>
+              </div>
+              <AppDialogCloseButton type="button" className="btn btn-ghost btn-sm" onClick={requestAdjustmentClose} disabled={savingAdj}>Cerrar</AppDialogCloseButton>
+            </div>
             <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
               <div>
-                <label className="label">Fecha</label>
+                <label className="label" id="adj-date-label">Fecha</label>
                 <DateField aria-label="Fecha del ajuste" value={adjForm.adjustment_date} onChange={(v) => setAdjForm({ ...adjForm, adjustment_date: v })} required placeholder="Seleccionar" />
               </div>
               <div>
@@ -1065,9 +1155,9 @@ export default function EmployeeDetailPage() {
                 <small className="muted">Ejemplo: 420 suma 7 horas; -420 descuenta 7 horas.</small>
               </div>
               <div>
-                <label className="label">Tipo</label>
+                <label className="label" id="adj-type-label" htmlFor="adj-type-trigger">Tipo</label>
                 <Select value={adjForm.adjustment_type} onValueChange={(v) => setAdjForm({ ...adjForm, adjustment_type: v as HourAdjustment["adjustment_type"] })}>
-                  <SelectTrigger aria-label="Tipo de ajuste">
+                  <SelectTrigger id="adj-type-trigger" aria-label="Tipo de ajuste">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1092,11 +1182,13 @@ export default function EmployeeDetailPage() {
                 />
               </div>
             </div>
-            <div className="app-dialog-actions"><AppDialogCloseButton className="btn btn-ghost" disabled={savingAdj}>Cancelar</AppDialogCloseButton><button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3 || !/^-?\d+$/.test(adjForm.minutes.trim()) || Number(adjForm.minutes) < -1440 || Number(adjForm.minutes) > 1440}>
-              <Plus size={15} />
-              {savingAdj && <Spinner />}
-              {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
-            </button></div>
+            <div className="app-dialog-actions employee-dialog-sticky-actions">
+              <AppDialogCloseButton type="button" className="btn btn-ghost" onClick={requestAdjustmentClose} disabled={savingAdj}>Cancelar</AppDialogCloseButton>
+              <button type="submit" className="btn btn-primary" disabled={savingAdj || adjForm.reason.trim().length < 3 || !/^-?\d+$/.test(adjForm.minutes.trim()) || Number(adjForm.minutes) < -1440 || Number(adjForm.minutes) > 1440}>
+                {savingAdj ? <Spinner /> : <Plus size={15} />}
+                {savingAdj ? "Creando ajuste…" : "Crear ajuste (pendiente)"}
+              </button>
+            </div>
           </form>
         </AppDialog>}
 
@@ -1183,6 +1275,7 @@ export default function EmployeeDetailPage() {
           </ul>
         )}
       </div>
+
     </AdminShell>
   );
 }

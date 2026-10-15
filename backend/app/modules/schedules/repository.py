@@ -86,7 +86,15 @@ class WorkScheduleRepository:
         sunday_minutes: int = 0,
         break_minutes: int = 0,
         break_applies_after_minutes: int = 360,
+        commit: bool = True,
     ) -> WorkSchedule:
+        """Crea una jornada.
+
+        ``commit=False`` deja la fila en la transacción abierta (solo ``flush``)
+        para que el caso de uso que invalida valoraciones y audita confirme todo
+        de forma atómica; si algo falla, el ``rollback`` no deja la jornada ni
+        el cierre de la anterior persistidos.
+        """
         schedule = WorkSchedule(
             employee_id=employee_id,
             effective_from=effective_from,
@@ -101,8 +109,11 @@ class WorkScheduleRepository:
             break_applies_after_minutes=break_applies_after_minutes,
         )
         self.db.add(schedule)
-        self.db.commit()
-        self.db.refresh(schedule)
+        if commit:
+            self.db.commit()
+            self.db.refresh(schedule)
+        else:
+            self.db.flush()
         return schedule
 
     def close_active(self, employee_id: uuid.UUID, until: date) -> None:

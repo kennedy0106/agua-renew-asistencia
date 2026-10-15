@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminLoginPage from "@/pages/AdminLoginPage";
+import { API_URL } from "@/lib/api";
 import { preloadRouteWhenIdle } from "@/lib/routePreload";
 
 vi.mock("@/lib/routePreload", () => ({ preloadRouteWhenIdle: vi.fn() }));
 
 const HINT_KEY = "agua-renew-admin-session-hint";
-const LOGIN_URL = "http://localhost:8000/api/v1/auth/login";
+const LOGIN_URL = `${API_URL}/api/v1/auth/login`;
 
 const USER = {
   id: "u-1",

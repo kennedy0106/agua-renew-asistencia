@@ -1,24 +1,37 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const DIALOG_EXIT_MS = 170;
-const DialogCloseContext = createContext<(() => void) | null>(null);
+
+type DialogCloseControls = {
+  /** Cierre implícito (Escape/backdrop). Respeta `dismissible`. */
+  requestClose: () => void;
+  /**
+   * Cierre explícito (botón de cierre). Anima la salida aunque el diálogo no
+   * sea descartable —p. ej. un formulario sucio cuyo descarte el consumidor ya
+   * confirmó—. El consumidor cancela el cierre llamando a
+   * `event.preventDefault()` en el `onClick` del botón.
+   */
+  requestExplicitClose: () => void;
+};
+
+const DialogCloseContext = createContext<DialogCloseControls | null>(null);
 
 export function AppDialogCloseButton({
   onClick,
   type = "button",
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  const requestClose = useContext(DialogCloseContext);
+  const controls = useContext(DialogCloseContext);
   return (
     <button
       {...props}
       type={type}
       onClick={(event) => {
         onClick?.(event);
-        if (!event.defaultPrevented) requestClose?.();
+        if (!event.defaultPrevented) controls?.requestExplicitClose();
       }}
     />
   );
@@ -52,13 +65,32 @@ export default function AppDialog({
   useEffect(() => { closeRef.current = onClose; }, [onClose]);
   useEffect(() => { dismissibleRef.current = dismissible; }, [dismissible]);
 
-  const requestClose = useCallback(() => {
-    if (!dismissibleRef.current || closingRef.current) return;
+  const beginClose = useCallback(() => {
+    if (closingRef.current) return;
     closingRef.current = true;
     setMotionState("exiting");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     closeTimerRef.current = window.setTimeout(() => closeRef.current(), reduceMotion ? 120 : DIALOG_EXIT_MS);
   }, []);
+
+  // Escape y backdrop son cierres implícitos: no pueden abandonar un diálogo
+  // con `dismissible={false}` (p. ej. un formulario sucio sin confirmar).
+  const requestClose = useCallback(() => {
+    if (!dismissibleRef.current) return;
+    beginClose();
+  }, [beginClose]);
+
+  // El botón de cierre es un cierre explícito: el consumidor ya decidió
+  // (confirmación de descarte) o canceló el onClick con `preventDefault`.
+  // Por eso no lo bloquea `dismissible`.
+  const requestExplicitClose = useCallback(() => {
+    beginClose();
+  }, [beginClose]);
+
+  const closeControls = useMemo<DialogCloseControls>(
+    () => ({ requestClose, requestExplicitClose }),
+    [requestClose, requestExplicitClose],
+  );
 
   useEffect(() => {
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -69,7 +101,11 @@ export default function AppDialog({
       dialogRef.current?.querySelector<HTMLElement>("[data-autofocus], input, button:not([disabled]), [href]")?.focus();
     });
     const closeWithEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Si hay un selector o calendario portaleado abierto (ej. DateField),
+      // no cerramos este diálogo padre para permitir que el selector se cierre primero.
+      const hasNestedPopup = Boolean(document.querySelector(".datefield-panel, [role='dialog'].is-portaled, [data-floating-portal]"));
+      if (hasNestedPopup) return;
       event.preventDefault();
       requestClose();
     };
@@ -99,7 +135,7 @@ export default function AppDialog({
   return createPortal(
     <div className="dialog-backdrop dialog-portal" data-motion-state={motionState} onMouseDown={requestClose}>
       <div ref={dialogRef} className={`app-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={labelledBy || titleId} aria-describedby={describedBy} onMouseDown={(event) => event.stopPropagation()} onKeyDownCapture={trapFocus}>
-        <DialogCloseContext.Provider value={requestClose}>{children}</DialogCloseContext.Provider>
+        <DialogCloseContext.Provider value={closeControls}>{children}</DialogCloseContext.Provider>
       </div>
     </div>,
     document.body,

@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import AdminLayout from "@/layouts/AdminLayout";
+import { API_URL } from "@/lib/api";
 
 const HINT_KEY = "agua-renew-admin-session-hint";
-const ME_URL = "http://localhost:8000/api/v1/auth/me";
+const ME_URL = `${API_URL}/api/v1/auth/me`;
 
 const USER = {
   id: "u-1",

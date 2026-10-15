@@ -234,7 +234,16 @@ class ManualAttendanceService:
         rates_service = OvertimePolicyService(self.db)
         rates = rates_service.get_effective_overtime_rates(employee_id, work_date)
         policy = rates_service.repo.get_for_date(work_date) if rates.get("source") == "company_policy" else None
-        return salary, schedule, {
+        return salary, schedule, self._valuation_inputs_from_values(salary, schedule, rates, policy, work_date)
+
+    @staticmethod
+    def _valuation_inputs_from_values(salary, schedule, rates, policy, work_date) -> dict:
+        """Metadatos de valoración con fuentes ya resueltas.
+
+        La ruta escalar conserva sus consultas; el lote comparte exactamente
+        este constructor para no duplicar el criterio de salario/jornada/tasas.
+        """
+        return {
             "salary_id": str(salary.id) if salary else None,
             "salary_effective_from": salary.effective_from.isoformat() if salary else None,
             "salary_effective_to": salary.effective_to.isoformat() if salary and salary.effective_to else None,
@@ -303,6 +312,87 @@ class ManualAttendanceService:
             "payable_minutes": payable_minutes,
             "requested_minutes": requested_minutes,
             "break_minutes": break_minutes,
+            "break_source": plan["break_source"],
+        }
+
+    def estimate_payments_batch(
+        self, employee_id: uuid.UUID, requests: list[tuple[date, int]]
+    ) -> dict[tuple[date, int], dict]:
+        """Estima varios adicionales del mismo empleado con lecturas en lote.
+
+        Conserva exactamente la aritmética de ``estimate_payment`` para la
+        variante escalar sin fila candidata ni ordinarios explícitos: resuelve
+        jornada, refrigerio, sueldo y tasas una vez por fecha y luego aplica la
+        misma regla por pedido.  El presupuesto de consultas no crece con el
+        número de pendientes del mismo periodo.
+        """
+        # Imports locales para no cargar los módulos de servicio al importar.
+        from app.modules.attendance.service import AttendanceService
+        from app.modules.overtime.service import OvertimeService
+
+        if not requests:
+            return {}
+        days = sorted({work_date for work_date, _minutes in requests})
+        break_inputs = AttendanceService(self.db).break_plan_inputs_for_days(employee_id, days)
+        salary_by_day = SalaryService(self.db).get_for_days({employee_id: days})
+        policy_history = OvertimePolicyService(self.db).list_history()
+        prepared: dict[date, tuple] = {}
+        for work_date in days:
+            salary = salary_by_day.get((employee_id, work_date))
+            schedule = break_inputs[work_date]["schedule"]
+            rates = OvertimeService._effective_rates_from_history(salary, policy_history, work_date)
+            policy = None
+            if rates.get("source") == "company_policy":
+                policy = next(
+                    (
+                        item
+                        for item in policy_history
+                        if item.effective_from <= work_date
+                        and (item.effective_to is None or item.effective_to >= work_date)
+                    ),
+                    None,
+                )
+            inputs = self._valuation_inputs_from_values(salary, schedule, rates, policy, work_date)
+            prepared[work_date] = (salary, inputs)
+        results: dict[tuple[date, int], dict] = {}
+        for work_date, minutes in requests:
+            key = (work_date, minutes)
+            if key not in results:
+                results[key] = self._estimate_payment_from_prepared(
+                    work_date, minutes, prepared[work_date], break_inputs[work_date]
+                )
+        return results
+
+    def _estimate_payment_from_prepared(
+        self, work_date: date, minutes: int, prepared: tuple, break_input: dict
+    ) -> dict:
+        """Misma salida de ``estimate_payment`` con las lecturas ya resueltas."""
+        from app.modules.attendance.service import AttendanceService
+
+        requested_minutes = max(0, int(minutes or 0))
+        if not requested_minutes:
+            return {
+                "status": "NOT_APPLICABLE", "amount": "0.00", "minutes": 0,
+                "payable_minutes": 0, "requested_minutes": 0, "break_minutes": 0,
+            }
+        salary, inputs = prepared
+        plan = AttendanceService.daily_break_plan_from_values(
+            work_date,
+            requested_minutes,
+            override=break_input["override"],
+            schedule=break_input["schedule"],
+            records=break_input["records"],
+            manual=break_input["manual"],
+        )
+        payable_minutes = plan["payable_minutes"]
+        expected = inputs["expected_minutes"]
+        result = self._ordinary_payment(payable_minutes, salary, expected, inputs)
+        return {
+            **result,
+            "minutes": payable_minutes,
+            "payable_minutes": payable_minutes,
+            "requested_minutes": requested_minutes,
+            "break_minutes": plan["break_minutes"],
             "break_source": plan["break_source"],
         }
 
@@ -817,7 +907,16 @@ class ManualAttendanceService:
         if employee_id: query = query.where(ManualAttendanceDay.employee_id == employee_id)
         if date_from: query = query.where(ManualAttendanceDay.work_date >= date_from)
         if date_to: query = query.where(ManualAttendanceDay.work_date <= date_to)
-        return [self.serialize(x) for x in self.db.scalars(query.offset(offset).limit(limit))]
+        items = self.db.scalars(query.offset(offset).limit(limit)).all()
+        if not items:
+            return []
+        allocations_by_day: dict[uuid.UUID, list[ManualRecoveryApplication]] = {item.id: [] for item in items}
+        allocations = self.db.scalars(select(ManualRecoveryApplication).where(
+            ManualRecoveryApplication.manual_day_id.in_(allocations_by_day)
+        ))
+        for allocation in allocations:
+            allocations_by_day[allocation.manual_day_id].append(allocation)
+        return [self.serialize(item, allocations=allocations_by_day[item.id]) for item in items]
 
     def get(self, item_id: uuid.UUID) -> dict:
         item = self.db.get(ManualAttendanceDay, item_id)
@@ -846,8 +945,10 @@ class ManualAttendanceService:
             "result": receipt.result,
         }
 
-    def serialize(self, item: ManualAttendanceDay) -> dict:
-        allocations = self.db.scalars(select(ManualRecoveryApplication).where(ManualRecoveryApplication.manual_day_id == item.id)).all()
+    def serialize(self, item: ManualAttendanceDay, *, allocations: List[ManualRecoveryApplication] | None = None) -> dict:
+        # Single-item callers retain their query; an empty preloaded list is authoritative.
+        if allocations is None:
+            allocations = self.db.scalars(select(ManualRecoveryApplication).where(ManualRecoveryApplication.manual_day_id == item.id)).all()
         return {"id": str(item.id), "employee_id": str(item.employee_id), "work_date": item.work_date, "worked_minutes_net": item.worked_minutes_net, "normal_minutes": item.normal_minutes, "additional_minutes": item.additional_minutes, "recovery_minutes": item.recovery_minutes, "day_context": item.day_context, "source_reference": item.source_reference, "known_check_in_at": item.known_check_in_at, "known_check_out_at": item.known_check_out_at, "known_break_minutes": item.known_break_minutes, "reason": item.reason, "payment_status": item.payment_status, "payment_method": item.payment_method, "payment_concept": item.payment_concept, "reviewed_additional_amount": str((item.payment_snapshot or {}).get("amount")) if item.payment_method == "REVIEWED" and (item.payment_snapshot or {}).get("amount") is not None else None, "approved_additional_amount": str(item.approved_additional_amount) if item.approved_additional_amount is not None else None, "payment_snapshot": item.payment_snapshot, "recovery_allocations": [{"commitment_id": str(allocation.commitment_id), "minutes": allocation.minutes} for allocation in allocations], "version": item.version, "supersedes_id": str(item.supersedes_id) if item.supersedes_id else None, "voided_at": item.voided_at, "void_reason": item.void_reason, "created_at": item.created_at}
 
     def approve(self, item_id: uuid.UUID, actor_id: uuid.UUID, expected_version: int, expected_snapshot: dict, idempotency_key: str | None = None) -> dict:

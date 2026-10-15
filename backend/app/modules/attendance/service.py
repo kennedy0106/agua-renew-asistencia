@@ -11,6 +11,7 @@
 import base64
 import hashlib
 import uuid
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
@@ -1177,15 +1178,8 @@ class AttendanceService:
             )
             if item.status == "COMPLETE" and item.check_out_at is not None
         ]
-        if ordinary_minutes is not None:
-            ordinary_gross = max(0, int(ordinary_minutes)) + max(
-                0, int(ordinary_known_break_minutes or 0)
-            )
-            presence_source = "MANUAL"
-        elif records:
-            ordinary_gross = self._gross_for_records(records)
-            presence_source = "KIOSK"
-        else:
+        manual = None
+        if ordinary_minutes is None and not records:
             manual = self.db.scalar(
                 select(ManualAttendanceDay).where(
                     ManualAttendanceDay.employee_id == employee_id,
@@ -1193,16 +1187,94 @@ class AttendanceService:
                     ManualAttendanceDay.voided_at.is_(None),
                 )
             )
-            if manual is not None:
-                ordinary_gross = int(manual.normal_minutes) + int(manual.known_break_minutes or 0)
-                presence_source = "MANUAL"
-            else:
-                ordinary_gross = 0
-                presence_source = "NONE"
-        break_before, _source_before, _requested_before, _limited_before = self._break_details_from_values(
+        return self.daily_break_plan_from_values(
+            work_date,
+            requested,
+            override=override,
+            schedule=schedule,
+            records=records,
+            manual=manual,
+            ordinary_minutes=ordinary_minutes,
+            ordinary_known_break_minutes=ordinary_known_break_minutes,
+        )
+
+    def break_plan_inputs_for_days(
+        self, employee_id: uuid.UUID, days: Iterable[date]
+    ) -> dict[date, dict]:
+        """Resuelve las entradas del refrigerio de varios días en lote.
+
+        Es solo lectura: trae en una consulta por fuente el override, la
+        jornada, las marcaciones completas y la carga manual vigente que
+        ``daily_break_plan`` resolvería fila a fila, sin cambiar reglas.
+        """
+        unique_days = sorted(set(days))
+        if not unique_days:
+            return {}
+        overrides = self._break_overrides_for_days({employee_id: set(unique_days)})
+        schedules = ScheduleService(self.db).schedules_for_days({employee_id: unique_days})
+        records_by_day: dict[date, list[AttendanceRecord]] = {}
+        for record in self.repo.list_records(
+            employee_id=employee_id, date_from=unique_days[0], date_to=unique_days[-1]
+        ):
+            if record.status == "COMPLETE" and record.check_out_at is not None:
+                records_by_day.setdefault(record.work_date, []).append(record)
+        manual_by_day = {
+            item.work_date: item
+            for item in self.db.scalars(
+                select(ManualAttendanceDay).where(
+                    ManualAttendanceDay.employee_id == employee_id,
+                    ManualAttendanceDay.work_date >= unique_days[0],
+                    ManualAttendanceDay.work_date <= unique_days[-1],
+                    ManualAttendanceDay.voided_at.is_(None),
+                )
+            )
+        }
+        return {
+            day: {
+                "override": overrides.get((employee_id, day)),
+                "schedule": schedules.get((employee_id, day)),
+                "records": records_by_day.get(day, []),
+                "manual": manual_by_day.get(day),
+            }
+            for day in unique_days
+        }
+
+    @staticmethod
+    def daily_break_plan_from_values(
+        work_date: date,
+        requested: int,
+        *,
+        override: AttendanceBreakOverride | None,
+        schedule,
+        records: list[AttendanceRecord],
+        manual: ManualAttendanceDay | None,
+        ordinary_minutes: int | None = None,
+        ordinary_known_break_minutes: int | None = None,
+    ) -> dict:
+        """Aritmética pura del refrigerio sobre entradas ya resueltas.
+
+        Comparte exactamente la regla escalar: la única diferencia es que no
+        consulta la base; recibe el override, la jornada, las marcaciones
+        completas y la carga manual vigente del día.
+        """
+        if ordinary_minutes is not None:
+            ordinary_gross = max(0, int(ordinary_minutes)) + max(
+                0, int(ordinary_known_break_minutes or 0)
+            )
+            presence_source = "MANUAL"
+        elif records:
+            ordinary_gross = AttendanceService._gross_for_records(records)
+            presence_source = "KIOSK"
+        elif manual is not None:
+            ordinary_gross = int(manual.normal_minutes) + int(manual.known_break_minutes or 0)
+            presence_source = "MANUAL"
+        else:
+            ordinary_gross = 0
+            presence_source = "NONE"
+        break_before, _source_before, _requested_before, _limited_before = AttendanceService._break_details_from_values(
             override, schedule, ordinary_gross
         )
-        break_after, source_after, _requested_after, _limited_after = self._break_details_from_values(
+        break_after, source_after, _requested_after, _limited_after = AttendanceService._break_details_from_values(
             override, schedule, ordinary_gross + requested
         )
         scheduled_day_minutes = (

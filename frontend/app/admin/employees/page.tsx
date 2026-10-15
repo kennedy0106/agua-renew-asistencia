@@ -180,6 +180,20 @@ export default function AdminEmployeesPage() {
     await handleToggleActive(target);
   }
 
+  const isCreateDirty = Boolean(
+    form.dni || form.first_name || form.last_name || form.hire_date || form.job_role_id
+  );
+
+  function handleCancelCreate() {
+    if (isCreateDirty) {
+      if (!window.confirm("Hay datos ingresados para el nuevo empleado. ¿Deseas cancelar y descartarlos?")) {
+        return;
+      }
+    }
+    setForm(EMPTY_FORM);
+    setShowCreate(false);
+  }
+
   return (
     <AdminShell
       title="Empleados"
@@ -189,11 +203,13 @@ export default function AdminEmployeesPage() {
         <div style={{ position: "relative", maxWidth: 280, width: "100%" }}>
           <Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--muted)" }} />
           <input
+            id="employee-search"
             type="text"
             className="input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nombre, DNI o código…"
+            aria-label="Buscar por nombre, DNI o código"
             style={{ paddingLeft: "2.1rem" }}
           />
         </div>
@@ -218,7 +234,7 @@ export default function AdminEmployeesPage() {
         {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
         {canManage && (
-          <button className="btn btn-primary" onClick={() => setShowCreate((v) => !v)}>
+          <button className="btn btn-primary" onClick={() => (showCreate ? handleCancelCreate() : setShowCreate(true))}>
             {showCreate ? (
               <>
                 <X size={15} /> Cancelar
@@ -243,9 +259,10 @@ export default function AdminEmployeesPage() {
         <form onSubmit={handleCreate} className="card card-pad employee-create-form">
           <div className="employee-create-identity-row">
             <div className="employee-dni-field">
-              <label className="label">DNI (8 dígitos)</label>
+              <label className="label" htmlFor="create-employee-dni">DNI (8 dígitos)</label>
               <div className="employee-dni-controls">
                 <input
+                  id="create-employee-dni"
                   type="text"
                   inputMode="numeric"
                   className="input"
@@ -264,7 +281,6 @@ export default function AdminEmployeesPage() {
                 />
                 <button type="button" className="btn btn-outline employee-dni-lookup" onClick={handleDniLookup} disabled={!/^\d{8}$/.test(form.dni) || lookingUpDni}>
                   {lookingUpDni ? <Spinner /> : <Search size={15} />}
-                  {lookingUpDni && <Spinner />}
                   {lookingUpDni ? "Consultando DNI…" : "Consultar DNI"}
                 </button>
               </div>
@@ -273,13 +289,13 @@ export default function AdminEmployeesPage() {
               </p>
             </div>
             <div>
-              <label className="label">Código interno</label>
-              <input type="text" className="input" value="Se asignará automáticamente" readOnly aria-readonly="true" />
+              <label className="label" htmlFor="create-employee-code">Código interno</label>
+              <input id="create-employee-code" type="text" className="input" value="Se asignará automáticamente" readOnly aria-readonly="true" />
             </div>
             <div>
-              <label className="label">Cargo laboral</label>
+              <label className="label" id="create-employee-job-role-label" htmlFor="create-employee-job-role">Cargo laboral</label>
               <Select value={form.job_role_id} onValueChange={(v) => setForm({ ...form, job_role_id: v })}>
-                <SelectTrigger aria-label="Cargo laboral">
+                <SelectTrigger id="create-employee-job-role" aria-labelledby="create-employee-job-role-label" aria-label="Cargo laboral">
                   <SelectValue placeholder="Seleccionar…" />
                 </SelectTrigger>
                 <SelectContent>
@@ -294,25 +310,27 @@ export default function AdminEmployeesPage() {
               </Select>
             </div>
             <div>
-              <label className="label">Fecha de ingreso</label>
-              <DateField value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
+              <label className="label" id="create-employee-hire-date-label">Fecha de ingreso</label>
+              <DateField aria-label="Fecha de ingreso" value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
             </div>
           </div>
           <div className="employee-create-names-row">
             <div>
-              <label className="label">Nombres</label>
-              <input type="text" className="input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
+              <label className="label" htmlFor="create-employee-firstname">Nombres</label>
+              <input id="create-employee-firstname" type="text" className="input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
             </div>
             <div>
-              <label className="label">Apellidos</label>
-              <input type="text" className="input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
+              <label className="label" htmlFor="create-employee-lastname">Apellidos</label>
+              <input id="create-employee-lastname" type="text" className="input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
             </div>
           </div>
           <div className="employee-create-actions">
             <button type="submit" className="btn btn-primary" disabled={creating}>
-              <Plus size={15} />
-              {creating && <Spinner />}
+              {creating ? <Spinner /> : <Plus size={15} />}
               {creating ? "Creando empleado…" : "Crear empleado"}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={handleCancelCreate} disabled={creating}>
+              Cancelar
             </button>
           </div>
         </form>
@@ -355,17 +373,35 @@ export default function AdminEmployeesPage() {
                   <>
                     <td data-label="Nombre">
                       <div style={{ display: "grid", gap: "0.3rem" }}>
-                        <input type="text" className="input" style={{ padding: "0.3rem 0.5rem" }} value={edit.first_name} onChange={(e) => setEdit({ ...edit, first_name: e.target.value })} />
-                        <input type="text" className="input" style={{ padding: "0.3rem 0.5rem" }} value={edit.last_name} onChange={(e) => setEdit({ ...edit, last_name: e.target.value })} />
+                        <input
+                          type="text"
+                          className="input employee-edit-input"
+                          aria-label="Nombres del empleado"
+                          value={edit.first_name}
+                          onChange={(e) => setEdit({ ...edit, first_name: e.target.value })}
+                        />
+                        <input
+                          type="text"
+                          className="input employee-edit-input"
+                          aria-label="Apellidos del empleado"
+                          value={edit.last_name}
+                          onChange={(e) => setEdit({ ...edit, last_name: e.target.value })}
+                        />
                       </div>
                     </td>
                     <td data-label="DNI">
-                      <input type="text" className="input" style={{ width: 90, padding: "0.3rem 0.5rem" }} value={edit.dni} onChange={(e) => setEdit({ ...edit, dni: e.target.value })} />
+                      <input
+                        type="text"
+                        className="input employee-edit-dni"
+                        aria-label="DNI"
+                        value={edit.dni}
+                        onChange={(e) => setEdit({ ...edit, dni: e.target.value })}
+                      />
                     </td>
                     <td className="num" data-label="Código">{employee.employee_code}</td>
                     <td data-label="Cargo">
                       <Select value={edit.job_role_id} onValueChange={(v) => setEdit({ ...edit, job_role_id: v })}>
-                        <SelectTrigger aria-label="Cargo" style={{ padding: "0.3rem 0.5rem", height: "2rem" }}>
+                        <SelectTrigger aria-label="Cargo" className="employee-edit-trigger">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -451,7 +487,7 @@ export default function AdminEmployeesPage() {
             Deja de contar como empleado activo, pero su historial de asistencia y sueldos se conserva. Puedes
             reactivarlo cuando quieras.
           </p>
-          <div className="app-dialog-actions">
+          <div className="app-dialog-actions employee-dialog-sticky-actions">
             <AppDialogCloseButton className="btn btn-outline">Cancelar</AppDialogCloseButton>
             <button className="btn btn-danger" type="button" onClick={() => void confirmDeactivation()}>
               Sí, desactivar
@@ -459,6 +495,7 @@ export default function AdminEmployeesPage() {
           </div>
         </AppDialog>
       )}
+
     </AdminShell>
   );
 }

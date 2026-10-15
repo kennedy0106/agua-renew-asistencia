@@ -150,6 +150,13 @@ export default function AdminAttendancePage() {
   const [corrReason, setCorrReason] = useState("");
   const [savingCorrection, setSavingCorrection] = useState(false);
   const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [corrFieldErrors, setCorrFieldErrors] = useState<{
+    checkInDate?: boolean;
+    checkInTime?: boolean;
+    checkOutDate?: boolean;
+    checkOutTime?: boolean;
+    reason?: boolean;
+  }>({});
   const [photosFor, setPhotosFor] = useState<string | null>(null);
   const [photoUrls, setPhotoUrls] = useState<{ check_in: string | null; check_out: string | null; missing: string | null }>({
     check_in: null,
@@ -222,6 +229,26 @@ export default function AdminAttendancePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [adjustingBreak, savingBreak]);
 
+  useEffect(() => {
+    function onWindowKeyDownCapture(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      const portaledPanel = document.querySelector(".datefield-panel.is-portaled");
+      if (portaledPanel) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+        const expandedTrigger = document.querySelector<HTMLButtonElement>('.datefield-trigger[aria-expanded="true"]');
+        if (expandedTrigger) {
+          expandedTrigger.click();
+          expandedTrigger.focus();
+        } else {
+          document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        }
+      }
+    }
+    window.addEventListener("keydown", onWindowKeyDownCapture, true);
+    return () => window.removeEventListener("keydown", onWindowKeyDownCapture, true);
+  }, []);
+
   useEffect(() => () => {
     if (photoUrls.check_in) URL.revokeObjectURL(photoUrls.check_in);
     if (photoUrls.check_out) URL.revokeObjectURL(photoUrls.check_out);
@@ -259,6 +286,7 @@ export default function AdminAttendancePage() {
     setCorrNotes(record.notes ?? "");
     setCorrReason("");
     setCorrectionError(null);
+    setCorrFieldErrors({});
     setError(null);
     setPhotosFor(null);
   }
@@ -267,6 +295,7 @@ export default function AdminAttendancePage() {
     if (savingCorrection) return;
     setCorrecting(null);
     setCorrectionError(null);
+    setCorrFieldErrors({});
   }
 
   async function handleSaveCorrection(event: React.FormEvent) {
@@ -274,10 +303,30 @@ export default function AdminAttendancePage() {
     if (!correcting) return;
     const checkIn = timestampFromParts(corrCheckInDate, corrCheckInTime);
     const checkOut = timestampFromParts(corrCheckOutDate, corrCheckOutTime);
-    if (checkIn.incomplete || checkOut.incomplete) {
-      setCorrectionError("Complete la fecha y la hora de cada marcación que desea registrar.");
+    const errors: {
+      checkInDate?: boolean;
+      checkInTime?: boolean;
+      checkOutDate?: boolean;
+      checkOutTime?: boolean;
+      reason?: boolean;
+    } = {};
+
+    if (corrCheckInDate && !corrCheckInTime) errors.checkInTime = true;
+    if (!corrCheckInDate && corrCheckInTime) errors.checkInDate = true;
+    if (corrCheckOutDate && !corrCheckOutTime) errors.checkOutTime = true;
+    if (!corrCheckOutDate && corrCheckOutTime) errors.checkOutDate = true;
+    if (corrReason.trim().length < 3) errors.reason = true;
+
+    if (checkIn.incomplete || checkOut.incomplete || errors.reason) {
+      setCorrFieldErrors(errors);
+      setCorrectionError(
+        errors.reason && !checkIn.incomplete && !checkOut.incomplete
+          ? "El motivo de la corrección es obligatorio (mínimo 3 caracteres)."
+          : "Complete la fecha y la hora de cada marcación que desea registrar."
+      );
       return;
     }
+    setCorrFieldErrors({});
     setSavingCorrection(true);
     setCorrectionError(null);
     try {
@@ -289,6 +338,7 @@ export default function AdminAttendancePage() {
       });
       setCorrecting(null);
       setCorrectionError(null);
+      setCorrFieldErrors({});
       await load();
       success("Corrección guardada. El registro fue recalculado.");
     } catch (err) {
@@ -428,46 +478,52 @@ export default function AdminAttendancePage() {
         </dl>
       </details>
 
-      <div className="toolbar">
+      <div className="toolbar attendance-toolbar">
         {canManage && (
-          <Link className="btn btn-outline btn-sm" href="/admin/attendance/history" title="Registra horas de días anteriores al inicio del sistema">
+          <Link className="btn btn-outline btn-sm attendance-toolbar-action" href="/admin/attendance/history" title="Registra horas de días anteriores al inicio del sistema">
             <Clock size={15} /> Cargar horas anteriores
           </Link>
         )}
-        <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
-          <SelectTrigger aria-label="Empleado" style={{ maxWidth: 220 }}>
-            <SelectValue placeholder="Todos los empleados" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all">Todos los empleados</SelectItem>
-            {employees.map((e) => (
-              <SelectItem key={e.id} value={e.id}>
-                {e.first_name} {e.last_name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <DateField value={dateFrom} onChange={setDateFrom} aria-label="Fecha desde" placeholder="Desde" />
-        <span className="muted" style={{ fontSize: "0.8rem" }}>a</span>
-        <DateField value={dateTo} onChange={setDateTo} aria-label="Fecha hasta" placeholder="Hasta" />
-        <Select value={statusFilter || "__all"} onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v)}>
-          <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
-            <SelectValue placeholder="Todos los estados" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all">Todos los estados</SelectItem>
-            <SelectItem value="OPEN">Sin salida registrada</SelectItem>
-            <SelectItem value="COMPLETE">Jornada completada</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="attendance-toolbar-filter attendance-toolbar-filter--employee" style={{ minWidth: "11rem", flex: "1 1 13rem" }}>
+          <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
+            <SelectTrigger aria-label="Empleado" className="attendance-employee-select" style={{ width: "100%" }}>
+              <SelectValue placeholder="Todos los empleados" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all">Todos los empleados</SelectItem>
+              {employees.map((e) => (
+                <SelectItem key={e.id} value={e.id}>
+                  {e.first_name} {e.last_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="attendance-toolbar-filter attendance-toolbar-filter--dates" style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", flex: "0 0 auto" }}>
+          <DateField value={dateFrom} onChange={setDateFrom} aria-label="Fecha desde" placeholder="Desde" />
+          <span className="muted attendance-toolbar-range-separator" style={{ fontSize: "0.8rem", padding: "0 0.15rem", flexShrink: 0 }}>a</span>
+          <DateField value={dateTo} onChange={setDateTo} aria-label="Fecha hasta" placeholder="Hasta" />
+        </div>
+        <div className="attendance-toolbar-filter attendance-toolbar-filter--status" style={{ minWidth: "9.5rem", flex: "0 1 10.5rem" }}>
+          <Select value={statusFilter || "__all"} onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v)}>
+            <SelectTrigger aria-label="Estado" className="attendance-status-select" style={{ width: "100%" }}>
+              <SelectValue placeholder="Todos los estados" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all">Todos los estados</SelectItem>
+              <SelectItem value="OPEN">Sin salida registrada</SelectItem>
+              <SelectItem value="COMPLETE">Jornada completada</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         {(employeeFilter || dateFrom || dateTo || statusFilter) && (
-          <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setEmployeeFilter(""); setDateFrom(""); setDateTo(""); setStatusFilter(""); }}>
+          <button className="btn btn-ghost btn-sm attendance-toolbar-clear" type="button" onClick={() => { setEmployeeFilter(""); setDateFrom(""); setDateTo(""); setStatusFilter(""); }}>
             <X size={14} /> Limpiar filtros
           </button>
         )}
         {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
-        <button className="btn btn-outline btn-sm" onClick={exportCsv} title="Descarga un archivo CSV para abrirlo en Excel">
+        <button className="btn btn-outline btn-sm attendance-toolbar-export" onClick={exportCsv} title="Descarga un archivo CSV para abrirlo en Excel">
           <Download size={15} />
           Descargar para Excel
         </button>
@@ -567,26 +623,90 @@ export default function AdminAttendancePage() {
               <section className="correction-timestamp" aria-labelledby="correction-check-in-label">
                 <h3 id="correction-check-in-label" className="label">Entrada</h3>
                 <div className="correction-date-time">
-                  <div className="correction-datefield">
+                  <div className={`correction-datefield${corrFieldErrors.checkInDate ? " is-invalid" : ""}`}>
                     <span className="label">Fecha</span>
-                    <DateField value={corrCheckInDate} onChange={setCorrCheckInDate} aria-label="Fecha de entrada" placeholder="Seleccionar fecha" disabled={savingCorrection} />
+                    <DateField
+                      value={corrCheckInDate}
+                      onChange={(d) => {
+                        setCorrCheckInDate(d);
+                        setCorrFieldErrors((prev) => ({ ...prev, checkInDate: false }));
+                      }}
+                      aria-label="Fecha de entrada"
+                      placeholder="Seleccionar fecha"
+                      disabled={savingCorrection}
+                    />
+                    {corrFieldErrors.checkInDate && (
+                      <span className="error-hint" style={{ color: "var(--expense-red, #b42318)", fontSize: "0.75rem", display: "block", marginTop: "0.2rem" }} role="alert">
+                        Indique la fecha de entrada.
+                      </span>
+                    )}
                   </div>
                   <div>
                     <label className="label" htmlFor="correction-check-in-time">Hora</label>
-                    <input id="correction-check-in-time" type="time" className="input" value={corrCheckInTime} onChange={(e) => setCorrCheckInTime(e.target.value)} disabled={savingCorrection} />
+                    <input
+                      id="correction-check-in-time"
+                      type="time"
+                      className={`input${corrFieldErrors.checkInTime ? " is-invalid" : ""}`}
+                      aria-invalid={corrFieldErrors.checkInTime ? "true" : undefined}
+                      aria-describedby={corrFieldErrors.checkInTime ? "corr-checkin-time-error" : undefined}
+                      style={corrFieldErrors.checkInTime ? { borderColor: "var(--expense-red, #b42318)" } : undefined}
+                      value={corrCheckInTime}
+                      onChange={(e) => {
+                        setCorrCheckInTime(e.target.value);
+                        setCorrFieldErrors((prev) => ({ ...prev, checkInTime: false }));
+                      }}
+                      disabled={savingCorrection}
+                    />
+                    {corrFieldErrors.checkInTime && (
+                      <span id="corr-checkin-time-error" className="error-hint" style={{ color: "var(--expense-red, #b42318)", fontSize: "0.75rem", display: "block", marginTop: "0.2rem" }} role="alert">
+                        Indique la hora de entrada.
+                      </span>
+                    )}
                   </div>
                 </div>
               </section>
               <section className="correction-timestamp" aria-labelledby="correction-check-out-label">
                 <h3 id="correction-check-out-label" className="label">Salida</h3>
                 <div className="correction-date-time">
-                  <div className="correction-datefield">
+                  <div className={`correction-datefield${corrFieldErrors.checkOutDate ? " is-invalid" : ""}`}>
                     <span className="label">Fecha</span>
-                    <DateField value={corrCheckOutDate} onChange={setCorrCheckOutDate} aria-label="Fecha de salida" placeholder="Seleccionar fecha" disabled={savingCorrection} />
+                    <DateField
+                      value={corrCheckOutDate}
+                      onChange={(d) => {
+                        setCorrCheckOutDate(d);
+                        setCorrFieldErrors((prev) => ({ ...prev, checkOutDate: false }));
+                      }}
+                      aria-label="Fecha de salida"
+                      placeholder="Seleccionar fecha"
+                      disabled={savingCorrection}
+                    />
+                    {corrFieldErrors.checkOutDate && (
+                      <span className="error-hint" style={{ color: "var(--expense-red, #b42318)", fontSize: "0.75rem", display: "block", marginTop: "0.2rem" }} role="alert">
+                        Indique la fecha de salida.
+                      </span>
+                    )}
                   </div>
                   <div>
                     <label className="label" htmlFor="correction-check-out-time">Hora</label>
-                    <input id="correction-check-out-time" type="time" className="input" value={corrCheckOutTime} onChange={(e) => setCorrCheckOutTime(e.target.value)} disabled={savingCorrection} />
+                    <input
+                      id="correction-check-out-time"
+                      type="time"
+                      className={`input${corrFieldErrors.checkOutTime ? " is-invalid" : ""}`}
+                      aria-invalid={corrFieldErrors.checkOutTime ? "true" : undefined}
+                      aria-describedby={corrFieldErrors.checkOutTime ? "corr-checkout-time-error" : undefined}
+                      style={corrFieldErrors.checkOutTime ? { borderColor: "var(--expense-red, #b42318)" } : undefined}
+                      value={corrCheckOutTime}
+                      onChange={(e) => {
+                        setCorrCheckOutTime(e.target.value);
+                        setCorrFieldErrors((prev) => ({ ...prev, checkOutTime: false }));
+                      }}
+                      disabled={savingCorrection}
+                    />
+                    {corrFieldErrors.checkOutTime && (
+                      <span id="corr-checkout-time-error" className="error-hint" style={{ color: "var(--expense-red, #b42318)", fontSize: "0.75rem", display: "block", marginTop: "0.2rem" }} role="alert">
+                        Indique la hora de salida.
+                      </span>
+                    )}
                   </div>
                 </div>
               </section>
@@ -600,15 +720,26 @@ export default function AdminAttendancePage() {
                   data-autofocus
                   id="correction-reason"
                   type="text"
-                  className="input"
+                  className={`input${corrFieldErrors.reason ? " is-invalid" : ""}`}
+                  aria-invalid={corrFieldErrors.reason ? "true" : undefined}
+                  aria-describedby={corrFieldErrors.reason ? "corr-reason-error" : undefined}
+                  style={corrFieldErrors.reason ? { borderColor: "var(--expense-red, #b42318)" } : undefined}
                   value={corrReason}
-                  onChange={(e) => setCorrReason(e.target.value)}
+                  onChange={(e) => {
+                    setCorrReason(e.target.value);
+                    setCorrFieldErrors((prev) => ({ ...prev, reason: false }));
+                  }}
                   required
                   minLength={3}
                   maxLength={500}
                   placeholder="Ej. olvidó marcar salida"
                   disabled={savingCorrection}
                 />
+                {corrFieldErrors.reason && (
+                  <span id="corr-reason-error" className="error-hint" style={{ color: "var(--expense-red, #b42318)", fontSize: "0.75rem", display: "block", marginTop: "0.2rem" }} role="alert">
+                    El motivo debe tener al menos 3 caracteres.
+                  </span>
+                )}
               </div>
             </div>
             <div className="app-dialog-actions">
@@ -627,60 +758,64 @@ export default function AdminAttendancePage() {
         <h2 className="card-title">Resumen diario del equipo</h2>
         <p className="card-sub">Una fila por persona y día. Úsalo para detectar diferencias antes de cerrar la planilla.</p>
       </div>
-      <div className="table-wrap attendance-responsive-wrap" style={{ marginBottom: "1rem" }}>
-        <table className={`table attendance-daily-table${canManage ? " has-actions" : ""}`}>
-          <colgroup>
-            <col className="col-employee" /><col className="col-date" /><col className="col-sessions" />
-            <col className="col-duration" /><col className="col-duration" /><col className="col-duration" />
-            <col className="col-duration" /><col className="col-difference" /><col className="col-incidents" />
-            {canManage && <col className="col-action" />}
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Tiempo presente</th>
-              <th>Refrigerio (descanso)</th><th>Tiempo efectivo</th><th>Jornada esperada</th><th>Saldo del día</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <TableSkeleton rows={3} cols={canManage ? 10 : 9} />}
-            {!loading && daily.length === 0 && <tr><td colSpan={canManage ? 10 : 9} className="empty">Sin jornadas en el rango.</td></tr>}
+      {!loading && daily.length === 0 ? (
+        <p className="empty">Sin jornadas en el rango.</p>
+      ) : (
+        <>
+          <div className="table-wrap attendance-responsive-wrap" style={{ marginBottom: "1rem" }}>
+            <table className={`table attendance-daily-table${canManage ? " has-actions" : ""}`}>
+              <colgroup>
+                <col className="col-employee" /><col className="col-date" /><col className="col-sessions" />
+                <col className="col-duration" /><col className="col-duration" /><col className="col-duration" />
+                <col className="col-duration" /><col className="col-difference" /><col className="col-incidents" />
+                {canManage && <col className="col-action" />}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Tiempo presente</th>
+                  <th>Refrigerio (descanso)</th><th>Tiempo efectivo</th><th>Jornada esperada</th><th>Saldo del día</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <TableSkeleton rows={3} cols={canManage ? 10 : 9} />}
+                {dailyPagination.pageItems.map((day) => (
+                  <tr key={`${day.employee_id}-${day.work_date}`}>
+                    <td className="table-cell-name" style={{ fontWeight: 600 }} title={day.employee_name ?? "—"}>{day.employee_name ?? "—"}</td>
+                    <td className="num table-cell-nowrap">{formatOperationalDate(day.work_date)}</td>
+                    <td className="num table-cell-nowrap">{day.session_count}</td>
+                    <td className="num table-cell-nowrap">{formatMinutes(day.gross_minutes)}</td>
+                    <td className="num table-cell-nowrap" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
+                    <td className="num table-cell-nowrap">{formatMinutes(day.worked_minutes)}</td>
+                    <td className="num table-cell-nowrap">{formatMinutes(day.expected_minutes)}</td>
+                    <td className="num table-cell-nowrap">{formatDifference(day.difference_minutes)}</td>
+                    <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
+                    {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="responsive-table-cards" aria-label="Resumen diario del equipo">
+            {loading && <ResponsiveCardsSkeleton label="Cargando resumen diario" />}
             {dailyPagination.pageItems.map((day) => (
-              <tr key={`${day.employee_id}-${day.work_date}`}>
-                <td className="table-cell-name" style={{ fontWeight: 600 }} title={day.employee_name ?? "—"}>{day.employee_name ?? "—"}</td>
-                <td className="num table-cell-nowrap">{formatOperationalDate(day.work_date)}</td>
-                <td className="num table-cell-nowrap">{day.session_count}</td>
-                <td className="num table-cell-nowrap">{formatMinutes(day.gross_minutes)}</td>
-                <td className="num table-cell-nowrap" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
-                <td className="num table-cell-nowrap">{formatMinutes(day.worked_minutes)}</td>
-                <td className="num table-cell-nowrap">{formatMinutes(day.expected_minutes)}</td>
-                <td className="num table-cell-nowrap">{formatDifference(day.difference_minutes)}</td>
-                <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
-                {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></td>}
-              </tr>
+              <article className="responsive-table-card" key={`card-${day.employee_id}-${day.work_date}`}>
+                <div className="responsive-table-card__heading"><span className="responsive-table-card__name">{day.employee_name ?? "—"}</span><time className="responsive-table-card__date" dateTime={day.work_date}>{formatOperationalDate(day.work_date)}</time></div>
+                <dl className="responsive-table-card__grid">
+                  <div className="responsive-table-card__item"><dt>Sesiones</dt><dd>{day.session_count}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Tiempo presente</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Refrigerio (descanso)</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Tiempo efectivo</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Incidencias</dt><dd>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</dd></div>
+                </dl>
+                {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></div>}
+              </article>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="responsive-table-cards" aria-label="Resumen diario del equipo">
-        {loading && <ResponsiveCardsSkeleton label="Cargando resumen diario" />}
-        {!loading && daily.length === 0 && <p className="empty">Sin jornadas en el rango.</p>}
-        {dailyPagination.pageItems.map((day) => (
-          <article className="responsive-table-card" key={`card-${day.employee_id}-${day.work_date}`}>
-            <div className="responsive-table-card__heading"><span className="responsive-table-card__name">{day.employee_name ?? "—"}</span><time className="responsive-table-card__date" dateTime={day.work_date}>{formatOperationalDate(day.work_date)}</time></div>
-            <dl className="responsive-table-card__grid">
-              <div className="responsive-table-card__item"><dt>Sesiones</dt><dd>{day.session_count}</dd></div>
-              <div className="responsive-table-card__item"><dt>Tiempo presente</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Refrigerio (descanso)</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
-              <div className="responsive-table-card__item"><dt>Tiempo efectivo</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Incidencias</dt><dd>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</dd></div>
-            </dl>
-            {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></div>}
-          </article>
-        ))}
-      </div>
-      <TablePagination {...dailyPagination} />
+          </div>
+          <TablePagination {...dailyPagination} />
+        </>
+      )}
 
       {adjustingBreak && (
         <AppDialog labelledBy="break-dialog-title" describedBy="break-dialog-description" onClose={closeBreakDialog} dismissible={!savingBreak}>
@@ -706,108 +841,106 @@ export default function AdminAttendancePage() {
         <h2 className="card-title">Detalle de marcaciones</h2>
         <p className="card-sub">Cada entrada y salida registrada. Desde aquí puedes ver las fotos y corregir un registro.</p>
       </div>
-      <div className="table-wrap attendance-responsive-wrap">
-        <table className={`table attendance-records-table${canManage ? " has-actions" : ""}`}>
-          <colgroup>
-            <col className="col-employee" /><col className="col-date" /><col className="col-time" /><col className="col-time" />
-            <col className="col-duration" /><col className="col-duration" /><col className="col-duration" /><col className="col-status" />
-            {canManage && <col className="col-action" />}
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Empleado</th>
-              <th>Fecha</th>
-              <th>Entrada</th>
-              <th>Salida</th>
-              <th>Trabajado</th>
-              <th>Jornada esperada</th>
-              <th>Saldo del día</th>
-              <th>Estado</th>
-              {canManage && <th className="table-cell-action">Acciones</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <TableSkeleton rows={5} cols={canManage ? 9 : 8} />}
-            {!loading && records.length === 0 && (
-              <tr>
-                <td colSpan={canManage ? 9 : 8} className="empty">
-                  Sin registros con los filtros actuales.
-                </td>
-              </tr>
-            )}
+      {!loading && records.length === 0 ? (
+        <p className="empty">Sin registros con los filtros actuales.</p>
+      ) : (
+        <>
+          <div className="table-wrap attendance-responsive-wrap">
+            <table className={`table attendance-records-table${canManage ? " has-actions" : ""}`}>
+              <colgroup>
+                <col className="col-employee" /><col className="col-date" /><col className="col-time" /><col className="col-time" />
+                <col className="col-duration" /><col className="col-duration" /><col className="col-duration" /><col className="col-status" />
+                {canManage && <col className="col-action" />}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Empleado</th>
+                  <th>Fecha</th>
+                  <th>Entrada</th>
+                  <th>Salida</th>
+                  <th>Trabajado</th>
+                  <th>Jornada esperada</th>
+                  <th>Saldo del día</th>
+                  <th>Estado</th>
+                  {canManage && <th className="table-cell-action">Acciones</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <TableSkeleton rows={5} cols={canManage ? 9 : 8} />}
+                {recordsPagination.pageItems.map((record) => (
+                  <tr key={record.id}>
+                    <td className="table-cell-name" title={`${record.employee_name ?? "—"}${record.job_role_name ? ` · ${record.job_role_name}` : ""}`}>
+                      <Link href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
+                        {record.employee_name ?? "—"}
+                      </Link>
+                      <span className="muted" style={{ marginLeft: "0.4rem", fontSize: "0.75rem" }}>
+                        {record.job_role_name ?? ""}
+                      </span>
+                    </td>
+                    <td className="num table-cell-nowrap">{formatOperationalDate(record.work_date)}</td>
+                    <td className="num table-cell-nowrap">{formatClock(record.check_in_at)}</td>
+                    <td className="num table-cell-nowrap">{formatClock(record.check_out_at)}</td>
+                    <td className="num table-cell-nowrap">{formatMinutes(record.worked_minutes)}</td>
+                    <td className="num table-cell-nowrap">{formatMinutes(record.expected_minutes)}</td>
+                    <td
+                      className="num table-cell-nowrap"
+                      style={{
+                        color:
+                          record.difference_minutes === null
+                            ? "var(--muted)"
+                            : record.difference_minutes < 0
+                              ? "#9a5b00"
+                              : record.difference_minutes > 0
+                                ? "var(--dark-green)"
+                                : "var(--muted)",
+                      }}
+                    >
+                      {formatDifference(record.difference_minutes)}
+                    </td>
+                    <td>
+                      {record.status === "OPEN" ? (
+                        <span className="badge badge-amber">Sin salida</span>
+                      ) : (
+                        <span className="badge badge-green">Completada</span>
+                      )}
+                    </td>
+                    {canManage && (
+                      <td className="table-cell-action">
+                        <div className="attendance-record-actions">
+                        <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos">
+                          <Camera size={18} />
+                        </button>
+                        <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro">
+                          <Pencil size={18} />
+                        </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="responsive-table-cards" aria-label="Detalle de marcaciones">
+            {loading && <ResponsiveCardsSkeleton label="Cargando detalle de marcaciones" />}
             {recordsPagination.pageItems.map((record) => (
-              <tr key={record.id}>
-                <td className="table-cell-name" title={`${record.employee_name ?? "—"}${record.job_role_name ? ` · ${record.job_role_name}` : ""}`}>
-                  <Link href={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
-                    {record.employee_name ?? "—"}
-                  </Link>
-                  <span className="muted" style={{ marginLeft: "0.4rem", fontSize: "0.75rem" }}>
-                    {record.job_role_name ?? ""}
-                  </span>
-                </td>
-                <td className="num table-cell-nowrap">{formatOperationalDate(record.work_date)}</td>
-                <td className="num table-cell-nowrap">{formatClock(record.check_in_at)}</td>
-                <td className="num table-cell-nowrap">{formatClock(record.check_out_at)}</td>
-                <td className="num table-cell-nowrap">{formatMinutes(record.worked_minutes)}</td>
-                <td className="num table-cell-nowrap">{formatMinutes(record.expected_minutes)}</td>
-                <td
-                  className="num table-cell-nowrap"
-                  style={{
-                    color:
-                      record.difference_minutes === null
-                        ? "var(--muted)"
-                        : record.difference_minutes < 0
-                          ? "#9a5b00"
-                          : record.difference_minutes > 0
-                            ? "var(--dark-green)"
-                            : "var(--muted)",
-                  }}
-                >
-                  {formatDifference(record.difference_minutes)}
-                </td>
-                <td>
-                  {record.status === "OPEN" ? (
-                    <span className="badge badge-amber">Sin salida</span>
-                  ) : (
-                    <span className="badge badge-green">Completada</span>
-                  )}
-                </td>
-                {canManage && (
-                  <td className="table-cell-action">
-                    <div className="attendance-record-actions">
-                    <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos">
-                      <Camera size={18} />
-                    </button>
-                    <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro">
-                      <Pencil size={18} />
-                    </button>
-                    </div>
-                  </td>
-                )}
-              </tr>
+              <article className="responsive-table-card" key={`card-${record.id}`}>
+                <div className="responsive-table-card__heading"><span className="responsive-table-card__name"><Link href={`/admin/employees/${record.employee_id}`}>{record.employee_name ?? "—"}</Link>{record.job_role_name && <span className="muted" style={{ display: "block", fontSize: "0.78rem", fontWeight: 400 }}>{record.job_role_name}</span>}</span><time className="responsive-table-card__date" dateTime={record.work_date}>{formatOperationalDate(record.work_date)}</time></div>
+                <dl className="responsive-table-card__grid">
+                  <div className="responsive-table-card__item"><dt>Entrada</dt><dd>{formatClock(record.check_in_at)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Salida</dt><dd>{formatClock(record.check_out_at)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Trabajado</dt><dd>{formatMinutes(record.worked_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
+                  <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Sin salida</span> : <span className="badge badge-green">Completada</span>}</dd></div>
+                </dl>
+                {canManage && <div className="responsive-table-card__footer attendance-record-actions"><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos"><Camera size={18} /></button><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro"><Pencil size={18} /></button></div>}
+              </article>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="responsive-table-cards" aria-label="Detalle de marcaciones">
-        {loading && <ResponsiveCardsSkeleton label="Cargando detalle de marcaciones" />}
-        {!loading && records.length === 0 && <p className="empty">Sin registros con los filtros actuales.</p>}
-        {recordsPagination.pageItems.map((record) => (
-          <article className="responsive-table-card" key={`card-${record.id}`}>
-            <div className="responsive-table-card__heading"><span className="responsive-table-card__name"><Link href={`/admin/employees/${record.employee_id}`}>{record.employee_name ?? "—"}</Link>{record.job_role_name && <span className="muted" style={{ display: "block", fontSize: "0.78rem", fontWeight: 400 }}>{record.job_role_name}</span>}</span><time className="responsive-table-card__date" dateTime={record.work_date}>{formatOperationalDate(record.work_date)}</time></div>
-            <dl className="responsive-table-card__grid">
-              <div className="responsive-table-card__item"><dt>Entrada</dt><dd>{formatClock(record.check_in_at)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Salida</dt><dd>{formatClock(record.check_out_at)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Trabajado</dt><dd>{formatMinutes(record.worked_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
-              <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Sin salida</span> : <span className="badge badge-green">Completada</span>}</dd></div>
-            </dl>
-            {canManage && <div className="responsive-table-card__footer attendance-record-actions"><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos"><Camera size={18} /></button><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro"><Pencil size={18} /></button></div>}
-          </article>
-        ))}
-      </div>
-      <TablePagination {...recordsPagination} />
+          </div>
+          <TablePagination {...recordsPagination} />
+        </>
+      )}
     </AdminShell>
   );
 }

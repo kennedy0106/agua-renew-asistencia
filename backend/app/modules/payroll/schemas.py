@@ -84,6 +84,9 @@ class ReadinessIssue(BaseModel):
     message: str
     employee_id: uuid.UUID | None = None
     attendance_record_id: uuid.UUID | None = None
+    # Fecha de la jornada implicada (p. ej. UNRESOLVED_ATTENDANCE_DAY). Opcional
+    # para no romper los bloqueos existentes que no tienen una fecha única.
+    work_date: date | None = None
 
 
 class PayrollReadinessOut(BaseModel):

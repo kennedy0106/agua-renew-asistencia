@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { ApiError, apiFetch } from "../lib/api";
 import { classifyHistoricalOperationResult } from "../lib/historicalAttendanceOperation";
 
@@ -24,6 +24,42 @@ const employees = [
   employee_code,
   active: true,
 }));
+
+const MONTHS_ES = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+];
+
+/**
+ * DateField (no es un <input type="date">): pulsa el trigger por su etiqueta,
+ * navega los meses usando el encabezado español y elige el día dentro del
+ * role=dialog del calendario portaleado. Robusto para días de otro mes/año.
+ */
+async function selectDateField(page: Page, label: string, iso: string) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const targetIndex = year * 12 + (month - 1);
+
+  await page.getByLabel(label, { exact: true }).click();
+  const calendar = page.getByRole("dialog", { name: `Calendario: ${label}` });
+  await expect(calendar).toBeVisible();
+  const header = calendar.locator(".datefield-month");
+
+  for (let guard = 0; guard < 48; guard += 1) {
+    const text = (await header.textContent())?.trim() ?? "";
+    const match = text.match(/^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)\s+(\d{4})$/);
+    if (!match) throw new Error(`Encabezado de calendario inesperado: "${text}"`);
+    const currentIndex = Number(match[2]) * 12 + MONTHS_ES.indexOf(match[1]);
+    if (currentIndex === targetIndex) break;
+    await calendar
+      .getByRole("button", { name: currentIndex < targetIndex ? "Mes siguiente" : "Mes anterior" })
+      .click();
+    if (guard === 47) throw new Error(`No se pudo navegar el calendario hacia ${iso}`);
+  }
+
+  await calendar.getByRole("button", { name: String(day), exact: true }).click();
+  await expect(calendar).toBeHidden();
+}
+
 
 test("HST-01 previsualiza, guarda y consulta normal, adicional, recuperación y mixto", async ({ page }) => {
   const history: Array<Record<string, unknown>> = [];
@@ -79,7 +115,7 @@ test("HST-01 previsualiza, guarda y consulta normal, adicional, recuperación y 
 
   await page.goto("/admin/attendance/history");
   await expect(page.getByRole("heading", { name: "Cargar horas anteriores" })).toBeVisible();
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
 
   const save = async (rowIndex: number, treatment: "NORMAL" | "ADDITIONAL" | "RECOVERY" | "MIXED", hours: string, minutes: string, approve = false) => {
     const row = page.locator("tbody tr").nth(rowIndex);
@@ -140,7 +176,7 @@ test("HST-01 envía una valoración REVIEWED y no previsualiza S/0 ni campos inc
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check();
   await row.getByLabel("Horas").fill("2");
@@ -246,7 +282,7 @@ test("A09/A14: descarta un preview tardío y el estado efectivo aprobado manda s
   });
   await page.goto("/admin/attendance/history");
   await expect(page.getByText("Cálculo automático de horas extra · S/ 31.50 · Aprobado")).toBeVisible();
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check();
   await row.getByLabel("Horas").fill("2");
@@ -286,7 +322,7 @@ test("A39/A40: cada empleado conserva su compromiso y R se reasigna al cambiar e
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const nora = page.locator("tbody tr").first();
   const adela = page.locator("tbody tr").nth(1);
   await nora.getByRole("checkbox").check();
@@ -333,7 +369,7 @@ test("U01: una respuesta perdida conserva DTO y clave, bloquea otra mutación y 
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check();
   await row.getByLabel("Horas").fill("8");
@@ -370,13 +406,13 @@ test("E01 reproducción: un rechazo MANUAL_DAY_EXISTS libera sólo ese envío y 
   });
   await page.goto("/admin/attendance/history");
   const row = page.locator("tbody tr").first();
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   await row.getByRole("checkbox").check();
   await row.getByLabel("Horas").fill("2");
   await page.getByRole("button", { name: "Previsualizar" }).click();
   await page.getByRole("button", { name: "Guardar horas" }).click();
   await expect(page.getByText("Ya existe una carga manual vigente")).toBeVisible();
-  await page.getByLabel("Fecha trabajada").fill("2026-09-11");
+  await selectDateField(page, "Fecha trabajada", "2026-09-11");
   await page.getByRole("button", { name: "Previsualizar" }).click();
   await page.getByRole("button", { name: "Guardar horas" }).click();
   await expect(page.getByText("1 carga(s) registrada(s).", { exact: true })).toBeVisible();
@@ -401,7 +437,7 @@ test("E03/E07: un 422 contractual libera sólo su clave y un error tardío no bo
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
   await page.getByRole("button", { name: "Previsualizar" }).click();
@@ -483,7 +519,7 @@ test("T422-01: un 422 Pydantic reconocido libera su clave, conserva el borrador 
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   const row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
   await page.getByRole("button", { name: "Previsualizar" }).click();
@@ -551,7 +587,7 @@ test("T422-05: tras 422 ilegible, recarga y 404, el mismo DTO y clave recibe val
     return route.fulfill({ json: [] });
   });
   await page.goto("/admin/attendance/history");
-  await page.getByLabel("Fecha trabajada").fill("2026-09-10");
+  await selectDateField(page, "Fecha trabajada", "2026-09-10");
   let row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
   await page.getByRole("button", { name: "Previsualizar" }).click();
@@ -565,7 +601,7 @@ test("T422-05: tras 422 ilegible, recarga y 404, el mismo DTO y clave recibe val
   await expect(page.getByText("Solicitud inválida: La fecha ya no es válida")).toBeVisible();
   expect(attempts[1]).toEqual(attempts[0]);
   await expect.poll(() => page.evaluate((userId) => sessionStorage.getItem(`hst01.pending-operation.v2.${userId}`), user.id)).toBeNull();
-  await page.getByLabel("Fecha trabajada").fill("2026-09-11");
+  await selectDateField(page, "Fecha trabajada", "2026-09-11");
   row = page.locator("tbody tr").first();
   await row.getByRole("checkbox").check(); await row.getByLabel("Horas").fill("2");
   await page.getByRole("button", { name: "Previsualizar" }).click();

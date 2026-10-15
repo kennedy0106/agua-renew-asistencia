@@ -77,7 +77,15 @@ class SalarySettingRepository:
         use_custom_overtime_rates: bool = False,
         custom_first_two_hours_rate: Decimal | None = None,
         custom_additional_hours_rate: Decimal | None = None,
+        commit: bool = True,
     ) -> SalarySetting:
+        """Crea una vigencia salarial.
+
+        ``commit=False`` deja la fila en la transacción abierta (solo ``flush``)
+        para que el caso de uso que invalida valoraciones y audita confirme todo
+        de forma atómica; si algo falla, el ``rollback`` no deja la vigencia ni
+        el cierre de la anterior persistidos.
+        """
         setting = SalarySetting(
             employee_id=employee_id,
             monthly_salary=monthly_salary,
@@ -88,8 +96,11 @@ class SalarySettingRepository:
             custom_additional_hours_rate=custom_additional_hours_rate,
         )
         self.db.add(setting)
-        self.db.commit()
-        self.db.refresh(setting)
+        if commit:
+            self.db.commit()
+            self.db.refresh(setting)
+        else:
+            self.db.flush()
         return setting
 
     def close_active(self, employee_id: uuid.UUID, until: date) -> None:

@@ -21,6 +21,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -176,7 +177,7 @@ jobs:
         env:
           CI: true
 
-  # Integración real del frontend React contra FastAPI + Postgres + MinIO.
+  # Integración real del frontend React contra FastAPI + Postgres + S3 local.
   e2e-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -204,7 +205,7 @@ jobs:
       VITE_API_URL: http://127.0.0.1:8000
       E2E_API_URL: http://127.0.0.1:8000
       E2E_INTEGRATION: "1"
-      OBJECT_STORE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORE_ENDPOINT: http://127.0.0.1:4566
       OBJECT_STORE_ACCESS_KEY: test-access
       OBJECT_STORE_SECRET_KEY: test-secret-key
       OBJECT_STORE_BUCKET: asistencia-evidence-test
@@ -230,15 +231,17 @@ jobs:
           uv sync --group dev
           uv run alembic upgrade head
           uv run python -m scripts.seed_e2e_kiosk
-      - name: Arrancar MinIO y FastAPI
+      - name: Arrancar S3 local y FastAPI
         working-directory: backend
         run: |
-          docker run -d --name asistencia-ci-minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=test-access \
-            -e MINIO_ROOT_PASSWORD=test-secret-key \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          # Quay dejó de permitir pull anónimo de MinIO. LocalStack ofrece el
+          # mismo contrato S3 que ejercita el backend y se fija por digest OCI.
+          docker run -d --name asistencia-ci-s3 -p 4566:4566 \
+            -e SERVICES=s3 \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            localstack/localstack@sha256:8c9756bddc44625cd6e890f5e4bcc29b045eebe108b268482b848f4f832ec153
           for i in $(seq 1 20); do
-            if curl -sf http://127.0.0.1:9000/minio/health/live; then
+            if curl -sf http://127.0.0.1:4566/_localstack/health | grep -q '"s3": "available"'; then
               break
             fi
             sleep 1

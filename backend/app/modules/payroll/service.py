@@ -562,7 +562,110 @@ class PayrollService:
                         "employee_id": str(employee.id),
                     }
                 )
+        blockers.extend(self._unresolved_attendance_blockers(period))
         return {"ready": not blockers, "blockers": blockers, "warnings": warnings}
+
+    def _unresolved_attendance_blockers(self, period: PayrollPeriod) -> list[dict]:
+        """Bloqueos por jornadas pasadas sin resolución administrativa.
+
+        Una fecha anterior al día de reporte (Lima), dentro de la relación
+        laboral y con jornada esperada > 0 debe tener algún registro que la
+        resuelva: asistencia (OPEN o COMPLETE), carga histórica activa, permiso
+        o recuperación aprobados, o un compromiso de recuperación registrado
+        para la fecha del permiso. Si no, el cierre se bloquea con
+        ``UNRESOLVED_ATTENDANCE_DAY``. No se clasifica como falta, no se
+        descuenta dinero ni se altera la base salarial: solo exige que el jefe
+        registre la resolución. Hoy y el futuro no bloquean.
+
+        Las señales se leen en lote (una consulta por tabla) para no repetir
+        consultas por empleado/día.
+        """
+        today = _report_today()
+        employees = self._employees_for_period(period)
+        if not employees:
+            return []
+        # Días candidatos: pasados, dentro de la relación laboral y del periodo.
+        candidate_days: dict[uuid.UUID, list[date]] = {}
+        for employee in employees:
+            active_from, active_to = self._employment_bounds(employee, period)
+            if active_from > active_to:
+                continue
+            last_past = min(active_to, today - timedelta(days=1))
+            if last_past < active_from:
+                continue
+            candidate_days[employee.id] = [
+                active_from + timedelta(days=offset)
+                for offset in range((last_past - active_from).days + 1)
+            ]
+        if not candidate_days:
+            return []
+        expected = ScheduleService(self.db).expected_minutes_for_days(candidate_days)
+        scheduled = {
+            key for key, minutes in expected.items() if minutes > 0
+        }
+        if not scheduled:
+            return []
+        employee_ids = list(candidate_days.keys())
+        date_from = min(day for days in candidate_days.values() for day in days)
+        date_to = max(day for days in candidate_days.values() for day in days)
+        resolved: set[tuple[uuid.UUID, date]] = set()
+        for row in self.db.execute(
+            select(AttendanceRecord.employee_id, AttendanceRecord.work_date).where(
+                AttendanceRecord.employee_id.in_(employee_ids),
+                AttendanceRecord.work_date >= date_from,
+                AttendanceRecord.work_date <= date_to,
+                AttendanceRecord.status.in_(("OPEN", "COMPLETE")),
+            )
+        ):
+            resolved.add((row.employee_id, row.work_date))
+        for row in self.db.execute(
+            select(ManualAttendanceDay.employee_id, ManualAttendanceDay.work_date).where(
+                ManualAttendanceDay.employee_id.in_(employee_ids),
+                ManualAttendanceDay.work_date >= date_from,
+                ManualAttendanceDay.work_date <= date_to,
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+        ):
+            resolved.add((row.employee_id, row.work_date))
+        for row in self.db.execute(
+            select(HourAdjustment.employee_id, HourAdjustment.adjustment_date).where(
+                HourAdjustment.employee_id.in_(employee_ids),
+                HourAdjustment.adjustment_date >= date_from,
+                HourAdjustment.adjustment_date <= date_to,
+                HourAdjustment.adjustment_type.in_(("PERMISO", "RECUPERACION")),
+                HourAdjustment.status == "APPROVED",
+                HourAdjustment.voided_at.is_(None),
+            )
+        ):
+            resolved.add((row.employee_id, row.adjustment_date))
+        for row in self.db.execute(
+            select(RecoveryCommitment.employee_id, RecoveryCommitment.permission_date).where(
+                RecoveryCommitment.employee_id.in_(employee_ids),
+                RecoveryCommitment.permission_date >= date_from,
+                RecoveryCommitment.permission_date <= date_to,
+            )
+        ):
+            resolved.add((row.employee_id, row.permission_date))
+        blockers: list[dict] = []
+        for employee_id in sorted(candidate_days, key=str):
+            for day in candidate_days[employee_id]:
+                key = (employee_id, day)
+                if key not in scheduled or key in resolved:
+                    continue
+                blockers.append(
+                    {
+                        "code": "UNRESOLVED_ATTENDANCE_DAY",
+                        # La fecha se repite en el mensaje para que sea visible
+                        # incluso con clientes que aún no leen ``work_date``.
+                        "message": (
+                            "Jornada pasada programada sin asistencia, carga, permiso ni recuperación "
+                            f"registrada (fecha: {day.isoformat()})"
+                        ),
+                        "employee_id": str(employee_id),
+                        "work_date": day.isoformat(),
+                    }
+                )
+        return blockers
 
     def create_rectification(self, period_id: uuid.UUID, reason: str, current_user_id: uuid.UUID | None) -> PayrollPeriod:
         original = self._get_period_or_404(period_id)

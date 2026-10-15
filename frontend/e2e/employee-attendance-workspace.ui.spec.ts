@@ -130,7 +130,7 @@ test("al fallar otra quincena no conserva el importe del periodo anterior", asyn
   });
 
   await page.goto("/admin/employees/employee-1");
-  await expect(page.getByText("S/ 100.00", { exact: true })).toBeVisible();
+  await expect(page.getByText("S/ 300.00", { exact: true })).toBeVisible();
   await page.getByLabel("Periodo acumulado").click();
   await page.getByRole("option", { name: "Primera quincena" }).click();
   await expect(page.locator(".employee-accrual-panel").getByRole("alert")).toBeVisible();
@@ -212,6 +212,52 @@ test("las acciones secundarias del perfil se abren en diálogos y Escape las cie
   await adjustmentForm.getByRole("button", { name: "Crear ajuste (pendiente)" }).click();
   await expect.poll(() => createdAdjustments.length).toBe(1);
   expect(createdAdjustments[0]).toMatchObject({ minutes: -420, adjustment_type: "PERMISO", reason: "Permiso autorizado" });
+});
+
+test("Nuevo ajuste sucio exige confirmar el descarte y anima la salida antes de desmontar", async ({ page }) => {
+  await page.addInitScript((sessionUser) => sessionStorage.setItem("agua-renew-admin-session-hint", JSON.stringify({ version: 1, storedAt: Date.now(), user: sessionUser })), user);
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/auth/me")) return route.fulfill({ json: user });
+    if (path.endsWith("/employees/employee-1")) return route.fulfill({ json: employee });
+    if (path.includes("/attendance-agenda")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-01", date_to: "2026-09-30", days: [] } });
+    if (path.includes("/payroll-accrual")) return route.fulfill({ json: { employee_id: employee.id, date_from: "2026-09-16", date_to: "2026-09-30", cutoff_date: "2026-09-17", base_amount: "0.00", closing_regularization_amount: "0.00", legal_daily_value: "21.6667", approved_additional_amount: "0.00", pending_additional_amount: "0.00", manual_adjustment_amount: "0.00", estimated_total: "0.00", official_total_snapshot: null, closed_period: null, daily: [] } });
+    if (path.endsWith("/recovery-commitments") || path.endsWith("/schedule/history") || path.endsWith("/salary-settings/history") || path.endsWith("/adjustments")) return route.fulfill({ json: [] });
+    if (path.endsWith("/schedule") || path.endsWith("/salary-settings")) return route.fulfill({ status: 404, json: { detail: "No configurado" } });
+    if (path.endsWith("/balance")) return route.fulfill({ json: { date_from: "2026-09-01", date_to: "2026-09-17", worked_minutes: 0, expected_minutes: 0, adjustment_minutes: 0, overtime_minutes: 0, recovery_credit_minutes: 0, balance_minutes: 0 } });
+    if (path.includes("/overtime/")) return route.fulfill({ json: [] });
+    return route.fulfill({ json: [] });
+  });
+
+  await page.goto("/admin/employees/employee-1");
+  await page.getByRole("button", { name: "Nuevo ajuste" }).click();
+  const dialog = page.getByRole("dialog", { name: "Nuevo ajuste" });
+  const backdrop = dialog.locator("..");
+  await expect(dialog).toBeVisible();
+  await expect(backdrop).toHaveAttribute("data-motion-state", "open");
+
+  // Formulario sucio: motivo con datos.
+  await dialog.getByLabel("Motivo").fill("Recuperación pendiente de validar");
+
+  // Ni Escape ni el backdrop pueden descartar un formulario sucio.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await expect(backdrop).toHaveAttribute("data-motion-state", "open");
+  await backdrop.click({ position: { x: 4, y: 4 } });
+  await expect(dialog).toBeVisible();
+  await expect(backdrop).toHaveAttribute("data-motion-state", "open");
+
+  // Cancelar la confirmación conserva el formulario abierto.
+  page.once("dialog", (confirmation) => void confirmation.dismiss());
+  await dialog.getByRole("button", { name: "Cancelar" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(backdrop).toHaveAttribute("data-motion-state", "open");
+
+  // Aceptar el descarte: primero anima a "exiting" y recién después desmonta.
+  page.once("dialog", (confirmation) => void confirmation.accept());
+  await dialog.getByRole("button", { name: "Cancelar" }).click();
+  await expect(backdrop).toHaveAttribute("data-motion-state", "exiting");
+  await expect(dialog).toBeHidden();
 });
 
 test("el calendario usa la jornada real (300) y avisa la divergencia, nunca el 480 obsoleto", async ({ page }) => {

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
-import { Check, Clock, Droplet, User } from "@/components/Icons";
+import { Check, ClipboardCheck, Clock, Droplet, Info, User } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
 type Phase =
@@ -134,10 +134,14 @@ export default function AsistenciaPage() {
   const [serverOffset, setServerOffset] = useState(0);
   const [attemptSubmitted, setAttemptSubmitted] = useState(false);
   const [lastAttemptStatus, setLastAttemptStatus] = useState<RecoverOutcome | null>(null);
+  const [idMode, setIdMode] = useState<"dni" | "code">("dni");
+  const [copiedNonce, setCopiedNonce] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const qrStreamRef = useRef<MediaStream | null>(null);
+  const idInputRef = useRef<HTMLInputElement>(null);
+  const incidentAlertRef = useRef<HTMLParagraphElement>(null);
   const captureLock = useRef(false);
   const identifyingRef = useRef(false);
   const sendingRef = useRef(false);
@@ -158,6 +162,15 @@ export default function AsistenciaPage() {
     if (videoRef.current) videoRef.current.srcObject = null;
     if (qrVideoRef.current) qrVideoRef.current.srcObject = null;
   }
+
+  useEffect(() => {
+    if (phase === "incidencia") {
+      const timer = window.setTimeout(() => {
+        incidentAlertRef.current?.focus();
+      }, 50);
+      return () => window.clearTimeout(timer);
+    }
+  }, [phase]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
@@ -798,6 +811,29 @@ export default function AsistenciaPage() {
     setError(null);
     setLastPhoto(null);
     setServerOffset(0);
+    setCopiedNonce(false);
+  }
+
+  async function copyNonceToClipboard() {
+    if (!attemptNonce) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(attemptNonce);
+      } else if (typeof document !== "undefined") {
+        const textArea = document.createElement("textarea");
+        textArea.value = attemptNonce;
+        textArea.style.position = "fixed";
+        textArea.style.opacity = "0";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+      setCopiedNonce(true);
+      window.setTimeout(() => setCopiedNonce(false), 2000);
+    } catch {
+      // Ignorar restricciones de portapapeles
+    }
   }
 
   function startQrScan() {
@@ -845,14 +881,24 @@ export default function AsistenciaPage() {
 
       <div className="kiosk-card" data-phase={phase}>
         {phase === "pairing" && (
-          <form onSubmit={handlePair} style={{ display: "grid", gap: "0.7rem" }}>
+          <form onSubmit={handlePair} className="kiosk-form" style={{ display: "grid", gap: "0.7rem" }}>
             <p className="kiosk-date">Este equipo necesita un código de emparejamiento de un solo uso.</p>
+            <label className="label" htmlFor="kiosk-pairing">
+              Código de emparejamiento
+            </label>
             <input
+              id="kiosk-pairing"
               className="input"
+              type="text"
               value={pairingCode}
               onChange={(e) => setPairingCode(e.target.value)}
               placeholder="Código emitido por administración"
               autoFocus
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              enterKeyHint="go"
             />
             {error && (
               <p className="alert alert-error" role="alert">
@@ -873,38 +919,84 @@ export default function AsistenciaPage() {
             <div className="kiosk-date" suppressHydrationWarning>
               {dateLabel}
             </div>
-            <form onSubmit={handleIdentify} style={{ display: "grid", gap: "0.7rem" }} data-testid="kiosk-identify-form">
+            <form onSubmit={handleIdentify} className="kiosk-form" style={{ display: "grid", gap: "0.7rem" }} data-testid="kiosk-identify-form">
+              <div className="kiosk-id-mode-group" role="tablist" aria-label="Modo de ingreso">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={idMode === "dni"}
+                  className={`btn btn-sm ${idMode === "dni" ? "btn-primary" : "btn-outline"} kiosk-mode-tab`}
+                  onClick={() => {
+                    setIdMode("dni");
+                    idInputRef.current?.focus();
+                  }}
+                >
+                  DNI (números)
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={idMode === "code"}
+                  className={`btn btn-sm ${idMode === "code" ? "btn-primary" : "btn-outline"} kiosk-mode-tab`}
+                  onClick={() => {
+                    setIdMode("code");
+                    idInputRef.current?.focus();
+                  }}
+                >
+                  Código / AR: (texto)
+                </button>
+              </div>
               <label className="label" htmlFor="kiosk-id">
-                DNI, código interno o QR
+                {idMode === "dni" ? "Número de DNI (8 dígitos)" : "Código de trabajador o QR"}
               </label>
               <input
+                ref={idInputRef}
                 id="kiosk-id"
                 className="input"
                 type="text"
+                inputMode={idMode === "dni" ? "numeric" : "text"}
+                enterKeyHint="go"
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
                 value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="Ej. 71112233, EMP-002 o AR:…"
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setIdentifier(val);
+                  if (/[^0-9\s]/.test(val) && idMode === "dni") {
+                    setIdMode("code");
+                  }
+                }}
+                placeholder={idMode === "dni" ? "Ej. 71112233" : "Ej. EMP-002 o AR:…"}
                 autoFocus
                 autoComplete="off"
                 disabled={identifying}
                 data-testid="kiosk-identifier"
-                style={{ fontSize: "1rem", padding: "0.7rem 0.85rem" }}
               />
               {error && (
                 <p className="alert alert-error" role="alert">
-                  <Droplet size={15} style={{ marginTop: 2, flexShrink: 0 }} />
-                  {error}
+                  <Droplet size={15} />
+                  <span>{error}</span>
                 </p>
               )}
               <button type="submit" className="btn btn-primary kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
                 {identifying ? <Spinner size={18} /> : <User size={18} />}
                 {identifying ? "Verificando…" : "Identificarme"}
               </button>
-              <button type="button" className="btn btn-outline kiosk-btn" onClick={startQrScan} disabled={identifying} data-testid="kiosk-scan-qr">
+              <button
+                type="button"
+                className="btn btn-outline kiosk-btn"
+                onClick={startQrScan}
+                disabled={identifying || !qrSupported}
+                data-testid="kiosk-scan-qr"
+              >
                 Escanear QR con cámara trasera
               </button>
               {!qrSupported && (
-                <p className="muted">El escaneo de QR no está disponible aquí. Use el recuadro AR:…</p>
+                <div className="alert alert-notice kiosk-qr-notice" role="status">
+                  <Info size={16} />
+                  <span>El escaneo de QR no está disponible en este dispositivo. Use el teclado arriba.</span>
+                </div>
               )}
             </form>
           </>
@@ -926,7 +1018,7 @@ export default function AsistenciaPage() {
         )}
 
         {cameraOpen && info && (
-          <>
+          <div className="kiosk-camera-view">
             <div className="kiosk-employee">
               <div className="avatar-lg">{initials}</div>
               <div>
@@ -945,15 +1037,17 @@ export default function AsistenciaPage() {
               </p>
             )}
             {phase === "abriendo_camara" && <p className="muted">Abriendo cámara…</p>}
-            {(phase === "video_listo" || phase === "cuenta_regresiva") && (
-              <button className="btn btn-primary kiosk-btn" type="button" onClick={captureNow} disabled={captureLock.current} data-testid="kiosk-capture-now">
-                {info.marking_action === "CHECK_OUT" ? "Registrar ahora" : "Tomar foto ahora"}
+            <div className="kiosk-camera-actions">
+              {(phase === "video_listo" || phase === "cuenta_regresiva") && (
+                <button className="btn btn-primary kiosk-btn" type="button" onClick={captureNow} disabled={captureLock.current} data-testid="kiosk-capture-now">
+                  {info.marking_action === "CHECK_OUT" ? "Registrar ahora" : "Tomar foto ahora"}
+                </button>
+              )}
+              <button className="btn btn-outline kiosk-btn" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
+                Cancelar
               </button>
-            )}
-            <button className="btn btn-outline btn-sm" onClick={reset} type="button" data-testid="kiosk-cancel-camera">
-              Cancelar
-            </button>
-          </>
+            </div>
+          </div>
         )}
 
         {phase === "enviando" && (
@@ -963,10 +1057,17 @@ export default function AsistenciaPage() {
         )}
 
         {phase === "incidencia" && (
-          <>
+          <div className="kiosk-incident-view">
             {error && (
-              <p className="alert alert-error" role="alert" data-testid="kiosk-incident-message">
-                {error}
+              <p
+                ref={incidentAlertRef}
+                tabIndex={-1}
+                className="alert alert-error kiosk-incident-alert"
+                role="alert"
+                data-testid="kiosk-incident-message"
+              >
+                <Droplet size={15} />
+                <span>{error}</span>
               </p>
             )}
             {attemptSubmitted && (
@@ -975,75 +1076,89 @@ export default function AsistenciaPage() {
               </p>
             )}
             {attemptNonce && (
-              <p className="muted" data-testid="kiosk-attempt-nonce">
-                Referencia para revisión: {attemptNonce}
-              </p>
+              <div className="kiosk-nonce-row">
+                <p className="muted kiosk-nonce-text" data-testid="kiosk-attempt-nonce">
+                  Referencia para revisión: <code className="kiosk-nonce-code">{attemptNonce}</code>
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm kiosk-nonce-copy-btn"
+                  onClick={() => void copyNonceToClipboard()}
+                  title="Copiar referencia al portapapeles"
+                  aria-label="Copiar código de referencia"
+                >
+                  {copiedNonce ? <Check size={14} /> : <ClipboardCheck size={14} />}
+                  <span>{copiedNonce ? "Copiado" : "Copiar código"}</span>
+                </button>
+              </div>
             )}
-            {info && (
-              <button
-                className="btn btn-primary kiosk-btn"
-                type="button"
-                onClick={() => void consultAttempt()}
-                disabled={consulting || sending}
-                data-testid="kiosk-consult-attempt"
-              >
-                {consulting ? "Consultando…" : "Consultar este intento"}
-              </button>
-            )}
-            {canComplete && info && (
-              <button
-                className="btn btn-primary kiosk-btn"
-                type="button"
-                onClick={() => void completeAttempt()}
-                disabled={consulting || sending}
-                data-testid="kiosk-complete-attempt"
-              >
-                Completar este intento
-              </button>
-            )}
-            {lastPhoto && info && (
-              <button
-                className="btn btn-primary kiosk-btn"
-                type="button"
-                onClick={() => void resendSamePhoto()}
-                disabled={consulting || sending}
-                data-testid="kiosk-resend"
-              >
-                Reenviar la misma foto
-              </button>
-            )}
-            {canResolveExpired && (
-              <button
-                className="btn btn-outline kiosk-btn"
-                type="button"
-                onClick={() => void resolveKioskAttempt("TOKEN_EXPIRED")}
-                disabled={consulting || sending}
-                data-testid="kiosk-resolve-attempt"
-              >
-                Cerrar intento vencido
-              </button>
-            )}
-            {attemptSubmitted && !canRestartResolved && (
-              <button
-                className="btn btn-outline kiosk-btn"
-                type="button"
-                onClick={() => void resolveKioskAttempt("USER_CANCELLED")}
-                disabled={consulting || sending}
-                data-testid="kiosk-cancel-attempt"
-              >
-                Cerrar este intento
-              </button>
-            )}
-            {canRestartResolved ? (
-              <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
-                Volver al inicio
-              </button>
-            ) : (
-              <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
-                Tomar otra foto
-              </button>
-            )}
-          </>
+            <div className="kiosk-incident-actions">
+              {info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void consultAttempt()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-consult-attempt"
+                >
+                  {consulting ? "Consultando…" : "Consultar este intento"}
+                </button>
+              )}
+              {canComplete && info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void completeAttempt()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-complete-attempt"
+                >
+                  Completar este intento
+                </button>
+              )}
+              {lastPhoto && info && (
+                <button
+                  className="btn btn-primary kiosk-btn"
+                  type="button"
+                  onClick={() => void resendSamePhoto()}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-resend"
+                >
+                  Reenviar la misma foto
+                </button>
+              )}
+              {canResolveExpired && (
+                <button
+                  className="btn btn-outline kiosk-btn"
+                  type="button"
+                  onClick={() => void resolveKioskAttempt("TOKEN_EXPIRED")}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-resolve-attempt"
+                >
+                  Cerrar intento vencido
+                </button>
+              )}
+              {attemptSubmitted && !canRestartResolved && (
+                <button
+                  className="btn btn-outline kiosk-btn"
+                  type="button"
+                  onClick={() => void resolveKioskAttempt("USER_CANCELLED")}
+                  disabled={consulting || sending}
+                  data-testid="kiosk-cancel-attempt"
+                >
+                  Cerrar este intento
+                </button>
+              )}
+              {canRestartResolved ? (
+                <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
+                  Volver al inicio
+                </button>
+              ) : (
+                <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
+                  Tomar otra foto
+                </button>
+              )}
+            </div>
+          </div>
         )}
 
         {phase === "confirmado" && record && (

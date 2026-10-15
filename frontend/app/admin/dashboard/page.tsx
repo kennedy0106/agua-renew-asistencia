@@ -62,6 +62,12 @@ export default function AdminDashboardPage() {
     ...openEntries.map((record) => ({ id: `open-${record.id}`, title: record.employee_name ?? "Empleado sin nombre", detail: `Entrada registrada a las ${formatClock(record.check_in_at)}`, status: "Entrada abierta" })),
   ];
 
+  const handleFocusIncidents = () => {
+    window.requestAnimationFrame(() => {
+      document.getElementById("incidents-title")?.focus();
+    });
+  };
+
   return (
     <AdminShell title="Resumen de asistencia" subtitle={user ? `${formatLongDate()} · ${user.username}` : formatLongDate()}>
       <section className="dashboard-statusbar" aria-label="Estado de actualización">
@@ -99,20 +105,20 @@ export default function AdminDashboardPage() {
             <aside className="dashboard-attention" aria-label="Resumen de atención">
               <div className="dashboard-attention-icon"><Alert size={19} /></div>
               <div><span>Requiere atención</span><strong>{data.summary.no_entry_today + data.summary.open_entries}</strong><p>{data.summary.no_entry_today} sin entrada · {data.summary.open_entries} jornadas abiertas</p></div>
-              <Link href="#incidencias" prefetch={false} className="dashboard-attention-link" aria-label="Ver incidencias"><ChevronRight size={18} /></Link>
+              <Link href="#incidencias" prefetch={false} className="dashboard-attention-link" aria-label="Ver incidencias" onClick={handleFocusIncidents}><ChevronRight size={18} /></Link>
             </aside>
           </section>
 
           <section className="dashboard-metrics" aria-label="Indicadores de la jornada">
             <StatCard href="/admin/employees" label="Empleados activos" value={data.summary.employees_active} icon={<Users size={16} />} tone="blue" />
-            <StatCard href="#incidencias" label="Sin entrada hoy" value={data.summary.no_entry_today} icon={<Alert size={16} />} tone="red" />
-            <StatCard href="#incidencias" label="Entradas abiertas" value={data.summary.open_entries} icon={<ClipboardCheck size={16} />} tone="blue" />
+            <StatCard href="#incidencias" label="Sin entrada hoy" value={data.summary.no_entry_today} icon={<Alert size={16} />} tone="red" onClick={handleFocusIncidents} />
+            <StatCard href="#incidencias" label="Entradas abiertas" value={data.summary.open_entries} icon={<ClipboardCheck size={16} />} tone="blue" onClick={handleFocusIncidents} />
             <StatCard href="/admin/attendance" label="Con salida hoy" value={data.summary.checked_out_today} icon={<Chart size={16} />} tone="green" />
           </section>
 
           <div className="dashboard-workspace">
-            <section id="incidencias" className="operations-panel surface-material" aria-labelledby="incidents-title">
-              <div className="operations-panel-head"><div><h2 id="incidents-title">Incidencias por resolver</h2><p>Personas sin entrada y jornadas que siguen abiertas.</p></div>{incidents.length > 0 && <span className="count-badge">{incidents.length}</span>}</div>
+            <section id="incidencias" className="operations-panel surface-material" aria-labelledby="incidents-title" tabIndex={-1}>
+              <div className="operations-panel-head"><div><h2 id="incidents-title" tabIndex={-1} className="outline-none">Incidencias por resolver</h2><p>Personas sin entrada y jornadas que siguen abiertas.</p></div>{incidents.length > 0 && <span className="count-badge">{incidents.length}</span>}</div>
               {incidents.length > 0 ? (
                 <div className="operations-list">
                   {incidents.slice(0, 6).map((incident) => (
@@ -149,6 +155,6 @@ export default function AdminDashboardPage() {
   );
 }
 
-function StatCard({ href, label, value, icon, tone, featured = false }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red"; featured?: boolean }) {
-  return <Link href={href} prefetch={false} className={`stat-card surface-material stat-card--${tone}${featured ? " stat-card--featured" : ""}`} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
+function StatCard({ href, label, value, icon, tone, featured = false, onClick }: { href: string; label: string; value: number; icon: React.ReactNode; tone: "blue" | "green" | "red"; featured?: boolean; onClick?: () => void }) {
+  return <Link href={href} prefetch={false} onClick={onClick} className={`stat-card surface-material stat-card--${tone}${featured ? " stat-card--featured" : ""}`} aria-label={`${label}: ${value}. Abrir detalle`}><div className="stat-label">{icon}{label}</div><div className="stat-value">{value}</div><span className="stat-action">Ver detalle <ChevronRight size={14} /></span></Link>;
 }

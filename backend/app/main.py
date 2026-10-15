@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.object_store import ObjectStoreError, get_object_store
+from app.core.request_timing import SummaryTimingMiddleware
 from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
@@ -63,6 +64,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Instrumentación opt-in (flag apagado por defecto) solo para el resumen.
+app.add_middleware(SummaryTimingMiddleware)
 
 
 @app.get("/health")

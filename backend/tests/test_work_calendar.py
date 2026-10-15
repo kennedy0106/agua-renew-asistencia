@@ -4,6 +4,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
+
+import app.modules.payroll.service as payroll_service
 from app.modules.adjustments.models import HourAdjustment
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.manual_models import ManualAttendanceDay
@@ -399,8 +401,11 @@ def test_approved_valuation_reopens_to_pending_when_hours_change_in_open_period(
     assert reopened.inputs_fingerprint is None
 
 
-def test_approved_valuation_in_closed_period_blocks_hours_change(client, db_session):
+def test_approved_valuation_in_closed_period_blocks_hours_change(client, db_session, monkeypatch):
     """Un pago cerrado no se modifica en silencio: exige rectificación explícita."""
+    # El cierre no debe acumular bloqueos por jornadas pasadas sin resolución:
+    # se fija el día de reporte al inicio del periodo para aislar esta regla.
+    monkeypatch.setattr(payroll_service, "_report_today", lambda: date(2026, 8, 1))
     employee_id, record = _special_day_with_attendance(client, db_session)
     value = _preview_and_approve(client, employee_id, key="cal-recompute-closed-approve")
 

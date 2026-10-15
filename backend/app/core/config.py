@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     decolecta_api_key: str = ""
     decolecta_timeout_seconds: float = 5.0
 
+    # --- Instrumentación de tiempos (opt-in, local) ---
+    # Apagado por defecto. Cuando se activa, GET /api/v1/attendance/summary
+    # responde con una cabecera Server-Timing numérica (sin datos sensibles).
+    summary_timing_enabled: bool = False
+
     @field_validator("secret_key")
     @classmethod
     def _reject_insecure_secret_in_production(cls, value: str) -> str:
