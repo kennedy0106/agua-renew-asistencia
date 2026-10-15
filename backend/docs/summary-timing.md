@@ -1,18 +1,38 @@
-# Attendance summary timing (opt-in, local)
+# Read endpoint timing (opt-in)
 
-Local timing instrumentation for `GET /api/v1/attendance/summary` only. Disabled
-by default; when enabled it adds one numeric `Server-Timing` response header
-when the response flows through the instrumented middleware.
+Numeric timing instrumentation for four existing GET routes. Disabled by
+default; when enabled it adds one `Server-Timing` response header when the
+response flows through the instrumented middleware. Bodies, authentication,
+queries and business-data behavior are unchanged.
+
+| GET route | Metric prefix |
+| --- | --- |
+| `/api/v1/attendance/summary` | `summary_` (unchanged) |
+| `/api/v1/employees/{employee_id}/adjustments` | `api_` |
+| `/api/v1/employees/{employee_id}/balance` | `api_` |
+| `/api/v1/work-calendar/employees/{employee_id}/days` | `api_` |
+
+Employee IDs must have the canonical hyphenated UUID shape. Other paths,
+methods, invalid UUID shapes and trailing/suffixed paths are not instrumented;
+normal router handling remains unchanged. Query parameters do not affect
+route matching. Use explicit date bounds when measuring balance/calendar.
 
 ## Enable
 
 Set `SUMMARY_TIMING_ENABLED=1` (or `true`) in the backend environment and
-restart the process. Default is `false`; with the flag off the route is
-completely unchanged (no header, no instrumentation, no eager DB checkout).
+restart the process. The existing flag controls all four routes; no additional
+flag or environment change is needed when it is already enabled. Default is
+`false`; with the flag off each route is completely unchanged (no header, no instrumentation, no eager DB checkout).
 
 ## Header contract
 
+Summary (existing contract):
+
 `Server-Timing: summary_req;dur=<ms>, summary_dbconn;dur=<ms>, summary_dbsql;dur=<ms>`
+
+The three employee reads use the same measurement boundaries:
+
+`Server-Timing: api_req;dur=<ms>, api_dbconn;dur=<ms>, api_dbsql;dur=<ms>`
 
 When the header is present, all three metrics are present and their durations
 are nonnegative milliseconds. The header is **not** guaranteed on every
@@ -49,7 +69,7 @@ successful statements contribute.
 
 ## Implementation boundaries
 
-- The ASGI middleware is scoped to method `GET` and the exact path. It stores
+- The ASGI middleware is scoped to method `GET` and the exact allowlist. It stores
   the accumulator in `scope["state"]`; `get_db` reads it from `Request.state`.
   The scope dict is the same object across the ASGI middleware and the sync
   dependency thread, so no `ContextVar` propagation is assumed.
@@ -107,10 +127,28 @@ use them only in an already isolated development environment:
 Focused runners (offline, no dependency install):
 
 ```bash
-cd backend && uv run --no-sync --offline pytest tests/test_attendance_summary_performance.py tests/test_attendance_summary_timing.py -q
+cd backend && uv run --no-sync --offline pytest tests/test_employee_read_timing.py tests/test_attendance_summary_performance.py tests/test_attendance_summary_timing.py -q
 cd backend && uv run --no-sync --offline pytest tests/test_attendance_admin.py -q
 cd backend && uv run --no-sync --offline pytest
 ```
 
-This change is preparation only. No deploy, production setting change, SQL
-optimization, migration or production measurement is included.
+## Interpreting measurements
+
+`api_req` has the same boundary as `summary_req`: request processing through
+response headers, including authentication and serialization, not full-body
+browser time. `api_dbconn` includes checkout/pre-ping; `api_dbsql` sums successful
+cursor executions, including authentication, but excludes result fetching and
+is not database CPU time. These are durations, not statement counts.
+
+A zero connection duration also means acquisition might not have occurred,
+just as for the summary contract. Unhandled 500 responses may lack the header.
+No metrics include employee identifiers or query strings. No logging, SQL text,
+parameters, business data, cookies or credentials are added.
+
+Measure sequential authenticated same-origin GETs with explicit date bounds,
+drain bodies without exporting their content, and retain only status and numeric
+timings. The browser total minus `api_req` is not pure network latency; independent
+medians do not add. Three/five samples do not establish a reliable percentile
+or a controlled A/B comparison. CORS/Timing-Allow-Origin are not changed.
+
+The code does not perform deployment, migrations or database maintenance.

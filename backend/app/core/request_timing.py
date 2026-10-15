@@ -1,4 +1,7 @@
-"""Instrumentación de tiempos local y opcional para el resumen de asistencia.
+"""Instrumentación opcional del resumen y tres lecturas administrativas.
+
+Las lecturas de ajustes, balance y calendario usan métricas ``api_*`` con los
+mismos límites que las métricas ``summary_*`` del resumen.
 
 Solo se emiten números: la cabecera ``Server-Timing`` lleva duraciones en
 milisegundos. Nunca se registran SQL, parámetros, identidades, cookies, URLs ni
@@ -22,6 +25,7 @@ conexión al pool.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -36,6 +40,14 @@ STATE_KEY = "summary_timing"
 REQUEST_METRIC = "summary_req"
 CONNECTION_METRIC = "summary_dbconn"
 SQL_METRIC = "summary_dbsql"
+
+SUMMARY_METRICS = (REQUEST_METRIC, CONNECTION_METRIC, SQL_METRIC)
+READ_METRICS = ("api_req", "api_dbconn", "api_dbsql")
+_UUID_PATH = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_READ_PATHS = (
+    re.compile(rf"/api/v1/employees/{_UUID_PATH}/(?:adjustments|balance)"),
+    re.compile(rf"/api/v1/work-calendar/employees/{_UUID_PATH}/days"),
+)
 
 _HEADER_NAME = "Server-Timing"
 
@@ -153,14 +165,15 @@ class SummaryTiming:
     def request_seconds(self) -> float:
         return max(0.0, _now() - self.request_started)
 
-    def server_timing_header(self) -> str:
+    def server_timing_header(self, metric_names: tuple[str, str, str] = SUMMARY_METRICS) -> str:
+        request_metric, connection_metric, sql_metric = metric_names
         request_ms = self.request_seconds() * 1000.0
         connection_ms = (self.acquire_seconds or 0.0) * 1000.0
         sql_ms = self.sql_seconds * 1000.0
         return (
-            f"{REQUEST_METRIC};dur={request_ms:.3f}, "
-            f"{CONNECTION_METRIC};dur={connection_ms:.3f}, "
-            f"{SQL_METRIC};dur={sql_ms:.3f}"
+            f"{request_metric};dur={request_ms:.3f}, "
+            f"{connection_metric};dur={connection_ms:.3f}, "
+            f"{sql_metric};dur={sql_ms:.3f}"
         )
 
 
@@ -170,13 +183,18 @@ def collector_from_request(request: Any) -> SummaryTiming | None:
 
 
 def _is_target(scope: dict) -> bool:
-    return scope.get("type") == "http" and scope.get("method") == "GET" and scope.get("path") == TARGET_PATH
+    path = scope.get("path", "")
+    return (
+        scope.get("type") == "http"
+        and scope.get("method") == "GET"
+        and (path == TARGET_PATH or any(pattern.fullmatch(path) for pattern in _READ_PATHS))
+    )
 
 
 class SummaryTimingMiddleware:
-    """Middleware ASGI que mide solo la ruta y el flag configurados.
+    """Middleware ASGI que mide solo los GET permitidos y con el flag activo.
 
-    Con el flag apagado o fuera de la ruta exacta no crea acumulador ni agrega
+    Con el flag apagado o fuera de las rutas exactas no crea acumulador ni agrega
     cabecera: la petición pasa sin instrumentación.
     """
 
@@ -189,12 +207,13 @@ class SummaryTimingMiddleware:
             return
 
         collector = SummaryTiming()
+        metric_names = SUMMARY_METRICS if scope["path"] == TARGET_PATH else READ_METRICS
         scope.setdefault("state", {})[STATE_KEY] = collector
 
         async def _send(message: dict) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                headers.append(_HEADER_NAME, collector.server_timing_header())
+                headers.append(_HEADER_NAME, collector.server_timing_header(metric_names))
             await send(message)
 
         await self.app(scope, receive, _send)
