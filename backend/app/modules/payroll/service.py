@@ -21,6 +21,7 @@ Reglas del MVP:
 import hashlib
 import json
 import uuid
+from collections import defaultdict
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -36,7 +37,6 @@ from app.modules.adjustments.repository import AdjustmentRepository
 from app.modules.attendance.models import AttendanceRecord
 from app.modules.attendance.totals import worked_minutes as consolidated_worked_minutes
 from app.modules.attendance.manual_models import ManualAttendanceDay, ManualRecoveryApplication, RecoveryCommitment
-from app.modules.attendance.totals import recovery_credit_components
 from app.modules.attendance.service import AttendanceService
 from app.modules.audit.repository import AuditRepository
 from app.modules.employees.models import Employee
@@ -235,9 +235,19 @@ class PayrollService:
         schedules = ScheduleService(self.db)
         adjustments = AdjustmentRepository(self.db)
         overtime = OvertimeService(self.db)
+        employees = self._employees_for_period(period)
+        days_by_employee = {
+            employee.id: self._employment_days(employee, period) for employee in employees
+        }
+        # Sueldo y jornada vigentes por empleado/día resueltos en una sola lectura
+        # cada uno: antes había una consulta escalar por cada día del tramo.
+        salary_by_day = salaries.get_for_days(days_by_employee, preserve_scalar_ties=True)
+        expected_by_day = schedules.expected_minutes_for_days(days_by_employee, preserve_scalar_ties=True)
         snapshots: list[dict] = []
-        for employee in self._employees_for_period(period):
-            base, reference_salary, missing_salary_days = self._base_for_period(employee, period, salaries)
+        for employee in employees:
+            base, reference_salary, missing_salary_days = self._base_for_period(
+                employee, period, salaries, salary_by_day
+            )
             if reference_salary is None:
                 continue
             valued_overtime = overtime.value(employee.id, period.start_date, period.end_date)
@@ -254,7 +264,9 @@ class PayrollService:
                     "employee_id": employee.id,
                     "monthly_salary": reference_salary.monthly_salary,
                     "worked_minutes": self._sum_worked_minutes(employee.id, period),
-                    "expected_minutes": self._sum_expected_minutes(schedules, employee, period),
+                    "expected_minutes": self._sum_expected_minutes(
+                        employee, days_by_employee.get(employee.id, []), expected_by_day
+                    ),
                     "overtime_minutes": overtime_minutes,
                     "overtime_amount": overtime_amount,
                     "special_day_amount": special_days["amount"],
@@ -283,15 +295,27 @@ class PayrollService:
         Dos cargas con el mismo W no son equivalentes si cambia su tratamiento,
         su versión o el compromiso origen de R.
         """
-        rows = self.db.scalars(select(ManualAttendanceDay).where(
+        rows = list(self.db.scalars(select(ManualAttendanceDay).where(
             ManualAttendanceDay.employee_id == employee_id,
             ManualAttendanceDay.work_date >= period.start_date,
             ManualAttendanceDay.work_date <= period.end_date,
             ManualAttendanceDay.voided_at.is_(None),
-        ))
+        )))
+        if not rows:
+            return []
+        # Las aplicaciones de R se leen en lote: antes era una consulta por carga.
+        allocations_by_day: dict[uuid.UUID, list[tuple]] = defaultdict(list)
+        for manual_day_id, commitment_id, minutes in self.db.execute(
+            select(
+                ManualRecoveryApplication.manual_day_id,
+                ManualRecoveryApplication.commitment_id,
+                ManualRecoveryApplication.minutes,
+            ).where(ManualRecoveryApplication.manual_day_id.in_([row.id for row in rows]))
+        ):
+            allocations_by_day[manual_day_id].append((commitment_id, minutes))
         output = []
         for row in sorted(rows, key=lambda item: str(item.id)):
-            allocations = self.db.execute(select(ManualRecoveryApplication.commitment_id, ManualRecoveryApplication.minutes).where(ManualRecoveryApplication.manual_day_id == row.id)).all()
+            allocations = allocations_by_day.get(row.id, [])
             output.append({"id": str(row.id), "version": row.version, "work_date": row.work_date.isoformat(), "W": row.worked_minutes_net, "N": row.normal_minutes, "P": row.additional_minutes, "R": row.recovery_minutes, "payment_status": row.payment_status, "allocations": sorted(({"commitment_id": str(commitment_id), "minutes": minutes} for commitment_id, minutes in allocations), key=lambda item: item["commitment_id"])})
         return output
 
@@ -306,15 +330,28 @@ class PayrollService:
             RecoveryCommitment.permission_date >= period.start_date,
             RecoveryCommitment.permission_date <= period.end_date,
         ).order_by(RecoveryCommitment.id)))
+        if not commitments:
+            return []
+        # Componentes y aplicaciones en lote: antes eran 6 consultas por
+        # compromiso.  La importación es diferida para no acoplar el arranque del
+        # módulo al helper compartido de asistencia.
+        from app.modules.attendance.totals import recovery_credit_components_for_commitments
+        components_by_commitment = recovery_credit_components_for_commitments(self.db, commitments)
+        applications_by_commitment: dict[uuid.UUID, list[tuple]] = defaultdict(list)
+        for application, day in self.db.execute(
+            select(ManualRecoveryApplication, ManualAttendanceDay)
+            .join(ManualAttendanceDay, ManualAttendanceDay.id == ManualRecoveryApplication.manual_day_id)
+            .where(
+                ManualRecoveryApplication.commitment_id.in_([item.id for item in commitments]),
+                ManualAttendanceDay.voided_at.is_(None),
+            )
+            .order_by(ManualRecoveryApplication.manual_day_id, ManualRecoveryApplication.id)
+        ):
+            applications_by_commitment[application.commitment_id].append((application, day))
         result = []
         for commitment in commitments:
-            components = recovery_credit_components(self.db, commitment)
-            applications = self.db.execute(
-                select(ManualRecoveryApplication, ManualAttendanceDay)
-                .join(ManualAttendanceDay, ManualAttendanceDay.id == ManualRecoveryApplication.manual_day_id)
-                .where(ManualRecoveryApplication.commitment_id == commitment.id, ManualAttendanceDay.voided_at.is_(None))
-                .order_by(ManualRecoveryApplication.manual_day_id, ManualRecoveryApplication.id)
-            ).all()
+            components = components_by_commitment[commitment.id]
+            applications = applications_by_commitment.get(commitment.id, [])
             result.append({
                 "commitment_id": str(commitment.id), "permission_date": commitment.permission_date.isoformat(),
                 "agreed_minutes": commitment.agreed_minutes, "covered_before": commitment.covered_before,
@@ -398,7 +435,18 @@ class PayrollService:
             min(period.end_date, employee.termination_date or period.end_date),
         )
 
-    def _prorated_base(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
+    @classmethod
+    def _employment_days(cls, employee: Employee, period: PayrollPeriod) -> list[date]:
+        """Días calendario del tramo dentro de la relación laboral (lista vacía si no aplica)."""
+        active_from, active_to = cls._employment_bounds(employee, period)
+        if active_from > active_to:
+            return []
+        return [
+            active_from + timedelta(days=offset)
+            for offset in range((active_to - active_from).days + 1)
+        ]
+
+    def _prorated_base(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService, salary_by_day: dict):
         """Base del periodo mensual con el modelo de 30 días legales (D.S. 012-92-TR, art. 2).
 
         - **Mes calendario completo**: cada fecha calendario aporta su treintavo
@@ -424,7 +472,7 @@ class PayrollService:
         missing_salary_days = 0
         day = active_from
         while day <= active_to:
-            salary = salaries.get_for_date(employee.id, day)
+            salary = salary_by_day.get((employee.id, day))
             if salary is None:
                 missing_salary_days += 1
             else:
@@ -440,9 +488,9 @@ class PayrollService:
             total += (Decimal(30) - Decimal(month_days)) * daily_value(closing.monthly_salary)
         return total.quantize(_CENTS, rounding=ROUND_HALF_UP), reference, missing_salary_days
 
-    def _base_for_period(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService):
+    def _base_for_period(self, employee: Employee, period: PayrollPeriod, salaries: SalaryService, salary_by_day: dict):
         if period.period_kind == PERIOD_MONTHLY:
-            return self._prorated_base(employee, period, salaries)
+            return self._prorated_base(employee, period, salaries, salary_by_day)
         month_start = date(period.start_date.year, period.start_date.month, 1)
         month_end = date(period.start_date.year, period.start_date.month, monthrange(period.start_date.year, period.start_date.month)[1])
         # CAL-04 deliberately does not invent allocation for hires, exits or
@@ -464,26 +512,10 @@ class PayrollService:
         return fortnight_halves(monthly_salary)
 
     def _sum_worked_minutes(self, employee_id: uuid.UUID, period: PayrollPeriod) -> int:
-        total = self.db.scalar(
-            select(func.coalesce(func.sum(AttendanceRecord.worked_minutes), 0)).where(
-                AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.status == "COMPLETE",
-                AttendanceRecord.work_date >= period.start_date,
-                AttendanceRecord.work_date <= period.end_date,
-            )
-        )
         return consolidated_worked_minutes(self.db, employee_id, period.start_date, period.end_date)
 
-    def _sum_expected_minutes(self, schedules: ScheduleService, employee: Employee, period: PayrollPeriod) -> int:
-        active_from, active_to = self._employment_bounds(employee, period)
-        if active_from > active_to:
-            return 0
-        total = 0
-        day = active_from
-        while day <= active_to:
-            total += schedules.expected_minutes(employee.id, day)
-            day += timedelta(days=1)
-        return total
+    def _sum_expected_minutes(self, employee: Employee, days: list[date], expected_by_day: dict) -> int:
+        return sum(int(expected_by_day.get((employee.id, day), 0)) for day in days)
 
     def readiness(self, period_id: uuid.UUID) -> dict:
         period = self._get_period_or_404(period_id)
@@ -491,15 +523,18 @@ class PayrollService:
         warnings: list[dict] = []
         salaries = SalaryService(self.db)
         schedules = ScheduleService(self.db)
-        for employee in self._employees_for_period(period):
-            active_from, active_to = self._employment_bounds(employee, period)
-            day = active_from
-            missing_salary = False
-            missing_schedule = False
-            while day <= active_to:
-                missing_salary = missing_salary or salaries.get_for_date(employee.id, day) is None
-                missing_schedule = missing_schedule or schedules.repo.get_for_date(employee.id, day) is None
-                day += timedelta(days=1)
+        payroll_employees = self._employees_for_period(period)
+        days_by_employee = {
+            employee.id: self._employment_days(employee, period)
+            for employee in payroll_employees
+        }
+        # Sueldo y jornada por empleado/día en una sola lectura cada uno.
+        salary_by_day = salaries.get_for_days(days_by_employee)
+        schedule_by_day = schedules.schedules_for_days(days_by_employee)
+        for employee in payroll_employees:
+            days = days_by_employee[employee.id]
+            missing_salary = any(salary_by_day.get((employee.id, day)) is None for day in days)
+            missing_schedule = any(schedule_by_day.get((employee.id, day)) is None for day in days)
             if missing_salary:
                 blockers.append({"code": "MISSING_SALARY", "message": "Empleado sin sueldo para parte del periodo", "employee_id": str(employee.id)})
             if missing_schedule:
@@ -547,7 +582,7 @@ class PayrollService:
             code = "SPECIAL_DAY_OVERTIME_REVIEW_REQUIRED" if item.status == VALUATION_REVIEW_REQUIRED else "PENDING_SPECIAL_DAY_VALUATION"
             blockers.append({"code": code, "message": "La valoración de descanso o feriado requiere revisión", "employee_id": str(item.employee_id)})
         overtime = OvertimeService(self.db)
-        for employee in self._employees_for_period(period):
+        for employee in payroll_employees:
             valued = overtime.value(employee.id, period.start_date, period.end_date)
             unpaid = [
                 item
@@ -792,6 +827,10 @@ class PayrollService:
         daily: list[dict] = []
         employee_summaries: list[dict] = []
 
+        # Días, sueldo y jornada de todos los empleados en lote: antes había una
+        # lectura escalar de jornada y de crédito de recuperación por cada día.
+        bounds: dict[uuid.UUID, tuple[date, date]] = {}
+        days_by_employee: dict[uuid.UUID, list[date]] = {}
         for record in records:
             employee = record.employee
             if employee is None:
@@ -799,6 +838,19 @@ class PayrollService:
             active_from, active_to = self._employment_bounds(employee, period)
             if active_from > active_to:
                 continue
+            bounds[record.employee_id] = (active_from, active_to)
+            days_by_employee[record.employee_id] = self._employment_days(employee, period)
+        salary_by_day = SalaryService(self.db).get_for_days(days_by_employee)
+        expected_by_day = schedules.expected_minutes_for_days(days_by_employee, preserve_scalar_ties=True)
+        # El sueldo vigente por fecha se resuelve en una sola lectura para todo el
+        # reporte: es una vista viva y un aumento intrames debe valorar cada
+        # jornada con el sueldo de esa fecha, sin tocar snapshots ni CLOSED.
+
+        for record in records:
+            employee = record.employee
+            if employee is None or record.employee_id not in bounds:
+                continue
+            active_from, active_to = bounds[record.employee_id]
 
             attendance_by_day = self._attendance_by_day(employee.id, active_from, active_to)
             approved_by_day = self._approved_adjustments_by_day(employee.id, active_from, active_to)
@@ -819,25 +871,21 @@ class PayrollService:
                     SpecialDayValuation.voided_at.is_(None),
                 ))
             }
-            period_days = [
-                active_from + timedelta(days=offset)
-                for offset in range((active_to - active_from).days + 1)
-            ]
-            # Sueldo vigente por fecha (una sola lectura): el reporte diario es
-            # una vista viva y un aumento intrames debe valorar cada jornada con
-            # el sueldo de esa fecha, sin tocar snapshots oficiales ni CLOSED.
-            salary_by_day = SalaryService(self.db).get_for_days({employee.id: period_days})
+            period_days = days_by_employee[employee.id]
+            # El crédito de recuperación se lee por fecha de permiso en una sola
+            # consulta por empleado (fechas ausentes = 0).
+            from app.modules.attendance.totals import recovery_credit_minutes_by_day
+            recovery_by_day = recovery_credit_minutes_by_day(self.db, employee.id, active_from, active_to)
 
             days: list[dict] = []
             day = active_from
             while day <= active_to:
-                expected_minutes = schedules.expected_minutes(employee.id, day)
+                expected_minutes = expected_by_day.get((employee.id, day), 0)
                 overtime_item = overtime_by_day.get(day, {"minutes": 0, "amount": Decimal("0.00")})
                 special_amount = special_by_day.get(day, Decimal("0.00"))
                 # Recovery is recognized at the permission origin, not at the
                 # later recovery-work date; R remains separate from presence.
-                from app.modules.attendance.totals import recovery_credit_minutes
-                approved_minutes = approved_by_day.get(day, 0) + recovery_credit_minutes(self.db, employee.id, day, day)
+                approved_minutes = approved_by_day.get(day, 0) + int(recovery_by_day.get(day, 0))
                 attendance = attendance_by_day.get(day)
                 worked_minutes = int(attendance["worked_minutes"]) if attendance else 0
                 ordinary_minutes = int(attendance.get("ordinary_minutes", worked_minutes)) if attendance else 0
