@@ -8,9 +8,9 @@ units have passed the required checks and have been integrated in order.
 
 | Order | Branch | Scope | Authored code/test lines |
 | --- | --- | --- | ---: |
-| 1 | `perf/recovery-payroll-foundation` | Opt-in salary/schedule scalar-tie compatibility, shared fixtures and legacy-tie regressions | 517 |
-| 2 | `perf/recovery-payroll-recovery` | Batched recovery listing/origin components and recovery query/result regressions | 539 |
-| 3 | `perf/recovery-payroll-payroll` | Batched payroll reads and payroll snapshot/query regressions | 489 |
+| 1 | `perf/recovery-payroll-foundation` | Opt-in salary/schedule scalar-tie compatibility, shared fixtures and legacy-tie regressions | 513 |
+| 2 | `perf/recovery-payroll-recovery` | Batched recovery listing/origin components and recovery query/result regressions | 541 |
+| 3 | `perf/recovery-payroll-payroll` | Batched payroll reads and payroll snapshot/query regressions | 491 |
 
 Each child targets its immediate parent; the first targets
 `perf/recovery-payroll-integration`. The final tracker targets the verified
@@ -41,3 +41,14 @@ these are coherent units with their tests, not artificially compressed slices.
 - After auto-deploy, bind the exact Railway deployment to the merged commit
   and verify `/health` and `/health/db`; a healthy endpoint alone is not
   evidence of a schema migration or a production performance improvement.
+
+## Qualified recovery preflight
+
+- One authenticated MCP same-branch `neondb` schema comparison at
+  `2026-10-16T15:10:48Z` against current head returned an empty diff.
+- The expected Alembic revision `t6b7c8d9e0f1` was read read-only, and the
+  object-store HeadBucket check returned HTTP 200.
+- An independent read-only verifier accepted this as proportionate evidence
+  for a no-schema release; no business data was read and no restore ran.
+- This is not proof of full-data restoration, backup integrity, retention
+  bounds or temporary-resource cleanup.
