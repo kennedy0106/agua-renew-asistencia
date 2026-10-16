@@ -1130,8 +1130,23 @@ class ManualAttendanceService:
     def list_commitments(self, employee_id: uuid.UUID | None) -> List[dict]:
         query = select(RecoveryCommitment).where(RecoveryCommitment.status == "ACTIVE")
         if employee_id: query = query.where(RecoveryCommitment.employee_id == employee_id)
+        commitments = list(self.db.scalars(query))
+        # Una sola lectura agregada cubre todas las aplicaciones activas: el
+        # listado deja de ser 1+N sin cambiar el pendiente de cada compromiso.
+        used_by_commitment: dict[uuid.UUID, int] = {}
+        if commitments:
+            used_rows = self.db.execute(
+                select(ManualRecoveryApplication.commitment_id, func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0))
+                .join(ManualAttendanceDay, ManualAttendanceDay.id == ManualRecoveryApplication.manual_day_id)
+                .where(
+                    ManualRecoveryApplication.commitment_id.in_([item.id for item in commitments]),
+                    ManualAttendanceDay.voided_at.is_(None),
+                )
+                .group_by(ManualRecoveryApplication.commitment_id)
+            ).all()
+            used_by_commitment = {commitment_id: int(total) for commitment_id, total in used_rows}
         result=[]
-        for item in self.db.scalars(query):
-            used=self.db.scalar(select(func.coalesce(func.sum(ManualRecoveryApplication.minutes), 0)).join(ManualAttendanceDay).where(ManualRecoveryApplication.commitment_id == item.id, ManualAttendanceDay.voided_at.is_(None))) or 0
+        for item in commitments:
+            used=used_by_commitment.get(item.id, 0)
             result.append({"id":str(item.id),"employee_id":str(item.employee_id),"permission_date":item.permission_date,"agreed_minutes":item.agreed_minutes,"pending_minutes":item.agreed_minutes-int(used),"covered_before":item.covered_before,"reference":item.reference})
         return result
