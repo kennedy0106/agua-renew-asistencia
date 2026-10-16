@@ -41,9 +41,15 @@ class SalaryService:
         return self.repo.get_for_date(employee_id, day)
 
     def get_for_days(
-        self, employee_days: dict[uuid.UUID, Iterable[date]]
+        self, employee_days: dict[uuid.UUID, Iterable[date]],
+        *, preserve_scalar_ties: bool = False,
     ) -> dict[tuple[uuid.UUID, date], SalarySetting | None]:
-        """Configuración salarial vigente por empleado/día con una sola consulta."""
+        """Resolve salary history in one read, preserving existing bulk defaults.
+
+        Former scalar callers can opt into exact scalar selection for ambiguous
+        equal-effective-date histories. One extra scalar read per distinct set
+        of eligible tied rows is cached across dates, never one read per day.
+        """
         normalized = {
             employee_id: sorted(set(days))
             for employee_id, days in employee_days.items()
@@ -56,10 +62,11 @@ class SalaryService:
         for setting in self.repo.list_overlapping(normalized.keys(), min(all_days), max(all_days)):
             history_by_employee[setting.employee_id].append(setting)
         result: dict[tuple[uuid.UUID, date], SalarySetting | None] = {}
+        tied_choices: dict[tuple[uuid.UUID, frozenset[uuid.UUID]], SalarySetting | None] = {}
         for employee_id, days in normalized.items():
             history = history_by_employee.get(employee_id, [])
             for day in days:
-                result[(employee_id, day)] = next(
+                selected = next(
                     (
                         item
                         for item in reversed(history)
@@ -68,6 +75,18 @@ class SalaryService:
                     ),
                     None,
                 )
+                if preserve_scalar_ties and selected is not None:
+                    contenders = frozenset(
+                        item.id for item in history
+                        if item.effective_from == selected.effective_from
+                        and (item.effective_to is None or item.effective_to >= day)
+                    )
+                    if len(contenders) > 1:
+                        key = (employee_id, contenders)
+                        if key not in tied_choices:
+                            tied_choices[key] = self.repo.get_for_date(employee_id, day)
+                        selected = tied_choices[key]
+                result[(employee_id, day)] = selected
         return result
 
     def get_for_date_or_404(self, employee_id: uuid.UUID, day: date) -> SalarySetting:
