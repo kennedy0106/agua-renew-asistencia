@@ -61,24 +61,33 @@ class ScheduleService:
         return self.journey_from_schedule(self.repo.get_for_date(employee_id, day))
 
     def expected_minutes_for_days(
-        self, employee_days: dict[uuid.UUID, Iterable[date]]
+        self, employee_days: dict[uuid.UUID, Iterable[date]],
+        *, preserve_scalar_ties: bool = False,
     ) -> dict[tuple[uuid.UUID, date], int]:
-        """Resuelve minutos esperados para varios empleados/días en lote.
+        """Resolve expected minutes using the existing bulk schedule policy.
 
-        Es intencionalmente una capa de lectura: no cambia qué jornada gana
-        cuando hay historial.  Para cada fecha se elige la vigente con
-        ``effective_from`` más reciente, igual que ``get_for_date``.
+        ``preserve_scalar_ties=True`` opts former scalar callers into the
+        scalar query's equal-effective-date selection; the default is unchanged.
         """
-        schedules = self.schedules_for_days(employee_days)
+        schedules = (
+            self.schedules_for_days(employee_days, preserve_scalar_ties=True)
+            if preserve_scalar_ties else self.schedules_for_days(employee_days)
+        )
         return {
             (employee_id, day): getattr(schedule, _DAY_FIELDS[day.weekday()]) if schedule else 0
             for (employee_id, day), schedule in schedules.items()
         }
 
     def schedules_for_days(
-        self, employee_days: dict[uuid.UUID, Iterable[date]]
+        self, employee_days: dict[uuid.UUID, Iterable[date]],
+        *, preserve_scalar_ties: bool = False,
     ) -> dict[tuple[uuid.UUID, date], WorkSchedule | None]:
-        """Jornadas vigentes por empleado/día, resueltas con una sola consulta."""
+        """Resolve schedules in one read, preserving existing bulk defaults.
+
+        Former scalar callers can opt into exact scalar selection for ambiguous
+        equal-effective-date histories. Cache each distinct eligible tied set
+        across dates so the compatibility fallback is not a per-day query loop.
+        """
         normalized = {
             employee_id: sorted(set(days))
             for employee_id, days in employee_days.items()
@@ -95,12 +104,13 @@ class ScheduleService:
             schedules_by_employee[schedule.employee_id].append(schedule)
 
         result: dict[tuple[uuid.UUID, date], WorkSchedule | None] = {}
+        tied_choices: dict[tuple[uuid.UUID, frozenset[uuid.UUID]], WorkSchedule | None] = {}
         for employee_id, days in normalized.items():
             history = schedules_by_employee.get(employee_id, [])
             for day in days:
-                # Historiales normales no se solapan. Recorrer al revés además
-                # mantiene exactamente el orden de preferencia del SELECT
-                # original si existiera un historial legado solapado.
+                # Keep the historical bulk default. Equal-date legacy ties
+                # need the opt-in scalar resolver below; reversing alone does
+                # not preserve the scalar query's tie selection.
                 schedule = next(
                     (
                         item
@@ -110,6 +120,17 @@ class ScheduleService:
                     ),
                     None,
                 )
+                if preserve_scalar_ties and schedule is not None:
+                    contenders = frozenset(
+                        item.id for item in history
+                        if item.effective_from == schedule.effective_from
+                        and (item.effective_to is None or item.effective_to >= day)
+                    )
+                    if len(contenders) > 1:
+                        key = (employee_id, contenders)
+                        if key not in tied_choices:
+                            tied_choices[key] = self.repo.get_for_date(employee_id, day)
+                        schedule = tied_choices[key]
                 result[(employee_id, day)] = schedule
         return result
 
