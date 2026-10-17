@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # se expone al navegador ni se usa en el flujo público de asistencia.
     decolecta_api_key: str = ""
     decolecta_timeout_seconds: float = 5.0
+    # Geocodificación inversa aproximada (Geoapify) para el panel privado.
+    # Sin clave no hay red: la ausencia de dirección nunca invalida la marcación.
+    geoapify_api_key: str = ""
 
     # --- Instrumentación de tiempos (opt-in) ---
     # Apagado por defecto. Activa Server-Timing numérico para el resumen y
