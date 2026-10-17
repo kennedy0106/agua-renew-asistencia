@@ -228,9 +228,8 @@ describe("evidencia privada con sello", () => {
   });
 
   it("descarga el derivado sellado del endpoint privado con credenciales", async () => {
-    const blob = new Blob(["stamped"], { type: "image/jpeg" });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(blob, { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      new Response("stamped", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -244,6 +243,10 @@ describe("evidencia privada con sello", () => {
     expect(init.credentials).toBe("include");
     expect(url).toBe("blob:mock-object-url");
     expect(String(requestUrl)).not.toContain("/image");
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    const captured = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(captured.type).toBe("image/jpeg");
+    expect(await captured.text()).toBe("stamped");
   });
 
   it("falla con ApiError cuando el sello no está disponible y no cae al original", async () => {
@@ -258,9 +261,8 @@ describe("evidencia privada con sello", () => {
   });
 
   it("mantiene la imagen original en su endpoint de solo bytes", async () => {
-    const blob = new Blob(["original"], { type: "image/jpeg" });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(blob, { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      new Response("original", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -269,6 +271,11 @@ describe("evidencia privada con sello", () => {
     expect(String(fetchMock.mock.calls[0][0])).toBe(
       `${API_URL}/api/v1/attendance/evidence/ev-1/image`,
     );
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
     expect(url).toBe("blob:mock-object-url");
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    const captured = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(captured.type).toBe("image/jpeg");
+    expect(await captured.text()).toBe("original");
   });
 });
