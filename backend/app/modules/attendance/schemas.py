@@ -1,10 +1,10 @@
 """Schemas de asistencia."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from app.core.text import require_visible_text
 
@@ -37,6 +37,19 @@ class AttendanceRecordOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     event_type: str | None = None
+
+    @field_serializer("check_in_at", when_used="json")
+    def _serialize_check_in(self, value: datetime) -> datetime:
+        """Keep the nonnullable entry schema while exposing explicit UTC."""
+        if value.tzinfo is None:
+            # SQLite drops tzinfo from the UTC values stored by the service.
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @field_serializer("check_out_at", when_used="json")
+    def _serialize_check_out(self, value: datetime | None) -> datetime | None:
+        """Preserve nullable checkout and reuse the same UTC conversion."""
+        return None if value is None else self._serialize_check_in(value)
 
 
 class EvidenceRequest(BaseModel):
