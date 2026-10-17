@@ -358,6 +358,9 @@ def test_los_logs_no_exponen_clave_ni_coordenadas(monkeypatch, caplog):
         None,
     )
     monkeypatch.setattr(evidence_media, "_OPENER", FakeOpener(error=error))
+    # Alembic deshabilita loggers existentes; el oráculo debe capturar de verdad
+    # el mensaje, sin depender del orden de otras pruebas ni tocar producción.
+    monkeypatch.setattr(evidence_media.logger, "disabled", False)
 
     with caplog.at_level(logging.WARNING, logger="app.modules.attendance.evidence_media"):
         assert evidence_media.reverse_address(LAT, LON, api_key=secret) is None
@@ -366,6 +369,7 @@ def test_los_logs_no_exponen_clave_ni_coordenadas(monkeypatch, caplog):
     assert secret not in texto
     assert "apiKey" not in texto
     assert str(LAT) not in texto
+    assert str(LON) not in texto
     assert "-12.04" not in texto
     assert texto != ""
 
