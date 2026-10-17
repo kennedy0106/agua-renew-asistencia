@@ -62,7 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Configuración",
     items: [
       { href: "/admin/users", label: "Usuarios", icon: Key, roles: ["ADMIN"], help: "Accesos al sistema. Un empleado no necesita usuario." },
-      { href: "/admin/devices", label: "Tablets y terminales", icon: Key, roles: ["ADMIN"], help: "Tablets autorizadas para marcar asistencia." },
+      { href: "/admin/devices", label: "Sesiones de marcación", icon: Key, roles: ["ADMIN"], help: "Contextos establecidos automáticamente al identificarse. Revocar finaliza la sesión vigente." },
       { href: "/admin/audit", label: "Auditoría", icon: Shield, roles: ["ADMIN"], help: "Quién cambió qué y por qué." },
     ],
   },

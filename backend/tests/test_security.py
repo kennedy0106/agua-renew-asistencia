@@ -9,7 +9,15 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_attendance_token,
+    decode_access_token,
+    decode_attendance_token,
+    hash_password,
+    renew_attendance_token,
+    verify_password,
+)
 from app.db.base import Base
 from app.modules.system_roles.repository import SystemRoleRepository
 from scripts.seed_roles import ROLES, seed
@@ -64,6 +72,34 @@ def test_token_con_firma_invalida_es_rechazado():
         algorithm="HS256",
     )
     assert decode_access_token(forged) is None
+
+
+def test_renovar_token_de_marcacion_conserva_identidad_y_fija_vencimiento():
+    """La renovación mantiene nonce/sub/acción/rid/did y no extiende el plazo."""
+    token = create_attendance_token("emp-1", action="CHECK_OUT", record_id="rec-1", device_id="dev-1")
+    decoded = decode_attendance_token(token)
+    assert decoded is not None
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    renewed = renew_attendance_token(decoded, expires_at=deadline)
+    payload = decode_attendance_token(renewed)
+
+    assert payload is not None
+    assert payload["nonce"] == decoded["nonce"]
+    assert payload["sub"] == "emp-1"
+    assert payload["action"] == "CHECK_OUT"
+    assert payload["rid"] == "rec-1"
+    assert payload["did"] == "dev-1"
+    assert payload["iat"] == decoded["iat"]
+    assert int(payload["exp"]) == int(deadline.timestamp())
+
+
+def test_token_de_marcacion_renovado_vencido_se_rechaza():
+    token = create_attendance_token("emp-1", action="CHECK_IN")
+    decoded = decode_attendance_token(token)
+    assert decoded is not None
+    expired = renew_attendance_token(decoded, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    assert decode_attendance_token(expired) is None
 
 
 # --- Seed idempotente ---

@@ -405,6 +405,42 @@ export type IdentifyResponse = {
   marking_action: "CHECK_IN" | "CHECK_OUT";
 };
 
+export type AttendanceLocationSnapshot = {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  observed_at: string;
+  address: string | null;
+};
+
+/**
+ * Lectura puntual que el navegador envía al preparar la marcación. `age_ms` es
+ * la antigüedad monótona de la lectura, no la hora del equipo (S6/L5).
+ */
+export type PrepareLocationInput = {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  age_ms: number;
+};
+
+export type PrepareAttemptResponse = {
+  marking_token: string;
+  marked_at: string;
+  expires_at: string;
+  location: AttendanceLocationSnapshot;
+};
+
+/**
+ * Snapshot de preparación tal como lo devuelve el backend en recuperación:
+ * anidado bajo `preparation`, nunca como claves planas (S5/L3).
+ */
+export type PreparationSnapshot = {
+  marked_at: string;
+  expires_at: string;
+  location: AttendanceLocationSnapshot;
+};
+
 export type AttendanceRecordOut = {
   id: string;
   employee_id: string;
@@ -429,17 +465,12 @@ export type AttemptStatusResponse = {
   nonce?: string | null;
   resolution_id?: string | null;
   reason?: string | null;
+  /** Token de escritura acotado para el mismo navegador con preparación vigente. */
+  marking_token?: string | null;
+  preparation?: PreparationSnapshot | null;
 };
 
 export const attendanceApi = {
-  pairTerminal: (pairingCode: string) =>
-    apiFetch<{ id: string; name: string; device_code: string }>(
-      "/api/v1/attendance/terminal/pair",
-      {
-        method: "POST",
-        body: JSON.stringify({ pairing_code: pairingCode }),
-      },
-    ),
   identify: (identifier: string) =>
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
       method: "POST",
@@ -470,6 +501,15 @@ export const attendanceApi = {
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-out", {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
+    }),
+  /**
+   * Fija en el servidor la hora oficial y la ubicación de un intento. Repetirlo
+   * devuelve el mismo snapshot; nunca crea por sí solo una asistencia.
+   */
+  prepareAttempt: (markingToken: string, location: PrepareLocationInput) =>
+    apiFetch<PrepareAttemptResponse>("/api/v1/attendance/attempt/prepare", {
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken, location }),
     }),
   attemptStatus: (markingToken: string) =>
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/status", {
@@ -531,6 +571,23 @@ export type AttendanceSummary = {
   checked_out_today: number;
 };
 
+export type AttendanceEvidenceRef = {
+  id: string | null;
+  captured_at: string | null;
+  content_type: string | null;
+  available: boolean;
+  /** Hora oficial fijada por el servidor antes de subir la foto (S5/L3). */
+  marked_at?: string | null;
+  location?: AttendanceLocationSnapshot | null;
+  stamped_available?: boolean;
+};
+
+export type AttendanceEvidenceMeta = {
+  record_id: string;
+  check_in: AttendanceEvidenceRef | null;
+  check_out: AttendanceEvidenceRef | null;
+};
+
 export const attendanceAdminApi = {
   list: (
     params: {
@@ -588,21 +645,7 @@ export const attendanceAdminApi = {
       body: JSON.stringify(payload),
     }),
   evidenceMeta: (recordId: string) =>
-    apiFetch<{
-      record_id: string;
-      check_in: {
-        id: string | null;
-        captured_at: string | null;
-        content_type: string | null;
-        available: boolean;
-      } | null;
-      check_out: {
-        id: string | null;
-        captured_at: string | null;
-        content_type: string | null;
-        available: boolean;
-      } | null;
-    }>(`/api/v1/attendance/${recordId}/evidence`),
+    apiFetch<AttendanceEvidenceMeta>(`/api/v1/attendance/${recordId}/evidence`),
   evidenceImage: async (evidenceId: string): Promise<string> => {
     const res = await fetch(
       `${API_URL}/api/v1/attendance/evidence/${evidenceId}/image`,
@@ -611,6 +654,18 @@ export const attendanceAdminApi = {
       },
     );
     if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto");
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+  /** Derivado privado con sello; solo existe para evidencia confirmada y preparada. */
+  evidenceStampedImage: async (evidenceId: string): Promise<string> => {
+    const res = await fetch(
+      `${API_URL}/api/v1/attendance/evidence/${evidenceId}/stamped-image`,
+      {
+        credentials: "include",
+      },
+    );
+    if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto con sello");
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -768,22 +823,11 @@ export type AttendanceDevice = {
   updated_at: string;
 };
 
-export type AttendanceDeviceCreated = AttendanceDevice & {
-  pairing_code: string;
-  pairing_expires_at: string;
-};
-
+// El contexto de marcación se establece solo en `POST /attendance/identify`:
+// no existe creación ni rotación manual de códigos de emparejamiento. La
+// administración solo lista el historial y revoca el contexto vigente.
 export const devicesApi = {
   list: () => apiFetch<AttendanceDevice[]>("/api/v1/devices"),
-  create: (name: string) =>
-    apiFetch<AttendanceDeviceCreated>("/api/v1/devices", {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    }),
-  rotate: (id: string) =>
-    apiFetch<AttendanceDeviceCreated>(`/api/v1/devices/${id}/pairing-code`, {
-      method: "POST",
-    }),
   revoke: (id: string) =>
     apiFetch<AttendanceDevice>(`/api/v1/devices/${id}/revoke`, {
       method: "POST",
