@@ -6,7 +6,7 @@ import {
   attendanceApi,
   type AttendanceLocationSnapshot,
 } from "@/lib/api";
-import { LOCATION_MAX_AGE_MS, locationAgeMs, requestBrowserPosition } from "@/pages/AsistenciaPage";
+import { LOCATION_MAX_AGE_MS, locationAgeMs, requestBrowserPosition } from "@/lib/attendance-location";
 
 /**
  * Contrato HTTP del flujo de ubicación y evidencia privada con sello.
