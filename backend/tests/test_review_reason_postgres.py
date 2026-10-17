@@ -20,7 +20,7 @@ from app.modules.system_roles.repository import SystemRoleRepository
 from app.modules.users.repository import UserRepository
 from scripts.seed_roles import ROLES
 from tests.image_helpers import valid_jpeg_b64
-from tests.test_attendance_hardening import _login, _mark, _nonce_of, _pair_kiosk
+from tests.test_attendance_hardening import _login, _mark, _nonce_of
 
 pytestmark = pytest.mark.integration
 
@@ -83,7 +83,7 @@ def pg_http_client(monkeypatch: pytest.MonkeyPatch):
 def test_postgres_review_motivos_80_81_120_500_y_rechazo_501(pg_http_client) -> None:
     client, db_session = pg_http_client
     _login(client)
-    _pair_kiosk(client)
+    # _mark crea el contexto al identificar al trabajador recién creado.
     cases = (
         (3, "abc"),
         (80, "W" * 80),

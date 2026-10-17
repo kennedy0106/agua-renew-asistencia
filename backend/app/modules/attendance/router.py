@@ -1,12 +1,17 @@
 """Rutas de asistencia.
 
 Marcación de kiosco (cookie de terminal en producción):
-- POST /identify, /evidence, /check-in, /check-out, /terminal/pair
+- POST /identify, /evidence, /check-in, /check-out
+
+La identificación pública establece el contexto de navegador automáticamente
+(ya no hay emparejamiento manual); /terminal/pair queda retirado.
 
 Panel administrativo (autenticado):
 - GET / (lista), /summary, /daily, evidencia privada
 """
 
+import json
+import math
 import uuid
 from datetime import date, datetime
 
@@ -30,6 +35,8 @@ from app.modules.attendance.schemas import (
     AttendanceSummary,
     AttemptResolveRequest,
     AttemptReviewRequest,
+    AttemptPrepareRequest,
+    AttemptPrepareResponse,
     CheckInRequest,
     CheckOutRequest,
     EvidenceRequest,
@@ -39,7 +46,6 @@ from app.modules.attendance.schemas import (
     AttemptStatusResponse,
 )
 from app.modules.attendance.service import AttendanceService, _MISSING
-from app.modules.devices.schemas import PairingRequest
 from app.modules.devices.service import DeviceService
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
@@ -82,6 +88,46 @@ def _employee_from_marking_payload(
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Debe identificar al trabajador nuevamente")
 
 
+def _reject_non_finite_json_constant(value: str):
+    raise ValueError(value)
+
+
+def _contains_non_finite(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_non_finite(item) for item in value)
+    return False
+
+
+async def _safe_prepare_body(request: Request) -> None:
+    """Rechaza NaN/Infinity/desbordes antes de que pydantic los ecoe como 500.
+
+    JSON no estándar (NaN, Infinity, -Infinity) y números como ``1e999`` que
+    desbordan a infinito se responden localmente con 422 y un detalle fijo que
+    nunca reexpone el valor no finito. No cambia el esquema documentado.
+    """
+    raw = await request.body()
+    if not raw:
+        return
+    try:
+        data = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El cuerpo debe ser JSON con números finitos",
+        ) from exc
+    if _contains_non_finite(data):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El cuerpo debe ser JSON con números finitos",
+        )
+
+
 def _rate_limit_public(request: Request) -> None:
     key = f"public:{client_ip(request)}"
     if not _public_limiter.allow(key):
@@ -91,27 +137,63 @@ def _rate_limit_public(request: Request) -> None:
         )
 
 
+def _current_terminal(request: Request, db: Session):
+    """Contexto de navegador vigente según la cookie firmada, o None.
+
+    Nunca lanza: una cookie ausente, vencida, manipulada o de un contexto
+    revocado se trata como "sin contexto" para permitir una identidad nueva al
+    identificar. No renueva ni escribe nada por sí sola.
+    """
+    token = request.cookies.get("agua_renew_terminal")
+    if not token:
+        return None
+    payload = decode_terminal_token(token)
+    if payload is None:
+        return None
+    try:
+        device_id = uuid.UUID(str(payload["sub"]))
+        token_version = int(payload.get("ver") or 1)
+    except (KeyError, ValueError, TypeError):
+        return None
+    try:
+        return DeviceService(db).get_active(device_id, token_version=token_version)
+    except HTTPException:
+        return None
+
+
 @router.post("/terminal/pair")
-def pair_terminal(
-    payload: PairingRequest,
-    response: Response,
-    db: Session = Depends(get_db),
-    _: None = Depends(_rate_limit_public),
-) -> dict:
-    device = DeviceService(db).pair(payload.pairing_code)
-    token = create_terminal_token(str(device.id), device.token_version)
-    response.set_cookie(value=token, **terminal_cookie_kwargs())
-    return {"id": str(device.id), "name": device.name, "device_code": device.device_code}
+def pair_terminal() -> dict:
+    """Retirado: la identificación establece el contexto del navegador."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="El emparejamiento de terminales fue retirado; identifíquese para usar este navegador",
+    )
 
 
 @router.post("/identify", response_model=IdentifyResponse)
 def identify(
     payload: IdentifyRequest,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     _: None = Depends(_rate_limit_public),
-    device=Depends(require_terminal),
 ) -> IdentifyResponse:
-    return AttendanceService(db).identify(payload.identifier, device_id=device.id if device else None)
+    """Identifica al trabajador y garantiza un contexto de navegador vigente.
+
+    Reutiliza la cookie firmada activa; si falta o es inválida prepara un
+    dispositivo anónimo con un UUID explícito y lo persiste solo cuando la
+    identificación del trabajador fue exitosa, antes de emitir la cookie.
+    """
+    device = _current_terminal(request, db)
+    if device is not None:
+        return AttendanceService(db).identify(payload.identifier, device_id=device.id)
+
+    draft_device_id = uuid.uuid4()
+    result = AttendanceService(db).identify(payload.identifier, device_id=draft_device_id)
+    device = DeviceService(db).create_anonymous(draft_device_id)
+    token = create_terminal_token(str(device.id), device.token_version)
+    response.set_cookie(value=token, **terminal_cookie_kwargs())
+    return result
 
 
 @router.post("/evidence", status_code=status.HTTP_201_CREATED)
@@ -128,6 +210,22 @@ def store_evidence(
         device_id=device.id if device else None,
     )
     return {"id": str(evidence.id), "content_type": evidence.content_type}
+
+
+@router.post("/attempt/prepare", response_model=AttemptPrepareResponse)
+def prepare_attempt(
+    payload: AttemptPrepareRequest,
+    _body: None = Depends(_safe_prepare_body),
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+    device=Depends(require_terminal),
+) -> dict:
+    """Fija hora y ubicación oficiales del intento firmado (idempotente por nonce)."""
+    return AttendanceService(db).prepare_attempt(
+        payload.marking_token,
+        location=payload.location.model_dump(),
+        device_id=device.id if device else None,
+    )
 
 
 @router.post("/attempt/status", response_model=AttemptStatusResponse)
@@ -299,6 +397,21 @@ def evidence_image(
     _: object = Depends(can_view_evidence),
 ) -> RawResponse:
     payload, content_type = AttendanceService(db).get_evidence_payload(evidence_id)
+    return RawResponse(
+        content=payload,
+        media_type=content_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get("/evidence/{evidence_id}/stamped-image")
+def evidence_stamped_image(
+    evidence_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(can_view_evidence),
+) -> RawResponse:
+    """Derivado sellado privado; solo evidencia confirmada con preparación."""
+    payload, content_type = AttendanceService(db).get_stamped_evidence_payload(evidence_id)
     return RawResponse(
         content=payload,
         media_type=content_type,
