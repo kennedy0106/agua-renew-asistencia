@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_URL,
+  ApiError,
+  attendanceAdminApi,
   attendanceApi,
   type AttendanceLocationSnapshot,
 } from "@/lib/api";
@@ -193,5 +195,87 @@ describe("prepare de marcación con ubicación", () => {
 
     expect(status.preparation).toBeUndefined();
     expect(status.marking_token).toBeUndefined();
+  });
+});
+
+describe("evidencia privada con sello", () => {
+  it("expone marked_at, location y stamped_available sin romper las claves antiguas", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        record_id: "rec-1",
+        check_in: {
+          id: "ev-1",
+          captured_at: "2026-10-16T12:00:05+00:00",
+          content_type: "image/jpeg",
+          available: true,
+          marked_at: "2026-10-16T12:00:05+00:00",
+          location: LOCATION,
+          stamped_available: true,
+        },
+        check_out: null,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const meta = await attendanceAdminApi.evidenceMeta("rec-1");
+
+    expect(meta.check_in?.id).toBe("ev-1");
+    expect(meta.check_in?.available).toBe(true);
+    expect(meta.check_in?.marked_at).toBe("2026-10-16T12:00:05+00:00");
+    expect(meta.check_in?.location).toEqual(LOCATION);
+    expect(meta.check_in?.stamped_available).toBe(true);
+    expect(meta.check_out).toBeNull();
+  });
+
+  it("descarga el derivado sellado del endpoint privado con credenciales", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("stamped", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const url = await attendanceAdminApi.evidenceStampedImage("ev-1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [requestUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(requestUrl)).toBe(
+      `${API_URL}/api/v1/attendance/evidence/ev-1/stamped-image`,
+    );
+    expect(init.credentials).toBe("include");
+    expect(url).toBe("blob:mock-object-url");
+    expect(String(requestUrl)).not.toContain("/image");
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    const captured = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(captured.type).toBe("image/jpeg");
+    expect(await captured.text()).toBe("stamped");
+  });
+
+  it("falla con ApiError cuando el sello no está disponible y no cae al original", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ detail: "not found" }, 404),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(attendanceAdminApi.evidenceStampedImage("ev-1")).rejects.toBeInstanceOf(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/stamped-image");
+  });
+
+  it("mantiene la imagen original en su endpoint de solo bytes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("original", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const url = await attendanceAdminApi.evidenceImage("ev-1");
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `${API_URL}/api/v1/attendance/evidence/ev-1/image`,
+    );
+    expect(fetchMock.mock.calls[0][1].credentials).toBe("include");
+    expect(url).toBe("blob:mock-object-url");
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    const captured = vi.mocked(URL.createObjectURL).mock.calls[0][0] as Blob;
+    expect(captured.type).toBe("image/jpeg");
+    expect(await captured.text()).toBe("original");
   });
 });

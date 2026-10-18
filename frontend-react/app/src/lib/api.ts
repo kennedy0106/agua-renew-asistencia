@@ -571,6 +571,23 @@ export type AttendanceSummary = {
   checked_out_today: number;
 };
 
+export type AttendanceEvidenceRef = {
+  id: string | null;
+  captured_at: string | null;
+  content_type: string | null;
+  available: boolean;
+  /** Hora oficial fijada por el servidor antes de subir la foto (S5/L3). */
+  marked_at?: string | null;
+  location?: AttendanceLocationSnapshot | null;
+  stamped_available?: boolean;
+};
+
+export type AttendanceEvidenceMeta = {
+  record_id: string;
+  check_in: AttendanceEvidenceRef | null;
+  check_out: AttendanceEvidenceRef | null;
+};
+
 export const attendanceAdminApi = {
   list: (
     params: {
@@ -628,21 +645,7 @@ export const attendanceAdminApi = {
       body: JSON.stringify(payload),
     }),
   evidenceMeta: (recordId: string) =>
-    apiFetch<{
-      record_id: string;
-      check_in: {
-        id: string | null;
-        captured_at: string | null;
-        content_type: string | null;
-        available: boolean;
-      } | null;
-      check_out: {
-        id: string | null;
-        captured_at: string | null;
-        content_type: string | null;
-        available: boolean;
-      } | null;
-    }>(`/api/v1/attendance/${recordId}/evidence`),
+    apiFetch<AttendanceEvidenceMeta>(`/api/v1/attendance/${recordId}/evidence`),
   evidenceImage: async (evidenceId: string): Promise<string> => {
     const res = await fetch(
       `${API_URL}/api/v1/attendance/evidence/${evidenceId}/image`,
@@ -651,6 +654,18 @@ export const attendanceAdminApi = {
       },
     );
     if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto");
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+  /** Derivado privado con sello; solo existe para evidencia confirmada y preparada. */
+  evidenceStampedImage: async (evidenceId: string): Promise<string> => {
+    const res = await fetch(
+      `${API_URL}/api/v1/attendance/evidence/${evidenceId}/stamped-image`,
+      {
+        credentials: "include",
+      },
+    );
+    if (!res.ok) throw new ApiError(res.status, "No se pudo cargar la foto con sello");
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },

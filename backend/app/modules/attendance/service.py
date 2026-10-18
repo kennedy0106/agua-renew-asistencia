@@ -1201,28 +1201,125 @@ class AttendanceService:
             )
         )
         by_nonce = {item.nonce: item for item in items}
+        nonces = {item.nonce for item in items}
+        nonces.update(event.external_event_id for event in events if event.external_event_id)
+        preparations = (
+            {
+                preparation.nonce: preparation
+                for preparation in self.db.scalars(
+                    select(AttendancePreparation).where(AttendancePreparation.nonce.in_(nonces))
+                )
+            }
+            if nonces
+            else {}
+        )
         check_in = None
         check_out = None
         for event in events:
             evidence = by_nonce.get(event.external_event_id)
-            payload = {
-                "id": str(evidence.id) if evidence else None,
-                "captured_at": evidence.captured_at.isoformat() if evidence else None,
-                "content_type": evidence.content_type if evidence else None,
-                "available": evidence is not None,
-            }
+            payload = self._evidence_metadata(
+                evidence, preparations.get(event.external_event_id)
+            )
             if event.event_type == "CHECK_IN":
                 check_in = payload
             elif event.event_type == "CHECK_OUT":
                 check_out = payload
         if check_in is None and items:
-            check_in = {
-                "id": str(items[0].id),
-                "captured_at": items[0].captured_at.isoformat(),
-                "content_type": items[0].content_type,
-                "available": True,
-            }
+            check_in = self._evidence_metadata(items[0], preparations.get(items[0].nonce))
         return {"record_id": str(record.id), "check_in": check_in, "check_out": check_out}
+
+    def _evidence_metadata(
+        self,
+        evidence: AttendanceEvidence | None,
+        preparation: AttendancePreparation | None,
+    ) -> dict:
+        """Claves históricas de evidencia + metadatos aditivos de la preparación.
+
+        Nunca fabrica coordenadas/horas para evidencia anterior: sin preparación
+        quedan explícitamente nulas y sin sello disponible.
+        """
+        return {
+            "id": str(evidence.id) if evidence else None,
+            "captured_at": evidence.captured_at.isoformat() if evidence else None,
+            "content_type": evidence.content_type if evidence else None,
+            "available": evidence is not None,
+            "marked_at": _as_utc(preparation.marked_at) if preparation else None,
+            "location": self._preparation_location(preparation) if preparation else None,
+            "stamped_available": bool(
+                evidence is not None
+                and evidence.attendance_record_id is not None
+                and preparation is not None
+            ),
+        }
+
+    def get_stamped_evidence_payload(self, evidence_id: uuid.UUID) -> tuple[bytes, str]:
+        """Derivado privado sellado, generado perezosamente desde el original.
+
+        El original (clave/hash) no se modifica; un fallo del derivado no anula
+        ni duplica el evento confirmado.
+        """
+        evidence = self.get_evidence_image(evidence_id)
+        if evidence.attendance_record_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La evidencia aún no está confirmada; no hay imagen sellada",
+            )
+        preparation = self._get_preparation(evidence.nonce)
+        if preparation is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La evidencia no tiene preparación de ubicación; no se fabrica sello",
+            )
+        try:
+            store = get_object_store()
+        except ObjectStoreError as exc:
+            self._raise_store_http(exc)
+        bucket = evidence.storage_bucket or store.bucket
+        key = f"attendance/{evidence.employee_id}/{evidence.nonce}.stamped.jpg"
+        try:
+            return store.get_bytes(key, bucket=bucket), "image/jpeg"
+        except ObjectNotFoundError:
+            pass
+        except ObjectStoreError as exc:
+            self._raise_store_http(exc)
+        original, _content_type = self.get_evidence_payload(evidence_id)
+        from importlib import import_module
+
+        try:
+            media = import_module("app.modules.attendance.evidence_media")
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="El sello de evidencia no está disponible; la marcación permanece confirmada",
+            ) from exc
+        try:
+            rendered = media.render_stamp(
+                original,
+                employee_name=preparation.employee_name,
+                employee_code=preparation.employee_code or "",
+                event_type=preparation.action,
+                marked_at=_as_utc(preparation.marked_at),
+                latitude=preparation.latitude,
+                longitude=preparation.longitude,
+                accuracy_m=preparation.accuracy_m,
+                address=preparation.address,
+                evidence_id=str(evidence.id),
+            )
+        except Exception as exc:
+            # Falla controlada: NUNCA se devuelve el original como si estuviera
+            # sellado, y el evento confirmado no se revierte ni se duplica.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="El sello de evidencia no está disponible; la marcación permanece confirmada",
+            ) from exc
+        try:
+            store.put_bytes(key, rendered, "image/jpeg", bucket=bucket)
+        except ObjectAlreadyExistsError:
+            pass
+        except ObjectStoreError:
+            # El sello es un derivado: persisitir no puede anular la marcación.
+            pass
+        return rendered, "image/jpeg"
 
 
 

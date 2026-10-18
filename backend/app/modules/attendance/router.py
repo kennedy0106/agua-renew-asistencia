@@ -406,6 +406,21 @@ def evidence_image(
 
 
 
+@router.get("/evidence/{evidence_id}/stamped-image")
+def evidence_stamped_image(
+    evidence_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: object = Depends(can_view_evidence),
+) -> RawResponse:
+    """Derivado sellado privado; solo evidencia confirmada con preparación."""
+    payload, content_type = AttendanceService(db).get_stamped_evidence_payload(evidence_id)
+    return RawResponse(
+        content=payload,
+        media_type=content_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 @router.patch("/{record_id}", response_model=AttendanceRecordOut)
 def correct_attendance(
     record_id: uuid.UUID,
