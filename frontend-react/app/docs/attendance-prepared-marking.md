@@ -4,12 +4,12 @@ The React kiosk uses DNI/internal code/AR identification and a photo without log
 
 ## Ordered flow
 
-1. Valid identification establishes/reuses the signed browser context and returns an attempt token.
-2. Acquire one browser position with high accuracy, no cached position and an independent 20-second deadline. Reject unsupported/denied/unavailable/invalid or worse-than-50-metre results with the existing explicit UI error; never infer the physical GPS switch state.
-3. Compute location age with the monotonic clock and prepare that attempt on the server. Only after successful preparation proceed to the camera/photo step. No location watcher or continuous tracking runs.
-4. Upload the required photo and mark using the current token. Display the official server-reserved time; upload/camera latency does not move it. The fixed preparation window is five minutes, not restarted by a retake, reload or recovery.
+1. Before calling identification for a DNI/code or decoded QR, acquire one browser position: high accuracy, no cached position and an independent 20-second deadline. Reject unsupported/denied/unavailable/invalid or worse-than-50-metre results without identification, opening the attendance photo camera or writes; never infer the physical GPS switch state.
+2. Valid identification establishes/reuses the signed browser context and returns an attempt token. Open the attendance photo camera and capture locally; the photo has not been uploaded yet.
+3. Before upload, compute location age with the monotonic clock and refresh the position if older than 60 seconds. Prepare that same attempt on the server, then persist its trusted refreshed token and prepared stage. If preparation or persistence fails, do not upload or mark.
+4. Upload the required photo and mark using that token. Display the official server-reserved time, not upload completion or an asserted local capture timestamp. Upload latency and read-only recovery do not move an already reserved instant.
 
-The 60-second freshness limit applies when preparing the snapshot; the snapshot then has its separate fixed five-minute lifetime. The browser's wall clock is not used as official marking time.
+The fixed five-minute window starts at server preparation, after local capture and before upload. Once created, retake/reload/recovery must not restart the same snapshot's deadline. The 60-second freshness limit applies when preparing the snapshot; no location watcher or continuous tracking runs, and the browser's wall clock is not official marking time.
 
 ## Recovery boundaries
 
