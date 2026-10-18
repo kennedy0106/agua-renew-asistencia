@@ -405,6 +405,42 @@ export type IdentifyResponse = {
   marking_action: "CHECK_IN" | "CHECK_OUT";
 };
 
+export type AttendanceLocationSnapshot = {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  observed_at: string;
+  address: string | null;
+};
+
+/**
+ * Lectura puntual que el navegador envía al preparar la marcación. `age_ms` es
+ * la antigüedad monótona de la lectura, no la hora del equipo (S6/L5).
+ */
+export type PrepareLocationInput = {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  age_ms: number;
+};
+
+export type PrepareAttemptResponse = {
+  marking_token: string;
+  marked_at: string;
+  expires_at: string;
+  location: AttendanceLocationSnapshot;
+};
+
+/**
+ * Snapshot de preparación tal como lo devuelve el backend en recuperación:
+ * anidado bajo `preparation`, nunca como claves planas (S5/L3).
+ */
+export type PreparationSnapshot = {
+  marked_at: string;
+  expires_at: string;
+  location: AttendanceLocationSnapshot;
+};
+
 export type AttendanceRecordOut = {
   id: string;
   employee_id: string;
@@ -429,6 +465,9 @@ export type AttemptStatusResponse = {
   nonce?: string | null;
   resolution_id?: string | null;
   reason?: string | null;
+  /** Token de escritura acotado para el mismo navegador con preparación vigente. */
+  marking_token?: string | null;
+  preparation?: PreparationSnapshot | null;
 };
 
 export const attendanceApi = {
@@ -462,6 +501,15 @@ export const attendanceApi = {
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-out", {
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
+    }),
+  /**
+   * Fija en el servidor la hora oficial y la ubicación de un intento. Repetirlo
+   * devuelve el mismo snapshot; nunca crea por sí solo una asistencia.
+   */
+  prepareAttempt: (markingToken: string, location: PrepareLocationInput) =>
+    apiFetch<PrepareAttemptResponse>("/api/v1/attendance/attempt/prepare", {
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken, location }),
     }),
   attemptStatus: (markingToken: string) =>
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/status", {

@@ -1,7 +1,40 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  API_URL,
+  attendanceApi,
+  type AttendanceLocationSnapshot,
+} from "@/lib/api";
 import { LOCATION_MAX_AGE_MS, locationAgeMs, requestBrowserPosition } from "@/lib/attendance-location";
 
-// B3 covers only the stateless helper; preparation API and private evidence follow in B4/B6.
+/**
+ * Contrato HTTP del flujo de ubicación y evidencia privada con sello.
+ *
+ * Estas pruebas fijan la forma exacta del cable (S6/S9/L5/L6) sin backend real:
+ * prepare recibe el token y la ubicación puntual, la recuperación puede exponer
+ * el mismo snapshot, y el visor privado consume el derivado sellado sin tocar
+ * el original.
+ */
+
+const LOCATION: AttendanceLocationSnapshot = {
+  latitude: -12.0464,
+  longitude: -77.0428,
+  accuracy_m: 12.5,
+  observed_at: "2026-10-16T12:00:00+00:00",
+  address: "Av. Siempre Viva 742, Lima",
+};
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+beforeEach(() => {
+  URL.createObjectURL = vi.fn(() => "blob:mock-object-url");
+  URL.revokeObjectURL = vi.fn();
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -77,5 +110,88 @@ describe("lectura puntual de ubicación", () => {
       },
     });
     expect(await requestBrowserPosition()).toEqual({ ok: false, reason: "denied" });
+  });
+});
+
+describe("prepare de marcación con ubicación", () => {
+  it("envía token y ubicación con la forma exacta del contrato", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        marking_token: "tok-renovado",
+        marked_at: "2026-10-16T12:00:05+00:00",
+        expires_at: "2026-10-16T12:05:05+00:00",
+        location: LOCATION,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await attendanceApi.prepareAttempt("tok-identificado", {
+      latitude: -12.0464,
+      longitude: -77.0428,
+      accuracy_m: 12.5,
+      age_ms: 60000,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(`${API_URL}/api/v1/attendance/attempt/prepare`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      marking_token: "tok-identificado",
+      location: {
+        latitude: -12.0464,
+        longitude: -77.0428,
+        accuracy_m: 12.5,
+        age_ms: 60000,
+      },
+    });
+    expect(result.marking_token).toBe("tok-renovado");
+    expect(result.marked_at).toBe("2026-10-16T12:00:05+00:00");
+    expect(result.expires_at).toBe("2026-10-16T12:05:05+00:00");
+    expect(result.location).toEqual(LOCATION);
+  });
+
+  it("la recuperación usa el snapshot anidado real sin inventar datos", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        state: "PENDING",
+        record: null,
+        evidence_ready: false,
+        write_token_valid: true,
+        marking_token: "tok-renovado",
+        preparation: {
+          marked_at: "2026-10-16T12:00:05+00:00",
+          expires_at: "2026-10-16T12:05:05+00:00",
+          location: LOCATION,
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await attendanceApi.attemptStatus("tok-identificado");
+
+    expect(status.state).toBe("PENDING");
+    expect(status.marking_token).toBe("tok-renovado");
+    expect(status.preparation).toEqual({
+      marked_at: "2026-10-16T12:00:05+00:00",
+      expires_at: "2026-10-16T12:05:05+00:00",
+      location: LOCATION,
+    });
+    // El DTO real no expone marked_at/location planos: van dentro de preparation.
+    const raw = status as unknown as Record<string, unknown>;
+    expect(raw.marked_at).toBeUndefined();
+    expect(raw.location).toBeUndefined();
+  });
+
+  it("acepta un resultado antiguo sin preparación", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ state: "PENDING", record: null, write_token_valid: false }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await attendanceApi.attemptStatus("tok-identificado");
+
+    expect(status.preparation).toBeUndefined();
+    expect(status.marking_token).toBeUndefined();
   });
 });

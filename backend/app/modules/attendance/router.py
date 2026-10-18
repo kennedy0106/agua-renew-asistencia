@@ -10,6 +10,8 @@ Panel administrativo (autenticado):
 - GET / (lista), /summary, /daily, evidencia privada
 """
 
+import json
+import math
 import uuid
 from datetime import date, datetime
 
@@ -33,6 +35,8 @@ from app.modules.attendance.schemas import (
     AttendanceSummary,
     AttemptResolveRequest,
     AttemptReviewRequest,
+    AttemptPrepareRequest,
+    AttemptPrepareResponse,
     CheckInRequest,
     CheckOutRequest,
     EvidenceRequest,
@@ -82,6 +86,46 @@ def _employee_from_marking_payload(
     if payload.employee_id is not None and get_settings().environment != "production":
         return payload.employee_id, None, False, None, None
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Debe identificar al trabajador nuevamente")
+
+
+def _reject_non_finite_json_constant(value: str):
+    raise ValueError(value)
+
+
+def _contains_non_finite(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_non_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_non_finite(item) for item in value)
+    return False
+
+
+async def _safe_prepare_body(request: Request) -> None:
+    """Rechaza NaN/Infinity/desbordes antes de que pydantic los ecoe como 500.
+
+    JSON no estándar (NaN, Infinity, -Infinity) y números como ``1e999`` que
+    desbordan a infinito se responden localmente con 422 y un detalle fijo que
+    nunca reexpone el valor no finito. No cambia el esquema documentado.
+    """
+    raw = await request.body()
+    if not raw:
+        return
+    try:
+        data = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El cuerpo debe ser JSON con números finitos",
+        ) from exc
+    if _contains_non_finite(data):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El cuerpo debe ser JSON con números finitos",
+        )
 
 
 def _rate_limit_public(request: Request) -> None:
@@ -166,6 +210,22 @@ def store_evidence(
         device_id=device.id if device else None,
     )
     return {"id": str(evidence.id), "content_type": evidence.content_type}
+
+
+@router.post("/attempt/prepare", response_model=AttemptPrepareResponse)
+def prepare_attempt(
+    payload: AttemptPrepareRequest,
+    _body: None = Depends(_safe_prepare_body),
+    db: Session = Depends(get_db),
+    _: None = Depends(_rate_limit_public),
+    device=Depends(require_terminal),
+) -> dict:
+    """Fija hora y ubicación oficiales del intento firmado (idempotente por nonce)."""
+    return AttendanceService(db).prepare_attempt(
+        payload.marking_token,
+        location=payload.location.model_dump(),
+        device_id=device.id if device else None,
+    )
 
 
 @router.post("/attempt/status", response_model=AttemptStatusResponse)
@@ -342,6 +402,8 @@ def evidence_image(
         media_type=content_type,
         headers={"Cache-Control": "private, no-store"},
     )
+
+
 
 
 @router.patch("/{record_id}", response_model=AttendanceRecordOut)

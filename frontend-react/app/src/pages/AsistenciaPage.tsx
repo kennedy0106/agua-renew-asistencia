@@ -1,8 +1,9 @@
 
 import { useEffect, useRef, useState } from "react";
-import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse } from "@/lib/api";
+import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse, PreparationSnapshot } from "@/lib/api";
 import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
+import { LOCATION_MAX_AGE_MS, locationAgeMs, locationFailureMessage, requestBrowserPosition, type ClientPosition } from "@/lib/attendance-location";
 
 type Phase =
   | "identificando"
@@ -31,7 +32,13 @@ function phaseStage(phase: Phase): string {
 
 type RecoverOutcome =
   | { kind: "confirmed"; record: AttendanceRecordOut }
-  | { kind: "pending"; evidenceReady: boolean; writeTokenValid: boolean }
+  | {
+      kind: "pending";
+      evidenceReady: boolean;
+      writeTokenValid: boolean;
+      markingToken?: string;
+      preparation?: PreparationSnapshot | null;
+    }
   | { kind: "expired_unconfirmed"; evidenceReady: boolean }
   | { kind: "cancelled"; reason: string | null }
   | { kind: "reviewed"; reason: string | null }
@@ -53,11 +60,15 @@ function barcodeDetectorCtor(): (new (opts: { formats: string[] }) => BarcodeDet
   return (window as unknown as { BarcodeDetector?: new (opts: { formats: string[] }) => BarcodeDetectorLike }).BarcodeDetector ?? null;
 }
 
+type PrepareOutcome =
+  | { ok: true; token: string }
+  | { ok: false; reason: "location" | "untrusted_token" };
+
 /** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
 const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
 const CAMERA_COUNTDOWN_SECONDS = 10;
 
-type DeliveryStage = "EVIDENCE_REQUESTED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
+type DeliveryStage = "EVIDENCE_REQUESTED" | "PREPARED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
 
 type StoredAttempt = {
   v: 1 | 2;
@@ -80,6 +91,28 @@ function nonceFromMarkingToken(token: string): string | null {
   }
 }
 
+/**
+ * Dos tokens son el mismo intento sólo si son la misma cadena opaca o si ambos
+ * exponen el MISMO nonce JWT no vacío. La firma la valida el backend; el
+ * navegador jamás acepta un reemplazo sin nonce.
+ */
+function hasSameNonce(candidate: string, currentToken: string): boolean {
+  const candidateNonce = nonceFromMarkingToken(candidate);
+  const currentNonce = nonceFromMarkingToken(currentToken);
+  return Boolean(candidateNonce) && Boolean(currentNonce) && candidateNonce === currentNonce;
+}
+
+/**
+ * Fail-closed: sólo se adopta un token renovado idéntico al vigente o con el
+ * mismo nonce no vacío. Ausente, malformado o de otro intento nunca sustituye
+ * al token actual.
+ */
+function trustRefreshedToken(candidate: unknown, currentToken: string): string | null {
+  if (typeof candidate !== "string" || candidate === "") return null;
+  if (candidate === currentToken) return currentToken;
+  return hasSameNonce(candidate, currentToken) ? candidate : null;
+}
+
 function readStoredAttempt(): StoredAttempt | null {
   try {
     const raw = sessionStorage.getItem(KIOSK_ATTEMPT_KEY);
@@ -89,7 +122,7 @@ function readStoredAttempt(): StoredAttempt | null {
     if (parsed.marking_action !== "CHECK_IN" && parsed.marking_action !== "CHECK_OUT") return null;
     const version = parsed.v === 2 ? 2 : 1;
     const stage: DeliveryStage =
-      parsed.stage === "EVIDENCE_REQUESTED" || parsed.stage === "EVIDENCE_STORED" || parsed.stage === "MARKING_REQUESTED"
+      parsed.stage === "EVIDENCE_REQUESTED" || parsed.stage === "PREPARED" || parsed.stage === "EVIDENCE_STORED" || parsed.stage === "MARKING_REQUESTED"
         ? parsed.stage
         : "UNKNOWN";
     return {
@@ -146,6 +179,8 @@ export default function AsistenciaPage() {
   const [lastAttemptStatus, setLastAttemptStatus] = useState<RecoverOutcome | null>(null);
   const [idMode, setIdMode] = useState<"dni" | "code">("dni");
   const [copiedNonce, setCopiedNonce] = useState(false);
+  const [requestingLocation, setRequestingLocation] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -159,6 +194,19 @@ export default function AsistenciaPage() {
   const generationRef = useRef(0);
   const infoRef = useRef<IdentifyResponse | null>(null);
   const submittedRef = useRef(false);
+  const positionRef = useRef<ClientPosition | null>(null);
+  const locationErrorMessage = useRef<string | null>(null);
+
+  function reportLocationFailure(message: string) {
+    locationErrorMessage.current = message;
+    setLocationError(message);
+  }
+
+  function clearLocationState() {
+    positionRef.current = null;
+    locationErrorMessage.current = null;
+    setLocationError(null);
+  }
 
   function bumpGeneration() {
     generationRef.current += 1;
@@ -379,7 +427,18 @@ export default function AsistenciaPage() {
     identifyingRef.current = true;
     setIdentifying(true);
     setError(null);
+    setLocationError(null);
+    locationErrorMessage.current = null;
     try {
+      // La ubicación es requisito previo: si falla no hay API, cámara ni escritura.
+      const position = await readPositionForOperation(gen);
+      if (gen !== generationRef.current) return;
+      if (!position) {
+        // Si veníamos del escaneo QR, se vuelve al formulario para mostrar el
+        // error accionable y permitir reintentar la marcación.
+        setPhase((current) => (current === "escaneando_qr" ? "identificando" : current));
+        return;
+      }
       const result = await attendanceApi.identify(value);
       if (gen !== generationRef.current) return;
       infoRef.current = result;
@@ -406,6 +465,73 @@ export default function AsistenciaPage() {
     event.preventDefault();
     if (identifyingRef.current) return;
     await identifyValue(identifier.trim(), generationRef.current);
+  }
+
+  async function readPositionForOperation(gen: number): Promise<ClientPosition | null> {
+    setRequestingLocation(true);
+    locationErrorMessage.current = null;
+    setLocationError(null);
+    try {
+      const outcome = await requestBrowserPosition();
+      if (gen !== generationRef.current) return null;
+      if (!outcome.ok) {
+        positionRef.current = null;
+        reportLocationFailure(locationFailureMessage(outcome.reason));
+        return null;
+      }
+      positionRef.current = outcome.position;
+      return outcome.position;
+    } finally {
+      if (gen === generationRef.current) setRequestingLocation(false);
+    }
+  }
+
+  /**
+   * Reutiliza la lectura si sigue vigente (<= 60 s) o pide una nueva. Fija la
+   * hora oficial en el servidor y devuelve el token renovado del mismo intento.
+   */
+  async function prepareLocation(gen: number): Promise<PrepareOutcome> {
+    const nowMs = () => performance.now();
+    let position = positionRef.current;
+    if (!position || locationAgeMs(position, nowMs()) > LOCATION_MAX_AGE_MS) {
+      const freshlyRead = await readPositionForOperation(gen);
+      if (gen !== generationRef.current) return { ok: false, reason: "location" };
+      if (!freshlyRead) return { ok: false, reason: "location" };
+      position = freshlyRead;
+    }
+    const ageMs = locationAgeMs(position, nowMs());
+    if (ageMs > LOCATION_MAX_AGE_MS) {
+      reportLocationFailure(
+        "La ubicación quedó desactualizada. Vuelva a intentar la marcación para obtener una lectura nueva.",
+      );
+      return { ok: false, reason: "location" };
+    }
+    const current = infoRef.current;
+    if (!current) return { ok: false, reason: "untrusted_token" };
+    const prepared = await attendanceApi.prepareAttempt(current.marking_token, {
+      latitude: position.latitude,
+      longitude: position.longitude,
+      accuracy_m: position.accuracyM,
+      age_ms: ageMs,
+    });
+    if (gen !== generationRef.current) return { ok: false, reason: "untrusted_token" };
+    const refreshedToken = trustRefreshedToken(prepared.marking_token, current.marking_token);
+    if (!refreshedToken) return { ok: false, reason: "untrusted_token" };
+    const preparedInfo: IdentifyResponse = { ...current, marking_token: refreshedToken };
+    infoRef.current = preparedInfo;
+    setInfo(preparedInfo);
+    return { ok: true, token: refreshedToken };
+  }
+
+  /** Adopta el token acotado que la recuperación expone para el mismo nonce. */
+  function adoptRefreshedToken(token: string) {
+    const current = infoRef.current;
+    if (!current || current.marking_token === token) return;
+    if (!hasSameNonce(token, current.marking_token)) return;
+    const updated: IdentifyResponse = { ...current, marking_token: token };
+    infoRef.current = updated;
+    setInfo(updated);
+    persistAttempt(updated, readStoredAttempt()?.stage ?? "UNKNOWN");
   }
 
   function grabFrame(): string | null {
@@ -435,6 +561,8 @@ export default function AsistenciaPage() {
           kind: "pending",
           evidenceReady: Boolean(frozen.evidence_ready),
           writeTokenValid: Boolean(frozen.write_token_valid),
+          markingToken: typeof frozen.marking_token === "string" ? frozen.marking_token : undefined,
+          preparation: frozen.preparation ?? null,
         };
       }
       if (frozen.state === "EXPIRED_UNCONFIRMED") {
@@ -486,10 +614,13 @@ export default function AsistenciaPage() {
       return;
     }
     if (outcome.kind === "pending") {
+      if (outcome.markingToken) adoptRefreshedToken(outcome.markingToken);
       showUncertain(
         outcome.evidenceReady
           ? "El intento sigue pendiente. Si la foto ya está guardada, complete la marcación sin tomar otra."
-          : "El intento sigue pendiente. Conserve esta referencia; no se inició una marcación nueva.",
+          : outcome.preparation?.marked_at
+            ? "El intento sigue pendiente sin foto guardada. La ubicación y la hora oficial ya quedaron reservadas, pero la marcación aún no se registró."
+            : "El intento sigue pendiente. Conserve esta referencia; no se inició una marcación nueva.",
       );
       return;
     }
@@ -539,24 +670,49 @@ export default function AsistenciaPage() {
       return;
     }
     setPhase("enviando");
+    let activeToken = markingToken;
     try {
-      await attendanceApi.captureEvidence(markingToken, imageBase64);
+      const prepared = await prepareLocation(gen);
       if (gen !== generationRef.current) return;
-      persistAttempt(current, "EVIDENCE_STORED");
-      if (!persistAttempt(current, "MARKING_REQUESTED")) {
+      if (!prepared.ok) {
+        // Fail-closed: sin lectura válida o con un token no verificable no se
+        // sube la foto ni se marca; la referencia del intento original queda
+        // intacta para reconciliarla.
+        showUncertain(
+          prepared.reason === "untrusted_token"
+            ? "El servidor no confirmó una preparación verificable para este intento. No se subió la fotografía ni se registró la marcación. Consulte este mismo intento."
+            : locationErrorMessage.current ??
+              "No se pudo confirmar la ubicación del equipo. No se subió la fotografía ni se registró la marcación.",
+        );
+        return;
+      }
+      activeToken = prepared.token;
+      const preparedInfo = infoRef.current;
+      // El token renovado y la etapa se guardan ANTES de subir la fotografía.
+      if (!preparedInfo || !persistAttempt(preparedInfo, "PREPARED")) {
+        setLastAttemptStatus({ kind: "pending", evidenceReady: false, writeTokenValid: true });
+        showUncertain(
+          "La hora oficial quedó reservada, pero no se pudo guardar la referencia. No se envió la fotografía ni la marcación.",
+        );
+        return;
+      }
+      await attendanceApi.captureEvidence(activeToken, imageBase64);
+      if (gen !== generationRef.current) return;
+      persistAttempt(preparedInfo, "EVIDENCE_STORED");
+      if (!persistAttempt(preparedInfo, "MARKING_REQUESTED")) {
         setLastAttemptStatus({ kind: "pending", evidenceReady: true, writeTokenValid: true });
         showUncertain("La foto se guardó. Consulte o complete este intento. No se envió la marcación.");
         return;
       }
       const result =
         markingAction === "CHECK_OUT"
-          ? await attendanceApi.checkOut(markingToken)
-          : await attendanceApi.checkIn(markingToken);
+          ? await attendanceApi.checkOut(activeToken)
+          : await attendanceApi.checkIn(activeToken);
       if (gen !== generationRef.current) return;
       showConfirmed(result);
     } catch {
       if (gen !== generationRef.current) return;
-      const recovered = await recoverAttempt(markingToken, gen);
+      const recovered = await recoverAttempt(activeToken, gen);
       if (recovered.kind === "stale") return;
       applyReadOnlyAttemptOutcome(recovered);
     } finally {
@@ -595,6 +751,13 @@ export default function AsistenciaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
+  function isSameAttempt(token: string): boolean {
+    const activeToken = infoRef.current?.marking_token;
+    if (!activeToken) return false;
+    if (activeToken === token) return true;
+    return hasSameNonce(activeToken, token);
+  }
+
   async function consultAttempt() {
     const current = infoRef.current;
     if (!current || sendingRef.current || recoverLockRef.current) return;
@@ -602,13 +765,13 @@ export default function AsistenciaPage() {
     const token = current.marking_token;
     recoverLockRef.current = true;
     setConsulting(true);
-    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === token;
+    const isCurrent = () => gen === generationRef.current && isSameAttempt(token);
     try {
       const outcome = await recoverAttempt(token, gen);
       if (!isCurrent() || outcome.kind === "stale") return;
       applyReadOnlyAttemptOutcome(outcome);
     } finally {
-      if (isCurrent()) {
+      if (gen === generationRef.current) {
         recoverLockRef.current = false;
         setConsulting(false);
       }
@@ -622,7 +785,7 @@ export default function AsistenciaPage() {
     if (sendingRef.current || recoverLockRef.current) return;
     recoverLockRef.current = true;
     setError(null);
-    const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === current.marking_token;
+    const isCurrent = () => gen === generationRef.current && isSameAttempt(current.marking_token);
     try {
       const recovered = await recoverAttempt(current.marking_token, gen);
       if (!isCurrent() || recovered.kind === "stale") return;
@@ -630,14 +793,15 @@ export default function AsistenciaPage() {
         applyReadOnlyAttemptOutcome(recovered);
         return;
       }
-      if (!lastPhoto) {
+      const active = infoRef.current;
+      if (!active || !lastPhoto) {
         applyReadOnlyAttemptOutcome(recovered);
         return;
       }
       recoverLockRef.current = false;
-      await sendPhoto(lastPhoto, current.marking_token, current.marking_action, gen);
+      await sendPhoto(lastPhoto, active.marking_token, active.marking_action, gen);
     } finally {
-      if (isCurrent()) recoverLockRef.current = false;
+      if (gen === generationRef.current) recoverLockRef.current = false;
     }
   }
 
@@ -737,6 +901,7 @@ export default function AsistenciaPage() {
     bumpGeneration();
     releaseAllCameras();
     releaseInFlightLocks();
+    clearLocationState();
     submittedRef.current = false;
     setAttemptSubmitted(false);
     clearStoredAttempt();
@@ -764,6 +929,7 @@ export default function AsistenciaPage() {
     bumpGeneration();
     releaseAllCameras();
     releaseInFlightLocks();
+    clearLocationState();
     setError(null);
     setLastPhoto(null);
     if (needsResolve && current) {
@@ -784,6 +950,7 @@ export default function AsistenciaPage() {
     bumpGeneration();
     releaseAllCameras();
     releaseInFlightLocks();
+    clearLocationState();
     if (submittedRef.current && phase !== "confirmado") {
       setError(
         "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. Cancelar no borra una asistencia ya registrada.",
@@ -999,6 +1166,19 @@ export default function AsistenciaPage() {
                 </div>
               )}
 
+              {requestingLocation && (
+                <p className="alert alert-notice" role="status" data-testid="kiosk-location-status">
+                  <Info size={15} />
+                  <span>Solicitando la ubicación del equipo para marcar asistencia…</span>
+                </p>
+              )}
+              {locationError && (
+                <p className="alert alert-error" role="alert" data-testid="kiosk-location-error">
+                  <Droplet size={15} />
+                  <span>{locationError}</span>
+                </p>
+              )}
+
               {error && (
                 <p className="alert alert-error" role="alert">
                   <Droplet size={15} />
@@ -1008,7 +1188,7 @@ export default function AsistenciaPage() {
 
               <button type="submit" className="btn kiosk-cta kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
                 {identifying ? <Spinner size={18} /> : <ClipboardCheck size={18} />}
-                {identifying ? "Verificando…" : "Identificar asistencia"}
+                {requestingLocation ? "Solicitando ubicación…" : identifying ? "Verificando…" : "Identificar asistencia"}
               </button>
               <button
                 type="button"

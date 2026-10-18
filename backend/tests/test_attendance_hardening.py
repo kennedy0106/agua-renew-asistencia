@@ -61,6 +61,21 @@ def _bootstrap_browser(client, name: str = "Navegador web") -> dict:
 _pair_kiosk = _bootstrap_browser
 
 
+def _prepare(client, token: str, **location):
+    """Prepara la ubicación por HTTP (paso explícito previo a foto/marcación)."""
+    payload = {
+        "latitude": -12.046374,
+        "longitude": -77.042793,
+        "accuracy_m": 12.5,
+        "age_ms": 1500,
+    }
+    payload.update(location)
+    response = client.post(
+        "/api/v1/attendance/attempt/prepare",
+        json={"marking_token": token, "location": payload},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _expired_terminal_cookie(device_id: str) -> str:
@@ -109,6 +124,7 @@ def test_identificacion_entrega_token_para_marcar(client, db_session):
     identified = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
     assert identified.status_code == 200
     token = identified.json()["marking_token"]
+    _prepare(client, token)
     assert identified.json()["marking_action"] == "CHECK_IN"
 
     without_photo = client.post("/api/v1/attendance/check-in", json={"marking_token": token})
@@ -130,6 +146,7 @@ def test_identificacion_entrega_token_para_marcar(client, db_session):
     wrong = client.post("/api/v1/attendance/check-out", json={"marking_token": token})
     assert wrong.status_code == 401
     out_token = checkout_identify.json()["marking_token"]
+    _prepare(client, out_token)
     photo = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": out_token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -151,6 +168,7 @@ def test_identificacion_entrega_token_para_marcar(client, db_session):
     other = client.post("/api/v1/attendance/check-in", json={"employee_id": identified.json()["employee"]["id"]})
     assert other.status_code == 201
     unused_out = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, unused_out)
     assert client.post("/api/v1/attendance/check-out", json={"employee_id": identified.json()["employee"]["id"]}).status_code == 200
     newer = client.post("/api/v1/attendance/check-in", json={"employee_id": identified.json()["employee"]["id"]})
     assert newer.status_code == 201
@@ -211,6 +229,7 @@ def test_evidencia_rechaza_bytes_arbitrarios(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     rejected = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": invalid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -227,6 +246,7 @@ def test_evidencia_mismo_nonce_foto_distinta_409(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     first = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(10, 20, 30)), "content_type": "image/jpeg"},
@@ -259,6 +279,7 @@ def test_contexto_publico_en_produccion_sin_aprobacion_previa(client, db_session
         assert identified.status_code == 200, identified.text
         device_id = _device_id(client)
         token = identified.json()["marking_token"]
+        _prepare(client, token)
         assert client.post(
             "/api/v1/attendance/evidence",
             json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -280,6 +301,7 @@ def test_png_se_normaliza_a_jpeg(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     from tests.image_helpers import valid_png_b64
 
     accepted = client.post(
@@ -294,6 +316,7 @@ def test_imagen_excesiva_se_rechaza(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     huge = client.post(
         "/api/v1/attendance/evidence",
         json={
@@ -316,6 +339,7 @@ def test_token_de_otro_terminal_se_rechaza(client, db_session):
     identified = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"})
     assert identified.status_code == 200
     token = identified.json()["marking_token"]
+    _prepare(client, token)
     other = _open_second_browser(db_session)
     try:
         denied = other.post(
@@ -331,6 +355,7 @@ def test_evidencia_privada_por_rol(client, db_session):
     _login(client)
     employee_id = _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -360,7 +385,9 @@ def test_purge_no_borra_evidencia_confirmada(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     abandoned_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, abandoned_token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": abandoned_token, "image_base64": valid_jpeg_b64(color=(1, 2, 3)), "content_type": "image/jpeg"},
@@ -409,6 +436,7 @@ def test_purge_conserva_pendiente_sin_cancelar(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -437,6 +465,7 @@ def test_purge_ubicacion_incompleta_no_usa_almacen(client, db_session, monkeypat
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     assert client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(2, 3, 4)), "content_type": "image/jpeg"},
@@ -500,6 +529,7 @@ def test_purge_borra_solo_el_bucket_de_la_fila(client, db_session, monkeypatch):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     assert client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(5, 6, 7)), "content_type": "image/jpeg"},
@@ -546,6 +576,7 @@ def test_reenvio_misma_foto_tras_confirmar_devuelve_evidencia(client, db_session
     _employee(client, db_session)
     photo = valid_jpeg_b64(color=(11, 22, 33))
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     first = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
@@ -571,6 +602,7 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     _employee(client, db_session)
     device = _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
     assert pending.status_code == 200
     assert pending.json()["state"] == "PENDING"
@@ -599,6 +631,7 @@ def test_attempt_status_devuelve_resultado_congelado(client, db_session):
     assert other.status_code == 201
     other_code = other.json()["employee_code"]
     other_token = client.post("/api/v1/attendance/identify", json={"identifier": other_code}).json()["marking_token"]
+    _prepare(client, other_token)
     isolated = client.post("/api/v1/attendance/attempt/status", json={"marking_token": other_token})
     assert isolated.status_code == 200
     assert isolated.json()["state"] == "PENDING"
@@ -691,6 +724,7 @@ def test_imagen_exif_conserva_orientacion(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = jpeg_exif_orientation_6_b64()
     stored = client.post(
         "/api/v1/attendance/evidence",
@@ -732,6 +766,7 @@ def test_recupera_entrada_con_token_corto_vencido(client, db_session):
     _bootstrap_browser(client)
     photo = valid_jpeg_b64()
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     evidence = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": photo, "content_type": "image/jpeg"},
@@ -762,12 +797,14 @@ def test_recupera_salida_con_token_corto_vencido(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     in_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, in_token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": in_token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
     )
     client.post("/api/v1/attendance/check-in", json={"marking_token": in_token})
     out_token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, out_token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": out_token, "image_base64": valid_jpeg_b64(color=(9, 9, 9)), "content_type": "image/jpeg"},
@@ -793,6 +830,7 @@ def test_attempt_status_fuera_de_plazo_410(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -821,6 +859,7 @@ def test_attempt_status_otro_terminal_y_revocado(client, db_session, monkeypatch
         assert identified.status_code == 200
         device_id = _device_id(client)
         token = identified.json()["marking_token"]
+        _prepare(client, token)
         client.post(
             "/api/v1/attendance/evidence",
             json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -851,6 +890,7 @@ def test_attempt_status_sin_terminal_401(client, db_session):
     _login(client)
     _employee(client, db_session)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     # Un navegador sin contexto vigente no puede consultar el intento.
     client.cookies.clear()
     pending = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
@@ -862,6 +902,7 @@ def test_attempt_status_pending_exige_mismo_terminal(client, db_session):
     _employee(client, db_session)
     first = _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     own = client.post("/api/v1/attendance/attempt/status", json={"marking_token": token})
     assert own.status_code == 200
     assert own.json()["state"] == "PENDING"
@@ -884,6 +925,7 @@ def test_attempt_status_pertenencia_nula_401_sin_backfill(client, db_session):
     _employee(client, db_session)
     device = _bootstrap_browser(client, "Kiosco nulo")
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -919,6 +961,7 @@ def test_attempt_status_pending_con_evidencia_lista(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -944,6 +987,7 @@ def test_resolve_cancela_intento_pendiente_y_bloquea_marcacion(client, db_sessio
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -981,6 +1025,7 @@ def test_resolve_de_confirmado_conserva_evento(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -1036,6 +1081,7 @@ def test_evidencia_guardada_y_token_vence_antes_de_marcar(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(12, 34, 56))
     stored = client.post(
         "/api/v1/attendance/evidence",
@@ -1043,6 +1089,16 @@ def test_evidencia_guardada_y_token_vence_antes_de_marcar(client, db_session):
     )
     assert stored.status_code == 201
     expired = _expire_marking_token(token)
+    # Setup: el plazo fijo de la preparación también venció (permiso corto vencido).
+    from datetime import timedelta as _timedelta
+
+    from app.modules.attendance.models import AttendancePreparation
+
+    preparation = db_session.scalar(select(AttendancePreparation))
+    assert preparation is not None
+    preparation.expires_at = datetime.now(timezone.utc) - _timedelta(seconds=1)
+    db_session.add(preparation)
+    db_session.commit()
     assert client.post("/api/v1/attendance/check-in", json={"marking_token": expired}).status_code == 401
     status = client.post("/api/v1/attendance/attempt/status", json={"marking_token": expired})
     assert status.json()["state"] == "EXPIRED_UNCONFIRMED"
@@ -1070,6 +1126,7 @@ def test_review_admin_no_altera_evento_y_supervisor_no_autoriza(client, db_sessi
     employee_id = _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -1121,6 +1178,7 @@ def test_review_no_inventa_dueno_nulo_ni_nonce_inexistente(client, db_session):
     _employee(client, db_session)
     _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -1160,6 +1218,7 @@ def test_resolve_otro_terminal_y_sin_cookie(client, db_session):
     _employee(client, db_session)
     first = _bootstrap_browser(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
 
     other = _open_second_browser(db_session)
     try:
@@ -1189,6 +1248,7 @@ def test_resolve_otro_terminal_y_sin_cookie(client, db_session):
 
 def _mark(client, identifier: str, *, checkout: bool = False) -> tuple[str, dict]:
     token = client.post("/api/v1/attendance/identify", json={"identifier": identifier}).json()["marking_token"]
+    _prepare(client, token)
     stored = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},

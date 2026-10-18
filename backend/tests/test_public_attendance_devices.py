@@ -199,6 +199,7 @@ def test_flujo_publico_completo_sin_login_ni_aprobacion_previa(db_session, monke
         assert _web_devices(admin)[0]["active"] is True
 
         in_token = identified.json()["marking_token"]
+        _prepare(guest, in_token)
         assert _evidence(guest, in_token).status_code == 201
         check_in = guest.post("/api/v1/attendance/check-in", json={"marking_token": in_token})
         assert check_in.status_code == 201, check_in.text
@@ -221,6 +222,7 @@ def test_flujo_publico_completo_sin_login_ni_aprobacion_previa(db_session, monke
         assert len(_web_devices(admin)) == 1
 
         out_token = out_identified.json()["marking_token"]
+        _prepare(guest, out_token)
         assert _evidence(guest, out_token, color=(9, 9, 9)).status_code == 201
         check_out = guest.post("/api/v1/attendance/check-out", json={"marking_token": out_token})
         assert check_out.status_code == 200, check_out.text

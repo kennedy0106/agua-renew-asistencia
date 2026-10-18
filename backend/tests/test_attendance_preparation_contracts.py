@@ -162,9 +162,10 @@ def test_public_alembic_offline_downgrade_refuses_audit_deletion():
     assert not re.search(r"(?i)\b(DROP|DELETE|ALTER)\b", output.getvalue())
 
 
-def test_existing_status_shape_does_not_activate_preparation_before_b4():
+def test_status_retains_legacy_fields_with_optional_preparation():
     assert schemas.AttemptStatusResponse(state="PENDING").model_dump() == {
         "state": "PENDING", "record": None, "evidence_ready": False,
         "write_token_valid": False, "can_restart": False, "nonce": None,
         "resolution_id": None, "reason": None,
+        "marking_token": None, "preparation": None,
     }

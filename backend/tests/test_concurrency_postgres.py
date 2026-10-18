@@ -962,11 +962,20 @@ def test_entrada_concurrente_mismo_nonce(pg_engine):
     session = factory()
     try:
         employee_id, period_id, record_id = _seed_employee_and_period(session)
+        from app.modules.attendance.models import AttendanceDevice
+
+        device = AttendanceDevice(
+            name="Kiosco nonce", device_code=uuid.uuid4().hex, active=True
+        )
+        session.add(device)
+        session.commit()
+        device_id = device.id
     finally:
         session.close()
 
-    token = create_attendance_token(str(employee_id), action="CHECK_IN")
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
     nonce = str(decode_attendance_token(token)["nonce"])
+    _seed_preparation(factory, token, device_id=device_id)
     barrier = threading.Barrier(2)
     payloads: list[object] = []
 
@@ -974,7 +983,15 @@ def test_entrada_concurrente_mismo_nonce(pg_engine):
         db = factory()
         try:
             barrier.wait(timeout=5)
-            payloads.append(AttendanceService(db).check_in(employee_id, nonce=nonce, require_evidence=False))
+            payloads.append(
+                AttendanceService(db).check_in(
+                    employee_id,
+                    nonce=nonce,
+                    require_evidence=False,
+                    device_id=device_id,
+                    token_device_id=str(device_id),
+                )
+            )
         except HTTPException:
             db.rollback()
             raise
@@ -999,8 +1016,10 @@ def test_entrada_concurrente_mismo_nonce(pg_engine):
         nonce_row = check.scalar(select(AttendanceConsumedNonce).where(AttendanceConsumedNonce.nonce == nonce))
         assert nonce_row is not None
         check.execute(text("DELETE FROM attendance_events WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM attendance_preparations WHERE employee_id = :id"), {"id": employee_id})
         check.execute(text("DELETE FROM attendance_consumed_nonces WHERE employee_id = :id"), {"id": employee_id})
         check.execute(text("DELETE FROM attendance_records WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM attendance_devices WHERE id = :id"), {"id": device_id})
         _cleanup_payroll(check, period_id, record_id)
     finally:
         check.close()
@@ -1083,10 +1102,29 @@ def _seed_employee_device(session):
     return employee.id, device.id
 
 
+def _seed_preparation(factory, token, *, device_id=None) -> None:
+    """Setup: la escritura firmada exige preparación de ubicación previa."""
+    session = factory()
+    try:
+        AttendanceService(session).prepare_attempt(
+            token,
+            location={
+                "latitude": -12.0464,
+                "longitude": -77.0428,
+                "accuracy_m": 10.0,
+                "age_ms": 1000,
+            },
+            device_id=device_id,
+        )
+    finally:
+        session.close()
+
+
 def _cleanup_attempt(session, employee_id, device_id) -> None:
     session.execute(text("DELETE FROM attendance_attempt_resolutions WHERE employee_id = :id"), {"id": employee_id})
     session.execute(text("DELETE FROM attendance_events WHERE employee_id = :id"), {"id": employee_id})
     session.execute(text("DELETE FROM attendance_evidence WHERE employee_id = :id"), {"id": employee_id})
+    session.execute(text("DELETE FROM attendance_preparations WHERE employee_id = :id"), {"id": employee_id})
     session.execute(text("DELETE FROM attendance_consumed_nonces WHERE employee_id = :id"), {"id": employee_id})
     session.execute(text("DELETE FROM attendance_records WHERE employee_id = :id"), {"id": employee_id})
     session.execute(text("DELETE FROM employees WHERE id = :id"), {"id": employee_id})
@@ -1108,6 +1146,7 @@ def test_marcacion_gana_resolucion_ve_confirmado(pg_engine):
 
     token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
     nonce = str(decode_attendance_token(token)["nonce"])
+    _seed_preparation(factory, token, device_id=device_id)
     holding = threading.Event()
     results: dict[str, object] = {}
 
@@ -1263,6 +1302,7 @@ def test_evidencia_vs_resolucion_ambos_ordenes(pg_engine):
         session.close()
 
     token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    _seed_preparation(factory, token, device_id=device_id)
     holding = threading.Event()
     results: dict[str, object] = {}
 
@@ -1309,6 +1349,7 @@ def test_evidencia_vs_resolucion_ambos_ordenes(pg_engine):
     assert results["resolve"]["state"] == "CANCELLED"
 
     token_b = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    _seed_preparation(factory, token_b, device_id=device_id)
     holding_b = threading.Event()
     results_b: dict[str, object] = {}
 
@@ -1520,6 +1561,7 @@ def test_purge_vs_marcacion_no_borra_confirmada(pg_engine):
 
     token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
     nonce = str(decode_attendance_token(token)["nonce"])
+    _seed_preparation(factory, token, device_id=device_id)
     setup = factory()
     try:
         AttendanceService(setup).store_evidence(
