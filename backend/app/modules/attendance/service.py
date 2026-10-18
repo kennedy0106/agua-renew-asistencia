@@ -201,8 +201,26 @@ class AttendanceService:
             )
 
     def _resolve_address(self, preparation: AttendancePreparation | None) -> None:
-        """Optional address enrichment stays inactive until B5."""
-        return None
+        """Enriquecimiento opcional: ausencia, cuota o caída nunca fallan la marcación."""
+        if preparation is None or preparation.address is not None:
+            return
+        try:
+            from importlib import import_module
+
+            module = import_module("app.modules.attendance.evidence_media")
+            result = module.reverse_address(
+                preparation.latitude,
+                preparation.longitude,
+                api_key=get_settings().geoapify_api_key,
+            )
+        except Exception:
+            return
+        formatted = None
+        if isinstance(result, dict):
+            formatted = result.get("formatted") or result.get("address")
+        if formatted:
+            preparation.address = str(formatted)[:500]
+            self.db.add(preparation)
 
     def prepare_attempt(
         self, marking_token: str, *, location: dict, device_id: uuid.UUID | None = None
