@@ -5,7 +5,6 @@ import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "
 import { Spinner } from "@/components/Loading";
 
 type Phase =
-  | "pairing"
   | "identificando"
   | "escaneando_qr"
   | "abriendo_camara"
@@ -132,7 +131,6 @@ function clearStoredAttempt() {
 export default function AsistenciaPage() {
   const [phase, setPhase] = useState<Phase>("identificando");
   const [identifier, setIdentifier] = useState("");
-  const [pairingCode, setPairingCode] = useState("");
   const [info, setInfo] = useState<IdentifyResponse | null>(null);
   const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -376,18 +374,6 @@ export default function AsistenciaPage() {
 
   const serverNow = new Date(now.getTime() + serverOffset);
 
-  async function handlePair(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    try {
-      await attendanceApi.pairTerminal(pairingCode.trim());
-      setPairingCode("");
-      setPhase("identificando");
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo emparejar este equipo");
-    }
-  }
-
   async function identifyValue(value: string, gen: number) {
     if (!value || identifyingRef.current) return;
     identifyingRef.current = true;
@@ -406,11 +392,6 @@ export default function AsistenciaPage() {
       setPhase("abriendo_camara");
     } catch (err) {
       if (gen !== generationRef.current) return;
-      if (err instanceof ApiError && err.status === 401) {
-        setPhase("pairing");
-        setError(err.message);
-        return;
-      }
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setPhase("incidencia");
     } finally {
@@ -915,37 +896,6 @@ export default function AsistenciaPage() {
       <div className="kiosk-card" data-phase={phase}>
         <span className="kiosk-card-accent" aria-hidden />
         <div className="kiosk-phase-body" key={phaseStage(phase)}>
-        {phase === "pairing" && (
-          <form onSubmit={handlePair} className="kiosk-form" style={{ display: "grid", gap: "0.7rem" }}>
-            <p className="kiosk-date">Este equipo necesita un código de emparejamiento de un solo uso.</p>
-            <label className="label" htmlFor="kiosk-pairing">
-              Código de emparejamiento
-            </label>
-            <input
-              id="kiosk-pairing"
-              className="input"
-              type="text"
-              value={pairingCode}
-              onChange={(e) => setPairingCode(e.target.value)}
-              placeholder="Código emitido por administración"
-              autoFocus
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="characters"
-              spellCheck={false}
-              enterKeyHint="go"
-            />
-            {error && (
-              <p className="alert alert-error" role="alert">
-                {error}
-              </p>
-            )}
-            <button type="submit" className="btn btn-primary kiosk-btn">
-              Emparejar tablet
-            </button>
-          </form>
-        )}
-
         {phase === "identificando" && (
           <>
             <div className="kiosk-clock" suppressHydrationWarning>
@@ -1003,12 +953,13 @@ export default function AsistenciaPage() {
                     })}
                   </div>
                 )}
+                {/* El DNI usa el teclado propio sin bloquear la escritura con teclado físico. */}
                 <input
                   ref={idInputRef}
                   id="kiosk-id"
                   className={`kiosk-id-input${idMode === "dni" ? " is-dni" : " input"}`}
                   type="text"
-                  inputMode={idMode === "dni" ? "numeric" : "text"}
+                  inputMode={idMode === "dni" ? "none" : "text"}
                   enterKeyHint="go"
                   autoCapitalize="characters"
                   autoCorrect="off"

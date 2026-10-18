@@ -432,14 +432,6 @@ export type AttemptStatusResponse = {
 };
 
 export const attendanceApi = {
-  pairTerminal: (pairingCode: string) =>
-    apiFetch<{ id: string; name: string; device_code: string }>(
-      "/api/v1/attendance/terminal/pair",
-      {
-        method: "POST",
-        body: JSON.stringify({ pairing_code: pairingCode }),
-      },
-    ),
   identify: (identifier: string) =>
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
       method: "POST",
@@ -768,22 +760,11 @@ export type AttendanceDevice = {
   updated_at: string;
 };
 
-export type AttendanceDeviceCreated = AttendanceDevice & {
-  pairing_code: string;
-  pairing_expires_at: string;
-};
-
+// El contexto de marcación se establece solo en `POST /attendance/identify`:
+// no existe creación ni rotación manual de códigos de emparejamiento. La
+// administración solo lista el historial y revoca el contexto vigente.
 export const devicesApi = {
   list: () => apiFetch<AttendanceDevice[]>("/api/v1/devices"),
-  create: (name: string) =>
-    apiFetch<AttendanceDeviceCreated>("/api/v1/devices", {
-      method: "POST",
-      body: JSON.stringify({ name }),
-    }),
-  rotate: (id: string) =>
-    apiFetch<AttendanceDeviceCreated>(`/api/v1/devices/${id}/pairing-code`, {
-      method: "POST",
-    }),
   revoke: (id: string) =>
     apiFetch<AttendanceDevice>(`/api/v1/devices/${id}/revoke`, {
       method: "POST",
