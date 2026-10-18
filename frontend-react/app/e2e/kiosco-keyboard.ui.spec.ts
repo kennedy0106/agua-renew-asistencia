@@ -2,6 +2,15 @@ import { expect, test } from "@playwright/test";
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
+/**
+ * El kiosco pide una lectura puntual de ubicación antes de identificar. Esta
+ * prueba no identifica, pero mantiene el mismo contrato emulado que la suite UI.
+ */
+test.beforeEach(async ({ context }) => {
+  await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3000" });
+  await context.setGeolocation({ latitude: -12.0464, longitude: -77.0428, accuracy: 10 });
+});
+
 // This checks the browser input contract, not an actual phone's OS keyboard.
 test("DNI keypad suppresses the native keyboard hint without blocking text or physical input", async ({ page }) => {
   const mutations: string[] = [];

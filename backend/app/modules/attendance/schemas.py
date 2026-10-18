@@ -118,6 +118,8 @@ class AttemptStatusResponse(BaseModel):
     nonce: str | None = None
     resolution_id: str | None = None
     reason: str | None = None
+    marking_token: str | None = None
+    preparation: PreparationSnapshot | None = None
 
 
 class AttemptResolveRequest(BaseModel):

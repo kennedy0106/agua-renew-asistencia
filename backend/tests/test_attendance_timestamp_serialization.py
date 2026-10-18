@@ -1,10 +1,13 @@
-"""UTC marking DTO compatibility; prepared HTTP flows are added with preparation."""
+"""Public UTC marking responses, without changing storage or other DTO dates."""
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.main import app
 from app.modules.attendance.schemas import AttendanceRecordOut
+from tests.test_attendance_location import _employee, _evidence, _identify, _login, _prepare_ok
 
 
 def _utc_response(value: str) -> datetime:
@@ -12,6 +15,57 @@ def _utc_response(value: str) -> datetime:
     assert parsed.tzinfo is not None, f"marking response has no timezone: {value}"
     assert parsed.utcoffset() == timedelta(0)
     return parsed
+
+
+def _mark(guest, action):
+    prepared = _prepare_ok(guest, _identify(guest))
+    photo = _evidence(guest, prepared["marking_token"])
+    assert photo.status_code == 201, photo.text
+    marked = guest.post(
+        f"/api/v1/attendance/check-{action}",
+        json={"marking_token": prepared["marking_token"]},
+    )
+    assert marked.status_code == (201 if action == "in" else 200), marked.text
+    return marked.json(), prepared
+
+
+def test_check_in_json_preserves_prepared_utc_instant_and_replay(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    with TestClient(app, base_url="https://testserver") as guest:
+        record, prepared = _mark(guest, "in")
+        expected = _utc_response(prepared["marked_at"])
+        assert _utc_response(record["check_in_at"]) == expected
+        assert record["check_out_at"] is None
+        assert record["status"] == "OPEN"
+
+        replay = guest.post(
+            "/api/v1/attendance/check-in",
+            json={"marking_token": prepared["marking_token"]},
+        )
+        assert replay.status_code == 201, replay.text
+        assert replay.json()["id"] == record["id"]
+        assert _utc_response(replay.json()["check_in_at"]) == expected
+
+        status = guest.post(
+            "/api/v1/attendance/attempt/status",
+            json={"marking_token": prepared["marking_token"]},
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["state"] == "CONFIRMED"
+        assert _utc_response(status.json()["record"]["check_in_at"]) == expected
+
+
+def test_check_out_json_preserves_both_prepared_instants(client, db_session):
+    _login(client)
+    _employee(client, db_session)
+    with TestClient(app, base_url="https://testserver") as guest:
+        opened, entry = _mark(guest, "in")
+        closed, exit_preparation = _mark(guest, "out")
+        assert closed["id"] == opened["id"]
+        assert closed["status"] == "COMPLETE"
+        assert _utc_response(closed["check_in_at"]) == _utc_response(entry["marked_at"])
+        assert _utc_response(closed["check_out_at"]) == _utc_response(exit_preparation["marked_at"])
 
 
 def _dto(start, end):

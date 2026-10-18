@@ -15,6 +15,8 @@ import { deferred, installKioskCameraHarness } from "./kiosk-harness";
  * confirmación e incidencia.
  */
 
+const GEOLOCATION = { latitude: -12.0464, longitude: -77.0428, accuracy: 10 };
+
 const CORS = {
   "Access-Control-Allow-Origin": "http://127.0.0.1:3000",
   "Access-Control-Allow-Credentials": "true",
@@ -138,7 +140,40 @@ function assertNoScroll(s: Snapshot, context: string) {
   expect(s.smallTargets, `${context}: objetivos táctiles < 44px`).toEqual([]);
 }
 
+/** Contrato de preparación previo a la foto, sin backend ni GPS reales. */
+async function routePreparation(page: Page) {
+  await page.route("**/api/v1/attendance/attempt/prepare", async (route) => {
+    if (route.request().method() === "OPTIONS") return fulfillApi(route, 204, {});
+    const body = route.request().postDataJSON() as {
+      marking_token: string;
+      location: { latitude: number; longitude: number; accuracy_m: number; age_ms: number };
+    };
+    expect(body.marking_token).toBe(identifyBody.marking_token);
+    expect(body.location).toMatchObject({
+      latitude: GEOLOCATION.latitude,
+      longitude: GEOLOCATION.longitude,
+      accuracy_m: GEOLOCATION.accuracy,
+    });
+    expect(body.location.age_ms).toBeGreaterThanOrEqual(0);
+    expect(body.location.age_ms).toBeLessThanOrEqual(60_000);
+    return fulfillApi(route, 200, {
+      marking_token: body.marking_token,
+      marked_at: confirmedBody.check_in_at,
+      expires_at: new Date(Date.parse(confirmedBody.check_in_at) + 5 * 60_000).toISOString(),
+      location: {
+        latitude: GEOLOCATION.latitude,
+        longitude: GEOLOCATION.longitude,
+        accuracy_m: GEOLOCATION.accuracy,
+        observed_at: identifyBody.server_time,
+        address: null,
+      },
+    });
+  });
+}
+
 async function freshGoto(page: Page) {
+  // Se instala después de cada ruta genérica y se repone tras unrouteAll.
+  await routePreparation(page);
   await page.evaluate(() => sessionStorage.clear()).catch(() => undefined);
   await page.goto("/asistencia");
 }
@@ -151,8 +186,10 @@ async function identifyAndCapture(page: Page) {
 }
 
 test.describe("kiosco /asistencia — layout sin scroll", () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
     await installKioskCameraHarness(page);
+    await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3000" });
+    await context.setGeolocation(GEOLOCATION);
   });
 
   for (const viewport of VIEWPORTS) {

@@ -28,7 +28,12 @@ from app.core.object_store import (
     get_object_store,
 )
 from app.core.config import get_settings
-from app.core.security import create_attendance_token, decode_attendance_token, decode_attendance_token_for_recovery
+from app.core.security import (
+    create_attendance_token,
+    decode_attendance_token,
+    decode_attendance_token_for_recovery,
+    renew_attendance_token,
+)
 from app.core.timezone import lima_tz
 from app.modules.attendance.models import (
     STORAGE_S3,
@@ -37,6 +42,7 @@ from app.modules.attendance.models import (
     AttendanceConsumedNonce,
     AttendanceEvent,
     AttendanceEvidence,
+    AttendancePreparation,
     AttendanceRecord,
 )
 from app.modules.attendance.manual_models import ManualAttendanceDay
@@ -48,6 +54,10 @@ from app.modules.schedules.repository import WorkScheduleRepository
 from app.modules.schedules.service import ScheduleService
 
 _MISSING = object()  # sentinela: distingue "no enviado" de "enviado como null"
+
+# Plazo fijo del permiso de escritura preparado (S10/S11): los reintentos de
+# subida/marcación no reinician la ventana de cinco minutos.
+PREPARATION_WINDOW = timedelta(minutes=5)
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -84,6 +94,179 @@ class AttendanceService:
                 detail="Empleado inactivo: no puede marcar asistencia",
             )
         return employee
+
+    # --- Preparación explícita de ubicación (S1-S12) ---
+
+    @staticmethod
+    def _employee_label(employee) -> str:
+        return f"{employee.first_name} {employee.last_name}".strip()
+
+    def _get_preparation(self, nonce: str) -> AttendancePreparation | None:
+        return self.db.scalar(
+            select(AttendancePreparation)
+            .where(AttendancePreparation.nonce == nonce)
+            .execution_options(populate_existing=True)
+        )
+
+    @staticmethod
+    def _preparation_is_open(preparation: AttendancePreparation) -> bool:
+        return datetime.now(timezone.utc) < _as_utc(preparation.expires_at)
+
+    @staticmethod
+    def _preparation_location(preparation: AttendancePreparation) -> dict:
+        return {
+            "latitude": preparation.latitude,
+            "longitude": preparation.longitude,
+            "accuracy_m": preparation.accuracy_m,
+            "observed_at": _as_utc(preparation.observed_at),
+            "address": preparation.address,
+        }
+
+    def _preparation_snapshot(self, preparation: AttendancePreparation) -> dict:
+        return {
+            "marked_at": _as_utc(preparation.marked_at),
+            "expires_at": _as_utc(preparation.expires_at),
+            "location": self._preparation_location(preparation),
+        }
+
+    def _prepared_response(self, preparation: AttendancePreparation, decoded: dict) -> dict:
+        snapshot = self._preparation_snapshot(preparation)
+        snapshot["marking_token"] = renew_attendance_token(
+            decoded, expires_at=_as_utc(preparation.expires_at)
+        )
+        return snapshot
+
+    def _require_preparation(
+        self,
+        nonce: str,
+        employee_id: uuid.UUID,
+        action: str,
+        *,
+        device_id: uuid.UUID | None = None,
+    ) -> AttendancePreparation:
+        preparation = self._get_preparation(nonce)
+        if preparation is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Falta preparar la ubicación de este intento; identifique y prepare de nuevo",
+            )
+        if preparation.employee_id != employee_id or preparation.action != action:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        if (
+            preparation.device_id is None
+            or device_id is None
+            or preparation.device_id != device_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
+        if not self._preparation_is_open(preparation):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La preparación de ubicación venció; identifique y prepare de nuevo",
+            )
+        return preparation
+
+    @staticmethod
+    def _require_signed_browser(decoded: dict, device_id: uuid.UUID | None) -> None:
+        """Toda preparación nueva exige did firmado y contexto de navegador real."""
+        token_did = decoded.get("did")
+        if not token_did or device_id is None or str(token_did) != str(device_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El token no corresponde a este terminal",
+            )
+
+    def _validate_preparation_target(
+        self, employee_id: uuid.UUID, action: str, record_id: uuid.UUID | None
+    ) -> None:
+        """Valida el objetivo antes de persistir, sin mutar nada.
+
+        Evita snapshots obsoletos cuando el estado cambió desde la identificación:
+        una salida cuyo registro ya se cerró, o una entrada con jornada ya abierta.
+        """
+        if action == "CHECK_OUT":
+            record = self.repo.get_by_id(record_id) if record_id is not None else None
+            if record is None or record.employee_id != employee_id or record.check_out_at is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="La entrada de este intento ya no está abierta",
+                )
+            return
+        if self.repo.get_open(employee_id) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya tiene una entrada abierta; marque su salida primero",
+            )
+
+    def _resolve_address(self, preparation: AttendancePreparation | None) -> None:
+        """Optional address enrichment stays inactive until B5."""
+        return None
+
+    def prepare_attempt(
+        self, marking_token: str, *, location: dict, device_id: uuid.UUID | None = None
+    ) -> dict:
+        """Fija la hora oficial y la ubicación de un intento firmado (idempotente)."""
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        self._require_signed_browser(decoded, device_id)
+        employee_id = uuid.UUID(str(decoded["sub"]))
+        employee = self._get_active_employee(employee_id)
+        nonce = str(decoded["nonce"])
+        action = str(decoded["action"])
+        self.repo.lock_employee_for_attempt(employee_id)
+        decoded = decode_attendance_token(marking_token)
+        if decoded is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+        existing = self._get_preparation(nonce)
+        if existing is not None:
+            if existing.employee_id != employee_id or existing.action != action:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identificación vencida o inválida")
+            if existing.device_id != device_id:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="El token no corresponde a este terminal")
+            return self._prepared_response(existing, decoded)
+        resolution, consumed, _evidence = self._fresh_attempt_rows(nonce)
+        if resolution is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este intento ya fue resuelto; identifique de nuevo")
+        if consumed is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Esta marcación ya se confirmó; identifique de nuevo")
+        now = datetime.now(timezone.utc)
+        record_id = None
+        if decoded.get("rid"):
+            try:
+                record_id = uuid.UUID(str(decoded["rid"]))
+            except ValueError:
+                record_id = None
+        self._validate_preparation_target(employee_id, action, record_id)
+        preparation = AttendancePreparation(
+            nonce=nonce,
+            employee_id=employee_id,
+            device_id=device_id,
+            action=action,
+            attendance_record_id=record_id,
+            marked_at=now,
+            expires_at=now + PREPARATION_WINDOW,
+            latitude=float(location["latitude"]),
+            longitude=float(location["longitude"]),
+            accuracy_m=float(location["accuracy_m"]),
+            age_ms=int(location["age_ms"]),
+            observed_at=now - timedelta(milliseconds=int(location["age_ms"])),
+            employee_name=self._employee_label(employee),
+            employee_code=employee.employee_code,
+        )
+        self.db.add(preparation)
+        try:
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self._get_preparation(nonce)
+            if existing is None:
+                raise
+            return self._prepared_response(existing, decoded)
+        self.db.refresh(preparation)
+        return self._prepared_response(preparation, decoded)
 
     def identify(self, identifier: str, *, device_id: uuid.UUID | None = None) -> dict:
         """Resuelve al trabajador por DNI, código interno o QR (AR:<token>)."""
@@ -195,6 +378,9 @@ class AttendanceService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Esta marcación ya se confirmó; identifique de nuevo para tomar otra foto",
             )
+        self._require_preparation(
+            nonce, employee_id, str(decoded.get("action") or ""), device_id=device_id
+        )
         try:
             store = get_object_store()
         except ObjectStoreError as exc:
@@ -424,7 +610,12 @@ class AttendanceService:
         resolution: AttendanceAttemptResolution | None,
         consumed: AttendanceConsumedNonce | None,
         evidence: AttendanceEvidence | None,
+        preparation: AttendancePreparation | None = None,
+        write_payload: dict | None = None,
     ) -> dict:
+        preparation_snapshot = (
+            self._preparation_snapshot(preparation) if preparation is not None else None
+        )
         if evidence is not None and (
             evidence.employee_id != employee_id or (evidence.device_id is not None and evidence.device_id != device_id)
         ):
@@ -452,6 +643,8 @@ class AttendanceService:
                     "nonce": nonce,
                     "resolution_id": nonce,
                     "reason": resolution.reason,
+                    "marking_token": None,
+                    "preparation": preparation_snapshot,
                 }
             return {
                 "state": "REVIEWED",
@@ -462,6 +655,8 @@ class AttendanceService:
                 "nonce": nonce,
                 "resolution_id": nonce,
                 "reason": resolution.reason,
+                "marking_token": None,
+                "preparation": preparation_snapshot,
             }
         if consumed is not None:
             if consumed.employee_id != employee_id or consumed.action != action:
@@ -490,6 +685,40 @@ class AttendanceService:
                 "nonce": nonce,
                 "resolution_id": None,
                 "reason": None,
+                "marking_token": None,
+                "preparation": preparation_snapshot,
+            }
+        if preparation is not None and not self._preparation_is_open(preparation):
+            # El plazo persistido manda: una preparación vencida no ofrece escritura
+            # aunque el JWT presentado siga vigente.
+            return {
+                "state": "EXPIRED_UNCONFIRMED",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": False,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+                "marking_token": None,
+                "preparation": preparation_snapshot,
+            }
+        if preparation is not None and self._preparation_is_open(preparation) and write_payload is not None:
+            # Recuperación acotada: el mismo navegador recibe un token equivalente
+            # con el vencimiento EXACTO de la preparación; nunca lo extiende.
+            return {
+                "state": "PENDING",
+                "record": None,
+                "evidence_ready": evidence is not None,
+                "write_token_valid": True,
+                "can_restart": False,
+                "nonce": nonce,
+                "resolution_id": None,
+                "reason": None,
+                "marking_token": renew_attendance_token(
+                    write_payload, expires_at=_as_utc(preparation.expires_at)
+                ),
+                "preparation": preparation_snapshot,
             }
         if write_token_valid:
             return {
@@ -501,6 +730,8 @@ class AttendanceService:
                 "nonce": nonce,
                 "resolution_id": None,
                 "reason": None,
+                "marking_token": None,
+                "preparation": preparation_snapshot,
             }
         return {
             "state": "EXPIRED_UNCONFIRMED",
@@ -511,6 +742,8 @@ class AttendanceService:
             "nonce": nonce,
             "resolution_id": None,
             "reason": None,
+            "marking_token": None,
+            "preparation": preparation_snapshot,
         }
 
     def attempt_status(self, marking_token: str, *, device_id: uuid.UUID | None = None) -> dict:
@@ -533,6 +766,8 @@ class AttendanceService:
             resolution=resolution,
             consumed=consumed,
             evidence=evidence,
+            preparation=self._get_preparation(nonce),
+            write_payload=decoded,
         )
 
     def resolve_attempt(
@@ -565,6 +800,8 @@ class AttendanceService:
             resolution=resolution,
             consumed=consumed,
             evidence=evidence,
+            preparation=self._get_preparation(nonce),
+            write_payload=decoded,
         )
         if status_payload["state"] == "CONFIRMED":
             return status_payload
@@ -766,8 +1003,13 @@ class AttendanceService:
             replay = self._replay_nonce(nonce, "CHECK_IN", employee_id)
             if replay is not None:
                 return replay
+            preparation = self._require_preparation(
+                nonce, employee_id, "CHECK_IN", device_id=device_id
+            )
             if require_evidence:
                 self._evidence_or_400(nonce, employee_id)
+        else:
+            preparation = None
 
         if self.repo.get_open(employee_id) is not None:
             raise HTTPException(
@@ -775,7 +1017,22 @@ class AttendanceService:
                 detail="Ya tiene una entrada abierta; marque su salida primero",
             )
 
-        now = datetime.now(timezone.utc)
+        # La hora oficial es la preparada por el servidor antes de subir la foto.
+        now = _as_utc(preparation.marked_at) if preparation is not None else datetime.now(timezone.utc)
+        # The employee lock also protects this check from another shift closing
+        # between validation and commit. Never move the reserved time forward.
+        if preparation is not None and self.db.scalar(
+            select(AttendanceRecord.id)
+            .where(
+                AttendanceRecord.employee_id == employee_id,
+                AttendanceRecord.check_out_at > now,
+            )
+            .limit(1)
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La hora preparada es anterior a una jornada ya cerrada; cancele este intento e identifique de nuevo",
+            )
         work_date = now.astimezone(lima_tz()).date()
         # A historical administrative day and a kiosk session are mutually
         # exclusive sources for one employee/date.  Both services lock the
@@ -792,6 +1049,7 @@ class AttendanceService:
                 detail="La jornada tiene una carga histórica; no se mezclan fuentes",
             )
         try:
+            self._resolve_address(preparation)
             record = AttendanceRecord(
                 employee_id=employee_id,
                 work_date=work_date,
@@ -846,8 +1104,13 @@ class AttendanceService:
             replay = self._replay_nonce(nonce, "CHECK_OUT", employee_id)
             if replay is not None:
                 return replay
+            preparation = self._require_preparation(
+                nonce, employee_id, "CHECK_OUT", device_id=device_id
+            )
             if require_evidence:
                 self._evidence_or_400(nonce, employee_id)
+        else:
+            preparation = None
 
         if record_id is not None:
             record = self.repo.get_by_id(record_id)
@@ -870,8 +1133,14 @@ class AttendanceService:
                 detail="No tiene una entrada abierta para marcar salida",
             )
 
-        now = datetime.now(timezone.utc)
+        now = _as_utc(preparation.marked_at) if preparation is not None else datetime.now(timezone.utc)
+        if _as_utc(record.check_in_at) > now:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La hora preparada de salida es anterior a la entrada; identifique de nuevo",
+            )
         try:
+            self._resolve_address(preparation)
             record.check_out_at = now
             record.worked_minutes = compute_worked_minutes(record.check_in_at, now, 0)
             record.status = "COMPLETE"
@@ -936,6 +1205,8 @@ class AttendanceService:
                 "available": True,
             }
         return {"record_id": str(record.id), "check_in": check_in, "check_out": check_out}
+
+
 
     def get_evidence_image(self, evidence_id: uuid.UUID) -> AttendanceEvidence:
         evidence = self.db.get(AttendanceEvidence, evidence_id)

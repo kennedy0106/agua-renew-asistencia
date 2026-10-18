@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import { test } from "@playwright/test";
 import { installKioskCameraHarness } from "./kiosk-harness";
 
@@ -159,14 +159,25 @@ async function wrapGetUserMediaCounter(page: Page) {
   });
 }
 
+/**
+ * El kiosco exige una lectura puntual de ubicación (máximo 50 m de precisión)
+ * antes de identificar; se emula con la API nativa de Playwright.
+ */
+const E2E_GEOLOCATION = { latitude: -12.0464, longitude: -77.0428, accuracy: 10 };
+
+async function grantKioskGeolocation(context: BrowserContext) {
+  await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3000" });
+  await context.setGeolocation(E2E_GEOLOCATION);
+}
 
 function gumCount(page: Page) {
   return page.evaluate(() => (window as unknown as { __gumCount?: number }).__gumCount ?? 0);
 }
 
 test.describe("kiosco integración Next+FastAPI+Postgres", () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
     await installKioskCameraHarness(page);
+    await grantKioskGeolocation(context);
   });
 
   test("entrada y salida con fotografía persistida", async ({ page, request }) => {
@@ -252,6 +263,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect(fromRevoked.status).toBe(401);
 
     const contextC = await browser.newContext();
+    await grantKioskGeolocation(contextC);
     const pageC = await contextC.newPage();
     await installKioskCameraHarness(pageC);
     await pageC.goto("/asistencia");
@@ -567,7 +579,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     await expect(page.getByTestId("kiosk-identify")).toBeVisible();
   });
 
-  test("EDB-T07 evidencia guardada y permiso vence antes de marcar", async ({ page, request }) => {
+  test("EDB-T07 recupera JWT vencido sin extender la preparación", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T07");
     await page.route("**/api/v1/attendance/check-in", async (route) => {
@@ -580,16 +592,30 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     await page.goto("/asistencia");
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
-    const expired = expireAttendanceToken(token, SECRET);
-    const status = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: expired });
-    expect(status.body.state).toBe("EXPIRED_UNCONFIRMED");
-    expect(status.body.evidence_ready).toBe(true);
-    const resolved = await fetchJson(page, "/api/v1/attendance/attempt/resolve", {
-      marking_token: expired,
-      reason_code: "TOKEN_EXPIRED",
-    });
-    expect(resolved.body.state).toBe("CANCELLED");
+    const before = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: token });
+    expect(before.status).toBe(200);
+    expect(before.body.state).toBe("PENDING");
+    expect(before.body.evidence_ready).toBe(true);
     expect(await countAttendance(api, employee.id)).toHaveLength(0);
+
+    const expired = expireAttendanceToken(token, SECRET);
+    const recovered = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: expired });
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.state).toBe("PENDING");
+    expect(recovered.body.write_token_valid).toBe(true);
+    expect(recovered.body.preparation).toEqual(before.body.preparation);
+    expect(nonceOf(recovered.body.marking_token)).toBe(nonceOf(token));
+    expect(await countAttendance(api, employee.id)).toHaveLength(0);
+
+    await page.unroute("**/api/v1/attendance/check-in");
+    expect((await fetchJson(page, "/api/v1/attendance/check-in", { marking_token: expired })).status).toBe(401);
+    expect(await countAttendance(api, employee.id)).toHaveLength(0);
+    const completed = await fetchJson(page, "/api/v1/attendance/check-in", {
+      marking_token: recovered.body.marking_token,
+    });
+    expect(completed.status).toBe(201);
+    expect(Date.parse(completed.body.check_in_at)).toBe(Date.parse(before.body.preparation.marked_at));
+    expect(await countAttendance(api, employee.id)).toHaveLength(1);
   });
 
   test("EDB-T08 confirmar entrada y resolver no crea salida", async ({ page, request }) => {

@@ -1,4 +1,4 @@
-import { expect, type Page, type Route } from "@playwright/test";
+import { expect, type BrowserContext, type Page, type Route } from "@playwright/test";
 import { test } from "@playwright/test";
 import { deferred, installKioskCameraHarness } from "./kiosk-harness";
 
@@ -10,6 +10,28 @@ type IdentifyBody = {
   marking_token: string;
   marking_action: "CHECK_IN";
 };
+
+function base64url(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+/** Token con forma JWT: el backend real sigue siendo la autoridad de la firma. */
+function kioskMarkingToken(nonce: string, marker: string): string {
+  const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = base64url(JSON.stringify({ nonce, sub: "kiosk-e2e", action: "CHECK_IN" }));
+  return `${header}.${payload}.${marker}`;
+}
+
+function nonceOfToken(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { nonce?: string };
+    return typeof decoded.nonce === "string" ? decoded.nonce : null;
+  } catch {
+    return null;
+  }
+}
 
 function identifyPayload(firstName: string, token: string): IdentifyBody {
   return {
@@ -23,7 +45,7 @@ function identifyPayload(firstName: string, token: string): IdentifyBody {
     state: { has_open_entry: false, open_check_in_at: null, last_record: null },
     server_time: new Date().toISOString(),
     server_time_label: "ahora",
-    marking_token: token,
+    marking_token: kioskMarkingToken(token, "identify"),
     marking_action: "CHECK_IN",
   };
 }
@@ -47,7 +69,48 @@ async function fulfillApi(route: Route, status: number, body: unknown) {
   });
 }
 
+/**
+ * El kiosco exige una lectura puntual de ubicación antes de identificar; se
+ * emula con la API nativa de Playwright para no depender del permiso del SO.
+ */
+const KIOSK_GEOLOCATION = { latitude: -12.0464, longitude: -77.0428, accuracy: 10 };
+
+async function grantKioskGeolocation(context: BrowserContext) {
+  await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3000" });
+  await context.setGeolocation(KIOSK_GEOLOCATION);
+}
+
+/**
+ * Prepara la marcación sin backend real: el servidor repetiría el mismo token y
+ * snapshot, así que la simulación devuelve el token recibido sin cambios.
+ */
+async function routePrepare(page: Page) {
+  await page.route("**/api/v1/attendance/attempt/prepare", async (route: Route) => {
+    if (route.request().method() === "OPTIONS") {
+      await fulfillApi(route, 204, {});
+      return;
+    }
+    const body = JSON.parse(route.request().postData() || "{}") as { marking_token?: string };
+    const activeToken = String(body.marking_token ?? "");
+    const nonce = nonceOfToken(activeToken);
+    await fulfillApi(route, 200, {
+      // Renueva el token conservando el nonce del intento, como el backend real.
+      marking_token: nonce ? kioskMarkingToken(nonce, "refreshed") : activeToken,
+      marked_at: "2026-09-11T13:00:05+00:00",
+      expires_at: "2026-09-11T13:05:05+00:00",
+      location: {
+        latitude: KIOSK_GEOLOCATION.latitude,
+        longitude: KIOSK_GEOLOCATION.longitude,
+        accuracy_m: KIOSK_GEOLOCATION.accuracy,
+        observed_at: "2026-09-11T13:00:00+00:00",
+        address: null,
+      },
+    });
+  });
+}
+
 async function identifyUntilIncident(page: Page) {
+  await routePrepare(page);
   await page.goto("/asistencia");
   await expect(page.getByTestId("kiosk-identify")).toBeVisible();
   await page.getByTestId("kiosk-identifier").fill("EMP-001");
@@ -58,8 +121,9 @@ async function identifyUntilIncident(page: Page) {
 }
 
 test.describe("kiosco UI con API simulada", () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
     await installKioskCameraHarness(page);
+    await grantKioskGeolocation(context);
   });
 
   test("la cámara espera diez segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
@@ -79,6 +143,8 @@ test.describe("kiosco UI con API simulada", () => {
       });
       return fulfillApi(route, 404, {});
     });
+
+    await routePrepare(page);
 
     await page.goto("/asistencia");
     await page.getByTestId("kiosk-identifier").fill("EMP-001");
@@ -461,6 +527,8 @@ test.describe("kiosco UI con API simulada", () => {
       }
       await fulfillApi(route, 404, {});
     });
+
+    await routePrepare(page);
 
     await page.goto("/asistencia");
     await page.getByTestId("kiosk-identifier").fill("EMP-001");
