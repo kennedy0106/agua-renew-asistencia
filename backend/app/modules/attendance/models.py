@@ -17,6 +17,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -234,3 +235,40 @@ class AttendanceAttemptResolution(Base):
         ForeignKey("attendance_records.id"), nullable=True, index=True
     )
     resolved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AttendancePreparation(Base):
+    """Preparación explícita de ubicación de un intento de marcación firmado.
+
+    Es idempotente por ``nonce``: la primera preparación fija en el servidor la
+    hora oficial ``marked_at`` y ``expires_at = marked_at + 5 minutos``; los
+    reintentos devuelven el mismo snapshot sin reemplazarlo. No crea asistencia,
+    eventos ni contadores. La dirección es enriquecimiento opcional y puede
+    quedar nula sin afectar la marcación.
+    """
+
+    __tablename__ = "attendance_preparations"
+    __table_args__ = (
+        CheckConstraint("action IN ('CHECK_IN', 'CHECK_OUT')", name="ck_attendance_preparation_action"),
+    )
+
+    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    device_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_devices.id"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    attendance_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_records.id"), nullable=True, index=True
+    )
+    marked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    accuracy_m: Mapped[float] = mapped_column(Float, nullable=False)
+    age_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    employee_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    employee_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

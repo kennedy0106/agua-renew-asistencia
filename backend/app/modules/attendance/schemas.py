@@ -1,5 +1,6 @@
 """Schemas de asistencia."""
 
+import math
 import uuid
 from datetime import date, datetime, timezone
 from typing import Literal
@@ -59,6 +60,49 @@ class EvidenceRequest(BaseModel):
 
 
 class AttemptStatusRequest(BaseModel):
+    marking_token: str
+
+
+class LocationInput(BaseModel):
+    """Lectura GPS puntual reportada por el navegador (no es prueba física).
+
+    ``age_ms`` es la antigüedad monotónica de una lectura recién adquirida, no
+    una marca de reloj de dispositivo. ``accuracy_m`` es el radio estimado.
+    """
+
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_m: float = Field(gt=0, le=50)
+    age_ms: int = Field(ge=0, le=60000)
+
+    @field_validator("latitude", "longitude", "accuracy_m")
+    @classmethod
+    def _finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("La ubicación debe ser un número finito")
+        return value
+
+
+class PreparationLocation(BaseModel):
+    latitude: float
+    longitude: float
+    accuracy_m: float
+    observed_at: datetime
+    address: str | None = None
+
+
+class PreparationSnapshot(BaseModel):
+    marked_at: datetime
+    expires_at: datetime
+    location: PreparationLocation
+
+
+class AttemptPrepareRequest(BaseModel):
+    marking_token: str
+    location: LocationInput
+
+
+class AttemptPrepareResponse(PreparationSnapshot):
     marking_token: str
 
 
