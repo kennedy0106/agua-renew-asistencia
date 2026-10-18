@@ -98,7 +98,13 @@ class AttendanceBreakOverride(Base):
 
 
 class AttendanceDevice(Base):
-    """Dispositivo autorizado para producir eventos de asistencia."""
+    """Contexto de navegador que produce eventos de asistencia.
+
+    Ya no representa un equipo previamente autorizado: se crea la primera vez
+    que un navegador completa una identificación válida y se reutiliza mientras
+    su cookie firmada siga vigente. Los campos de emparejamiento se conservan
+    solo por compatibilidad con el histórico; no se emiten códigos nuevos.
+    """
 
     __tablename__ = "attendance_devices"
 

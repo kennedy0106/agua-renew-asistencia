@@ -1,7 +1,10 @@
 """Rutas de asistencia.
 
 Marcación de kiosco (cookie de terminal en producción):
-- POST /identify, /evidence, /check-in, /check-out, /terminal/pair
+- POST /identify, /evidence, /check-in, /check-out
+
+La identificación pública establece el contexto de navegador automáticamente
+(ya no hay emparejamiento manual); /terminal/pair queda retirado.
 
 Panel administrativo (autenticado):
 - GET / (lista), /summary, /daily, evidencia privada
@@ -39,7 +42,6 @@ from app.modules.attendance.schemas import (
     AttemptStatusResponse,
 )
 from app.modules.attendance.service import AttendanceService, _MISSING
-from app.modules.devices.schemas import PairingRequest
 from app.modules.devices.service import DeviceService
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
@@ -91,27 +93,63 @@ def _rate_limit_public(request: Request) -> None:
         )
 
 
+def _current_terminal(request: Request, db: Session):
+    """Contexto de navegador vigente según la cookie firmada, o None.
+
+    Nunca lanza: una cookie ausente, vencida, manipulada o de un contexto
+    revocado se trata como "sin contexto" para permitir una identidad nueva al
+    identificar. No renueva ni escribe nada por sí sola.
+    """
+    token = request.cookies.get("agua_renew_terminal")
+    if not token:
+        return None
+    payload = decode_terminal_token(token)
+    if payload is None:
+        return None
+    try:
+        device_id = uuid.UUID(str(payload["sub"]))
+        token_version = int(payload.get("ver") or 1)
+    except (KeyError, ValueError, TypeError):
+        return None
+    try:
+        return DeviceService(db).get_active(device_id, token_version=token_version)
+    except HTTPException:
+        return None
+
+
 @router.post("/terminal/pair")
-def pair_terminal(
-    payload: PairingRequest,
-    response: Response,
-    db: Session = Depends(get_db),
-    _: None = Depends(_rate_limit_public),
-) -> dict:
-    device = DeviceService(db).pair(payload.pairing_code)
-    token = create_terminal_token(str(device.id), device.token_version)
-    response.set_cookie(value=token, **terminal_cookie_kwargs())
-    return {"id": str(device.id), "name": device.name, "device_code": device.device_code}
+def pair_terminal() -> dict:
+    """Retirado: la identificación establece el contexto del navegador."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="El emparejamiento de terminales fue retirado; identifíquese para usar este navegador",
+    )
 
 
 @router.post("/identify", response_model=IdentifyResponse)
 def identify(
     payload: IdentifyRequest,
+    request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     _: None = Depends(_rate_limit_public),
-    device=Depends(require_terminal),
 ) -> IdentifyResponse:
-    return AttendanceService(db).identify(payload.identifier, device_id=device.id if device else None)
+    """Identifica al trabajador y garantiza un contexto de navegador vigente.
+
+    Reutiliza la cookie firmada activa; si falta o es inválida prepara un
+    dispositivo anónimo con un UUID explícito y lo persiste solo cuando la
+    identificación del trabajador fue exitosa, antes de emitir la cookie.
+    """
+    device = _current_terminal(request, db)
+    if device is not None:
+        return AttendanceService(db).identify(payload.identifier, device_id=device.id)
+
+    draft_device_id = uuid.uuid4()
+    result = AttendanceService(db).identify(payload.identifier, device_id=draft_device_id)
+    device = DeviceService(db).create_anonymous(draft_device_id)
+    token = create_terminal_token(str(device.id), device.token_version)
+    response.set_cookie(value=token, **terminal_cookie_kwargs())
+    return result
 
 
 @router.post("/evidence", status_code=status.HTTP_201_CREATED)
