@@ -416,23 +416,53 @@ h4,
   -webkit-backdrop-filter: none;
 }
 .sidebar-brand {
+  justify-content: center;
   min-height: 5.5rem;
   padding: 1.15rem 1.1rem;
   border-bottom: 1px solid var(--st-border);
 }
+.sidebar-brand a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.45rem;
+  text-align: center;
+}
 .sidebar-product {
+  margin-top: 0;
   color: var(--st-primary);
   background: var(--st-surface-highest);
-  align-self: flex-start;
+  align-self: center;
   padding: 0.15rem 0.4rem;
   border-radius: 0.25rem;
   letter-spacing: 0.1em;
 }
 
 .sidebar-nav {
+  /* El pulgar lo dibuja el sistema global de barras (globals.css); aquí sólo
+     se mezcla en reposo con la superficie de la sidebar y no con el lienzo. */
+  --sidebar-scroll-thumb: color-mix(in srgb, var(--st-primary) 30%, var(--st-surface-low));
+  --scrollbar-thumb: var(--sidebar-scroll-thumb);
   padding: 1rem 0.7rem;
   mask-image: none;
   -webkit-mask-image: none;
+  scrollbar-gutter: stable;
+}
+
+.sidebar-nav[data-scrollbar-active] {
+  --scrollbar-thumb: var(--st-primary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-nav:hover {
+    --scrollbar-thumb: var(--st-primary);
+  }
+}
+
+@media (forced-colors: active) {
+  .sidebar-nav {
+    scrollbar-color: auto;
+  }
 }
 .nav-group + .nav-group {
   margin-top: 0.5rem;
