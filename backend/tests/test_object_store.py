@@ -29,7 +29,7 @@ from app.modules.attendance.service import AttendanceService
 import app.modules.attendance.service as attendance_service
 from app.modules.attendance.models import STORAGE_DATABASE, STORAGE_S3, AttendanceEvidence, AttendanceRecord
 from tests.image_helpers import valid_jpeg_b64
-from tests.test_attendance_hardening import _employee, _login, _nonce_of, _pair_kiosk
+from tests.test_attendance_hardening import _employee, _login, _nonce_of, _pair_kiosk, _prepare
 
 
 def _client_error(code: str, status: int, operation: str = "HeadBucket") -> ClientError:
@@ -52,6 +52,7 @@ def test_evidencia_queda_en_almacen_y_no_en_postgres(client, db_session):
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     stored = client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(color=(9, 8, 7)), "content_type": "image/jpeg"},
@@ -205,6 +206,7 @@ def test_get_s3_caido_es_503(client, db_session, monkeypatch):
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     assert client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -228,6 +230,7 @@ def test_objeto_ausente_antes_de_marcar_no_crea_evento(client, db_session):
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     assert client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},
@@ -251,6 +254,7 @@ def test_put_ok_sql_falla_permite_reintento_misma_foto(client, db_session, monke
     _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(4, 5, 6))
     from sqlalchemy.exc import IntegrityError
 
@@ -287,6 +291,7 @@ def test_put_ok_sql_operacional_permite_reintento_misma_foto(client, db_session,
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(14, 15, 16))
     from sqlalchemy.exc import OperationalError
 
@@ -323,6 +328,7 @@ def test_put_ok_db_sigue_inaccesible_devuelve_503_y_reintento_reconcilia(client,
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(17, 18, 19))
     from sqlalchemy.exc import OperationalError
 
@@ -386,6 +392,7 @@ def test_put_ok_commit_incierto_no_duplica_fila(client, db_session, monkeypatch)
     _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(21, 22, 23))
     from sqlalchemy.exc import OperationalError
 
@@ -422,6 +429,7 @@ def test_put_ok_error_de_programacion_no_se_oculta(client, db_session, monkeypat
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo = valid_jpeg_b64(color=(30, 31, 32))
 
     def boom():
@@ -442,6 +450,7 @@ def test_put_ok_sql_falla_foto_distinta_es_409(client, db_session, monkeypatch):
     employee_id = _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     photo_a = valid_jpeg_b64(color=(40, 41, 42))
     photo_b = valid_jpeg_b64(color=(50, 51, 52))
     from sqlalchemy.exc import IntegrityError
@@ -483,6 +492,7 @@ def test_cambio_de_bucket_global_sigue_la_fila(client, db_session, monkeypatch):
     _employee(client, db_session)
     _pair_kiosk(client)
     token = client.post("/api/v1/attendance/identify", json={"identifier": "EMP-001"}).json()["marking_token"]
+    _prepare(client, token)
     assert client.post(
         "/api/v1/attendance/evidence",
         json={"marking_token": token, "image_base64": valid_jpeg_b64(), "content_type": "image/jpeg"},

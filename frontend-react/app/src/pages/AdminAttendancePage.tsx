@@ -16,6 +16,7 @@ import {
   ApiError,
   attendanceAdminApi,
   AttendanceDailyItem,
+  AttendanceEvidenceRef,
   AttendanceListItem,
   employeesApi,
   Employee,
@@ -116,12 +117,141 @@ function timestampFromParts(date: string, time: string): { value: string | null;
   return { value: fromLocalInput(`${date}T${time}`), incomplete: false };
 }
 
-function EvidenceImage({ label, src, loading }: { label: string; src: string | null; loading: boolean }) {
-  return <figure className="evidence-image">
-    <figcaption className="label">{label}</figcaption>
-    {loading ? <div className="skeleton evidence-skeleton" aria-label={`Cargando ${label.toLowerCase()}`} /> : src ?
-      <img src={src} alt={label} /> : <p className="muted">Sin {label.toLowerCase()}.</p>}
-  </figure>;
+/**
+ * Enlace solo-texto a Google Maps con las coordenadas originales. Usa el host
+ * literal, sin API de pago, sin mapa incrustado y sin datos del trabajador.
+ */
+function googleMapsCoordinateUrl(latitude: number, longitude: number): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latitude},${longitude}`)}`;
+}
+
+function formatOfficialTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleTimeString("es-PE", {
+    timeZone: "America/Lima",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function EvidenceFigure({
+  side,
+  label,
+  originalSrc,
+  stampedSrc,
+  stampedAdvertised,
+  stampedFailed,
+  meta,
+  loading,
+}: {
+  side: "check_in" | "check_out";
+  label: string;
+  originalSrc: string | null;
+  stampedSrc: string | null;
+  stampedAdvertised: boolean;
+  stampedFailed: boolean;
+  meta: AttendanceEvidenceRef | null;
+  loading: boolean;
+}) {
+  const [showOriginal, setShowOriginal] = useState(false);
+  const showingStamped = Boolean(stampedSrc) && !showOriginal;
+  const displaySrc = showingStamped ? stampedSrc : originalSrc;
+  const location = meta?.location ?? null;
+  const officialTime = formatOfficialTime(meta?.marked_at);
+  const stampUnavailable = stampedAdvertised && !stampedSrc && stampedFailed;
+
+  return (
+    <figure className="evidence-image" data-testid={`evidence-figure-${side}`}>
+      <figcaption className="label">{label}</figcaption>
+      <p className="muted" style={{ fontSize: "0.75rem", margin: "0.1rem 0 0.3rem" }} data-testid={`evidence-version-${side}`}>
+        {showingStamped ? "Versión con sello" : "Versión original (sin sello)"}
+      </p>
+      {stampUnavailable && (
+        <p className="alert alert-notice" role="status" data-testid={`evidence-stamp-warning-${side}`}>
+          No se pudo cargar la versión con sello de esta foto. La imagen mostrada y descargable es la original, sin sello.
+        </p>
+      )}
+      {loading ? (
+        <div className="skeleton evidence-skeleton" aria-label={`Cargando ${label.toLowerCase()}`} />
+      ) : displaySrc ? (
+        <img
+          src={displaySrc}
+          alt={showingStamped ? `${label} con sello` : `${label} original sin sello`}
+          data-testid={`evidence-image-${side}`}
+        />
+      ) : (
+        <p className="muted">Sin {label.toLowerCase()}.</p>
+      )}
+      {(originalSrc || stampedSrc) && (
+        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
+          {stampedSrc && (
+            <a
+              className="btn btn-ghost btn-sm"
+              href={stampedSrc}
+              download={`evidencia-${side}-sello.jpg`}
+              data-testid={`evidence-stamped-download-${side}`}
+            >
+              Descargar con sello
+            </a>
+          )}
+          {originalSrc && (
+            <a
+              className="btn btn-ghost btn-sm"
+              href={originalSrc}
+              download={`evidencia-${side}.jpg`}
+              data-testid={`evidence-original-${side}`}
+            >
+              Descargar original
+            </a>
+          )}
+          {stampedSrc && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowOriginal((value) => !value)}
+              data-testid={`evidence-toggle-${side}`}
+            >
+              {showOriginal ? "Ver con sello" : "Ver original"}
+            </button>
+          )}
+        </div>
+      )}
+      {meta && (
+        <dl className="muted" style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
+          <div>
+            <dt>Hora oficial</dt>
+            <dd data-testid={`evidence-official-time-${side}`}>{officialTime ?? "Hora oficial no disponible"}</dd>
+          </div>
+          <div>
+            <dt>Ubicación</dt>
+            {location ? (
+              <dd data-testid={`evidence-location-${side}`}>
+                <span>{location.latitude}, {location.longitude}</span>
+                <span> · precisión ±{location.accuracy_m} m</span>
+                {location.address ? <span> · {location.address}</span> : null}
+                <a
+                  className="btn btn-ghost btn-sm"
+                  href={googleMapsCoordinateUrl(location.latitude, location.longitude)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid={`evidence-maps-${side}`}
+                  style={{ marginLeft: "0.4rem" }}
+                >
+                  Ver en Google Maps
+                </a>
+              </dd>
+            ) : (
+              <dd className="muted" data-testid={`evidence-location-missing-${side}`}>
+                Ubicación no disponible para este registro.
+              </dd>
+            )}
+          </div>
+        </dl>
+      )}
+    </figure>
+  );
 }
 
 export default function AdminAttendancePage() {
@@ -160,6 +290,18 @@ export default function AdminAttendancePage() {
     check_in: null,
     check_out: null,
     missing: null,
+  });
+  const [photoMeta, setPhotoMeta] = useState<{
+    check_in: AttendanceEvidenceRef | null;
+    check_out: AttendanceEvidenceRef | null;
+  }>({ check_in: null, check_out: null });
+  const [stampedUrls, setStampedUrls] = useState<{ check_in: string | null; check_out: string | null }>({
+    check_in: null,
+    check_out: null,
+  });
+  const [stampFailed, setStampFailed] = useState<{ check_in: boolean; check_out: boolean }>({
+    check_in: false,
+    check_out: false,
   });
   const [attemptNonce, setAttemptNonce] = useState("");
   const [attemptReason, setAttemptReason] = useState("");
@@ -252,22 +394,51 @@ export default function AdminAttendancePage() {
     if (photoUrls.check_out) URL.revokeObjectURL(photoUrls.check_out);
   }, [photoUrls]);
 
+  useEffect(() => () => {
+    if (stampedUrls.check_in) URL.revokeObjectURL(stampedUrls.check_in);
+    if (stampedUrls.check_out) URL.revokeObjectURL(stampedUrls.check_out);
+  }, [stampedUrls]);
+
   async function loadPhotos(recordId: string) {
     setPhotosFor(recordId);
     setPhotoUrls({ check_in: null, check_out: null, missing: null });
+    setPhotoMeta({ check_in: null, check_out: null });
+    setStampedUrls({ check_in: null, check_out: null });
+    setStampFailed({ check_in: false, check_out: false });
     try {
       const meta = await attendanceAdminApi.evidenceMeta(recordId);
       const [checkInUrl, checkOutUrl] = await Promise.all([
         meta.check_in?.id ? attendanceAdminApi.evidenceImage(meta.check_in.id) : null,
         meta.check_out?.id ? attendanceAdminApi.evidenceImage(meta.check_out.id) : null,
       ]);
+      // El sello solo existe para evidencia confirmada y preparada. Si el
+      // derivado anunciado falla, se avisa: el original NUNCA se muestra como
+      // si estuviera sellado.
+      const loadStamped = async (ref: AttendanceEvidenceRef | null | undefined) => {
+        if (!ref?.id || !ref.stamped_available) return { url: null, failed: false };
+        try {
+          return { url: await attendanceAdminApi.evidenceStampedImage(ref.id), failed: false };
+        } catch {
+          return { url: null, failed: true };
+        }
+      };
+      const [stampedIn, stampedOut] = await Promise.all([
+        loadStamped(meta.check_in),
+        loadStamped(meta.check_out),
+      ]);
       const missing =
         !meta.check_in?.available && !meta.check_out?.available
           ? "Este registro es anterior a la evidencia fotográfica o nunca tuvo foto."
           : null;
+      setPhotoMeta({ check_in: meta.check_in ?? null, check_out: meta.check_out ?? null });
+      setStampedUrls({ check_in: stampedIn.url, check_out: stampedOut.url });
+      setStampFailed({ check_in: stampedIn.failed, check_out: stampedOut.failed });
       setPhotoUrls({ check_in: checkInUrl, check_out: checkOutUrl, missing });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "No se pudieron cargar las fotos";
+      setPhotoMeta({ check_in: null, check_out: null });
+      setStampedUrls({ check_in: null, check_out: null });
+      setStampFailed({ check_in: false, check_out: false });
       setPhotoUrls({ check_in: null, check_out: null, missing: message });
       setError(message);
     }
@@ -595,8 +766,26 @@ export default function AdminAttendancePage() {
         <AppDialog labelledBy="evidence-dialog-title" onClose={() => setPhotosFor(null)} className="evidence-dialog">
           <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" aria-label="Cerrar evidencia"><X size={15} /></AppDialogCloseButton></div>
           <div className="evidence-grid">
-            <EvidenceImage label="Foto de entrada" src={photoUrls.check_in} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
-            <EvidenceImage label="Foto de salida" src={photoUrls.check_out} loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out} />
+            <EvidenceFigure
+              side="check_in"
+              label="Foto de entrada"
+              originalSrc={photoUrls.check_in}
+              stampedSrc={stampedUrls.check_in}
+              stampedAdvertised={Boolean(photoMeta.check_in?.stamped_available)}
+              stampedFailed={stampFailed.check_in}
+              meta={photoMeta.check_in}
+              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
+            />
+            <EvidenceFigure
+              side="check_out"
+              label="Foto de salida"
+              originalSrc={photoUrls.check_out}
+              stampedSrc={stampedUrls.check_out}
+              stampedAdvertised={Boolean(photoMeta.check_out?.stamped_available)}
+              stampedFailed={stampFailed.check_out}
+              meta={photoMeta.check_out}
+              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
+            />
           </div>
           {photoUrls.missing && <p className="muted">{photoUrls.missing}</p>}
         </AppDialog>

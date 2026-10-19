@@ -73,7 +73,7 @@ Pop-Location
 
 El proxy HTTPS nativo local, una vez autorizado y configurado, debe publicar un solo origen y enrutar `/` a `127.0.0.1:13000` y `/api/v1/...` a `127.0.0.1:18000`. La URL concreta condicional de la tablet es `https://192.168.18.141:8443/asistencia`: antes de usarla, revalide que esa sea la IP Wi-Fi actual y que el certificado incluya exactamente esa IP en su SAN. El proxy, certificado y cambio de firewall siguen pendientes de autorización específica; Caddy y mkcert no están instalados, por lo que no se inventan comandos de instalación todavía. Mantenga `SESSION_COOKIE_SECURE=true` y `SESSION_COOKIE_SAMESITE=lax` como en el bloque de arranque.
 
-Desde la PC, el administrador crea el terminal en `/api/v1/devices`, obtiene el código de un uso y en la tablet abre solo `/asistencia` para emparejarse. No inicie sesión ADMIN en la tablet. El proxy es el único servicio visible en LAN; FastAPI sigue en `127.0.0.1:18000`, frontend en `127.0.0.1:13000` y MinIO/PostgreSQL en loopback.
+En la tablet abra solo `/asistencia`: la primera identificación válida (DNI, código o QR) establece automáticamente el contexto del navegador y guarda su cookie firmada. No hace falta aprobar ni emparejar el equipo antes; el emparejamiento manual quedó retirado (`POST /api/v1/devices` y `POST /api/v1/attendance/terminal/pair` responden HTTP 410). Desde la PC, el administrador conserva el listado (`GET /api/v1/devices`) y la revocación (`POST /api/v1/devices/{id}/revoke`) del contexto vigente, presentado como sesión de marcación. No inicie sesión ADMIN en la tablet. El proxy es el único servicio visible en LAN; FastAPI sigue en `127.0.0.1:18000`, frontend en `127.0.0.1:13000` y MinIO/PostgreSQL en loopback.
 
 ## Matriz del ensayo físico (pendiente)
 
@@ -82,7 +82,7 @@ Registre SHA servido, origen HTTPS, hora Lima, modelo de tablet y versión de An
 | ID | Acción | Aceptación |
 |---|---|---|
 | T1 | Abrir `/asistencia` | HTTPS sin alerta, API y permisos disponibles. |
-| T2 | Emparejar | Cookie de terminal; sin sesión ADMIN. |
+| T2 | Identificar en `/asistencia` | Contexto de navegador establecido solo con DNI/código/QR; sin sesión ADMIN ni aprobación previa. |
 | T3 | Entrada con código Ana | Persona correcta, frontal, contador, una foto y entrada. |
 | T4 | Salida con código Ana | Foto nueva, salida correcta; evidencia de entrada conservada. |
 | T5 | QR Bruno | Lee QR, detiene cámara lectora y habilita frontal. |
@@ -92,7 +92,7 @@ Registre SHA servido, origen HTTPS, hora Lima, modelo de tablet y versión de An
 | T9 | Foto sin completar | Continúa o informa resolución controlada, sin bloqueo permanente. |
 | T10 | Revisar en PC | ADMIN/BOSS ve foto correcta; consultar no modifica marcaciones. |
 | T11 | Reiniciar navegador/tablet | Registra qué persiste; no presupone `sessionStorage`. |
-| T12 | Otro navegador sin autorizar | Rechazo conforme a política de terminal, sin salario ni evidencia. |
+| T12 | Otro navegador | Obtiene su propio contexto al identificar; no accede a intentos del primero, sin salario ni evidencia cruzada. |
 
 ## Parada y limpieza
 

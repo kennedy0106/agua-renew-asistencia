@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import { test } from "@playwright/test";
 import { installKioskCameraHarness } from "./kiosk-harness";
 
@@ -66,26 +66,41 @@ async function createEmployee(api: APIRequestContext, firstName: string) {
   return body;
 }
 
-async function createDevice(api: APIRequestContext, name: string) {
-  const created = await api.post(`${API}/api/v1/devices`, { data: { name } });
-  expect(created.status(), await created.text()).toBe(201);
-  return (await created.json()) as { id: string; pairing_code: string; name: string };
+// Ya no existen emparejamiento ni creación/rotación de códigos: la primera
+// identificación exitosa de un navegador establece sola su contexto de
+// marcación. La administración conserva listado y revocación.
+type DeviceListItem = {
+  id: string;
+  name: string;
+  device_code: string;
+  active: boolean;
+  created_at: string;
+};
+
+async function listDevices(api: APIRequestContext): Promise<DeviceListItem[]> {
+  const listed = await api.get(`${API}/api/v1/devices`);
+  expect(listed.ok(), await listed.text()).toBeTruthy();
+  return (await listed.json()) as DeviceListItem[];
 }
 
-async function pairKiosk(page: Page, pairingCode: string) {
-  const result = await page.evaluate(
-    async ({ api, code }) => {
-      const response = await fetch(`${api}/api/v1/attendance/terminal/pair`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pairing_code: code }),
-      });
-      return { status: response.status, body: await response.json().catch(() => null) };
-    },
-    { api: API, code: pairingCode },
-  );
-  expect(result.status, JSON.stringify(result.body)).toBe(200);
+/** Identifica directamente para fijar el contexto del navegador sin usar la UI. */
+async function establishDeviceContext(page: Page, identifier: string): Promise<string> {
+  const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier });
+  expect(identified.status, JSON.stringify(identified.body)).toBe(200);
+  return identified.body.marking_token as string;
+}
+
+/** Devuelve el contexto de navegador creado tras una identificación. */
+async function newestDeviceId(api: APIRequestContext, beforeIds: Set<string>): Promise<string> {
+  const devices = await listDevices(api);
+  const created = devices.find((device) => !beforeIds.has(device.id));
+  expect(created, "la identificación debe establecer un contexto de navegador").toBeTruthy();
+  return created!.id;
+}
+
+async function revokeDevice(api: APIRequestContext, deviceId: string): Promise<void> {
+  const revoked = await api.post(`${API}/api/v1/devices/${deviceId}/revoke`);
+  expect(revoked.ok(), await revoked.text()).toBeTruthy();
 }
 
 async function fetchJson(page: Page, pathName: string, body: unknown) {
@@ -144,21 +159,31 @@ async function wrapGetUserMediaCounter(page: Page) {
   });
 }
 
+/**
+ * El kiosco exige una lectura puntual de ubicación (máximo 50 m de precisión)
+ * antes de identificar; se emula con la API nativa de Playwright.
+ */
+const E2E_GEOLOCATION = { latitude: -12.0464, longitude: -77.0428, accuracy: 10 };
+
+async function grantKioskGeolocation(context: BrowserContext) {
+  await context.grantPermissions(["geolocation"], { origin: "http://127.0.0.1:3000" });
+  await context.setGeolocation(E2E_GEOLOCATION);
+}
+
 function gumCount(page: Page) {
   return page.evaluate(() => (window as unknown as { __gumCount?: number }).__gumCount ?? 0);
 }
 
 test.describe("kiosco integración Next+FastAPI+Postgres", () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, context }) => {
     await installKioskCameraHarness(page);
+    await grantKioskGeolocation(context);
   });
 
   test("entrada y salida con fotografía persistida", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "Ana");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
     const listed = await api.get(`${API}/api/v1/attendance?employee_id=${employee.id}`);
@@ -177,9 +202,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("recupera entrada y salida con token corto vencido; escrituras vencidas 401", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "Luis");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const inToken = await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
     const expiredIn = expireAttendanceToken(inToken, SECRET);
@@ -206,25 +229,27 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect((await fetchJson(page, "/api/v1/attendance/check-out", { marking_token: expiredOut })).status).toBe(401);
   });
 
-  test("rechaza otro terminal, revocado, ausente y pertenencia nula", async ({ page, request, browser }) => {
+  test("rechaza otro navegador, contexto revocado, ausente y pertenencia nula", async ({ page, request, browser }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "Nora");
-    const deviceA = await createDevice(api, `Kiosco A ${employee.employee_code}`);
-    const deviceB = await createDevice(api, `Kiosco B ${employee.employee_code}`);
+    const beforeIds = new Set((await listDevices(api)).map((device) => device.id));
     await page.goto("/asistencia");
-    await pairKiosk(page, deviceA.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
+    const pageDeviceId = await newestDeviceId(api, beforeIds);
 
+    // Otro navegador con su propio contexto tampoco puede leer este intento.
+    const other = await createEmployee(api, "Paz");
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
     await installKioskCameraHarness(pageB);
     await pageB.goto("/asistencia");
-    await pairKiosk(pageB, deviceB.pairing_code);
+    await establishDeviceContext(pageB, other.employee_code);
     const fromB = await fetchJson(pageB, "/api/v1/attendance/attempt/status", { marking_token: token });
     expect(fromB.status).toBe(401);
     await contextB.close();
 
+    // Un navegador que nunca se identificó tampoco tiene acceso.
     const absent = await browser.newContext();
     const pageAbsent = await absent.newPage();
     await pageAbsent.goto("/asistencia");
@@ -232,19 +257,18 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect(fromAbsent.status).toBe(401);
     await absent.close();
 
-    const revoked = await api.post(`${API}/api/v1/devices/${deviceA.id}/revoke`);
-    expect(revoked.ok()).toBeTruthy();
+    // Revocar el contexto vigente cierra el acceso a su intento pendiente.
+    await revokeDevice(api, pageDeviceId);
     const fromRevoked = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: token });
     expect(fromRevoked.status).toBe(401);
 
-    const deviceC = await createDevice(api, `Kiosco C ${employee.employee_code}`);
     const contextC = await browser.newContext();
+    await grantKioskGeolocation(contextC);
     const pageC = await contextC.newPage();
     await installKioskCameraHarness(pageC);
     await pageC.goto("/asistencia");
-    await pairKiosk(pageC, deviceC.pairing_code);
-    const other = await createEmployee(api, "Paz");
-    const otherToken = await identifyAndCaptureToken(pageC, other.employee_code);
+    const otherEmployee = await createEmployee(api, "Sol");
+    const otherToken = await identifyAndCaptureToken(pageC, otherEmployee.employee_code);
     await waitConfirmed(pageC, /Entrada registrada/);
     execFileSync("uv", ["run", "python", "-m", "scripts.e2e_null_nonce_device"], {
       cwd: BACKEND_DIR,
@@ -259,7 +283,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("respuesta perdida tras commit y consulta fallida no crea la acción contraria", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "Rita");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let checkInStored = false;
     let statusFailures = 1;
 
@@ -286,7 +309,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     });
 
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     expect(checkInStored).toBe(true);
@@ -306,7 +328,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T01 recarga y consulta entrada sin fotografía", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T01");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let evidenceAfterReload = 0;
     let checkInAfterReload = 0;
     let statusAfterReload = 0;
@@ -343,7 +364,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     });
 
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     const before = await countAttendance(api, employee.id);
@@ -372,7 +392,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T02 recarga y consulta salida sin fotografía", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T02");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let checkOutAfterReload = 0;
     let evidenceAfterReload = 0;
     let reloaded = false;
@@ -407,7 +426,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     });
 
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
     await page.getByTestId("kiosk-new-marking").click();
@@ -436,7 +454,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T03 recarga con permiso corto vencido dentro de ventana", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T03");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let allowStatus = false;
     await page.route("**/api/v1/attendance/check-in", async (route) => {
       if (route.request().method() === "OPTIONS") {
@@ -458,7 +475,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.continue();
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     const expired = expireAttendanceToken(token, SECRET);
@@ -483,7 +499,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T04 evidencia guardada y completar sin recaptura", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T04");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let allowCheckIn = false;
     let checkInCalls = 0;
     await page.route("**/api/v1/attendance/check-in", async (route) => {
@@ -499,7 +514,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.continue();
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     expect(await countAttendance(api, employee.id)).toHaveLength(0);
@@ -519,9 +533,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T05 token vencido se resuelve sin evento", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T05");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier: employee.employee_code });
     expect(identified.status).toBe(200);
     const expired = expireAttendanceToken(identified.body.marking_token, SECRET);
@@ -541,7 +553,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T06 evidencia 422 no deja bloqueo perpetuo", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T06");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.route("**/api/v1/attendance/evidence", async (route) => {
       if (route.request().method() === "OPTIONS") {
         await route.continue();
@@ -554,7 +565,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       });
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     const resolved = await fetchJson(page, "/api/v1/attendance/attempt/resolve", {
@@ -569,10 +579,9 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     await expect(page.getByTestId("kiosk-identify")).toBeVisible();
   });
 
-  test("EDB-T07 evidencia guardada y permiso vence antes de marcar", async ({ page, request }) => {
+  test("EDB-T07 recupera JWT vencido sin extender la preparación", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T07");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.route("**/api/v1/attendance/check-in", async (route) => {
       if (route.request().method() === "OPTIONS") {
         await route.continue();
@@ -581,25 +590,37 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.abort("failed");
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
-    const expired = expireAttendanceToken(token, SECRET);
-    const status = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: expired });
-    expect(status.body.state).toBe("EXPIRED_UNCONFIRMED");
-    expect(status.body.evidence_ready).toBe(true);
-    const resolved = await fetchJson(page, "/api/v1/attendance/attempt/resolve", {
-      marking_token: expired,
-      reason_code: "TOKEN_EXPIRED",
-    });
-    expect(resolved.body.state).toBe("CANCELLED");
+    const before = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: token });
+    expect(before.status).toBe(200);
+    expect(before.body.state).toBe("PENDING");
+    expect(before.body.evidence_ready).toBe(true);
     expect(await countAttendance(api, employee.id)).toHaveLength(0);
+
+    const expired = expireAttendanceToken(token, SECRET);
+    const recovered = await fetchJson(page, "/api/v1/attendance/attempt/status", { marking_token: expired });
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.state).toBe("PENDING");
+    expect(recovered.body.write_token_valid).toBe(true);
+    expect(recovered.body.preparation).toEqual(before.body.preparation);
+    expect(nonceOf(recovered.body.marking_token)).toBe(nonceOf(token));
+    expect(await countAttendance(api, employee.id)).toHaveLength(0);
+
+    await page.unroute("**/api/v1/attendance/check-in");
+    expect((await fetchJson(page, "/api/v1/attendance/check-in", { marking_token: expired })).status).toBe(401);
+    expect(await countAttendance(api, employee.id)).toHaveLength(0);
+    const completed = await fetchJson(page, "/api/v1/attendance/check-in", {
+      marking_token: recovered.body.marking_token,
+    });
+    expect(completed.status).toBe(201);
+    expect(Date.parse(completed.body.check_in_at)).toBe(Date.parse(before.body.preparation.marked_at));
+    expect(await countAttendance(api, employee.id)).toHaveLength(1);
   });
 
   test("EDB-T08 confirmar entrada y resolver no crea salida", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T08");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.route("**/api/v1/attendance/check-in", async (route) => {
       if (route.request().method() === "OPTIONS") {
         await route.continue();
@@ -609,7 +630,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.abort("failed");
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia'], [data-testid='kiosk-confirmed-title']")).toBeVisible({ timeout: 45_000 });
     const resolved = await fetchJson(page, "/api/v1/attendance/attempt/resolve", {
@@ -627,9 +647,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T09 revisión admin fuera de ventana", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T09");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
     const nonce = nonceOf(token);
@@ -657,7 +675,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("EDB-T10 resolución perdida se recupera igual", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T10");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let resolveStored = false;
     await page.route("**/api/v1/attendance/attempt/resolve", async (route) => {
       if (route.request().method() === "OPTIONS") {
@@ -669,7 +686,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.abort("failed");
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier: employee.employee_code });
     expect(identified.status).toBe(200);
     const token = identified.body.marking_token as string;
@@ -689,20 +705,15 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect(await countAttendance(api, employee.id)).toHaveLength(0);
   });
 
-  test("EDB-T11 otro terminal no resuelve; dueño nulo tampoco", async ({ page, request, browser }) => {
+  test("EDB-T11 otro navegador no resuelve; dueño nulo tampoco", async ({ page, request, browser }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T11");
-    const deviceA = await createDevice(api, `Kiosco A ${employee.employee_code}`);
-    const deviceB = await createDevice(api, `Kiosco B ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, deviceA.pairing_code);
-    const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier: employee.employee_code });
-    expect(identified.status).toBe(200);
-    const token = identified.body.marking_token as string;
+    const token = await establishDeviceContext(page, employee.employee_code);
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
     await pageB.goto("/asistencia");
-    await pairKiosk(pageB, deviceB.pairing_code);
+    await establishDeviceContext(pageB, employee.employee_code);
     const fromB = await fetchJson(pageB, "/api/v1/attendance/attempt/resolve", {
       marking_token: token,
       reason_code: "USER_CANCELLED",
@@ -716,7 +727,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("E506-A06 consulta salida tras desactivar empleado", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "A06");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let checkOutAfterReload = 0;
     let evidenceAfterReload = 0;
     let reloaded = false;
@@ -751,7 +761,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     });
 
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     await identifyAndCaptureToken(page, employee.employee_code);
     await waitConfirmed(page, /Entrada registrada/);
     await page.getByTestId("kiosk-new-marking").click();
@@ -786,7 +795,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("E506-A07 revisión de jefe con empleado inactivo y volver al inicio", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "A07");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     let allowStatus = false;
     await page.route("**/api/v1/attendance/check-in", async (route) => {
       if (route.request().method() === "OPTIONS") {
@@ -808,7 +816,6 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
       await route.continue();
     });
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     const nonce = nonceOf(token);
@@ -843,9 +850,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
   test("E506-A08 cancelar intento no confirmado de empleado inactivo", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "A08");
-    const device = await createDevice(api, `Kiosco ${employee.employee_code}`);
     await page.goto("/asistencia");
-    await pairKiosk(page, device.pairing_code);
     const identified = await fetchJson(page, "/api/v1/attendance/identify", { identifier: employee.employee_code });
     expect(identified.status).toBe(200);
     const token = identified.body.marking_token as string;

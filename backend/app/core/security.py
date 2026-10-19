@@ -101,6 +101,29 @@ def create_terminal_token(device_id: str, token_version: int, *, days: int | Non
     )
 
 
+def renew_attendance_token(decoded: dict[str, Any], *, expires_at: datetime) -> str:
+    """Reemite un token de marcación conservando su identidad y nonce.
+
+    Conserva ``sub``/``action``/``nonce`` y, si existen, ``rid``/``did``; el
+    ``iat`` original se mantiene como base de recuperación. El vencimiento se
+    fija exactamente en el plazo indicado (nunca se extiende por sí solo).
+    """
+    settings = get_settings()
+    payload: dict[str, Any] = {
+        "sub": decoded["sub"],
+        "type": "attendance",
+        "action": decoded["action"],
+        "nonce": decoded["nonce"],
+        "iat": decoded.get("iat") or datetime.now(timezone.utc),
+        "exp": expires_at,
+    }
+    if decoded.get("rid"):
+        payload["rid"] = decoded["rid"]
+    if decoded.get("did"):
+        payload["did"] = decoded["did"]
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+
+
 def decode_terminal_token(token: str) -> dict[str, Any] | None:
     payload = decode_access_token(token)
     if payload is None or payload.get("type") != "terminal" or not payload.get("sub"):

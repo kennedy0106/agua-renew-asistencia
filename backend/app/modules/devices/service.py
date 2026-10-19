@@ -68,6 +68,21 @@ class DeviceService:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Código de emparejamiento inválido o vencido")
         return paired
 
+    def create_anonymous(self, device_id: uuid.UUID) -> AttendanceDevice:
+        """Persiste el contexto anónimo de un navegador ya identificado.
+
+        Recibe el UUID ya incorporado al token de marcación para que ambas
+        referencias coincidan. Sin código de emparejamiento ni campos nuevos.
+        """
+        device = AttendanceDevice(
+            id=device_id,
+            name="Sesión web",
+            device_code=f"WEB-{secrets.token_hex(8).upper()}",
+            token_version=1,
+            active=True,
+        )
+        return self.repo.save(device)
+
     def get_active(self, device_id: uuid.UUID, token_version: int | None = None) -> AttendanceDevice:
         device = self.repo.get(device_id)
         if device is None or not device.active:
