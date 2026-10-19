@@ -1960,3 +1960,552 @@ h4,
 .historical-edit-panel {
   border-color: var(--st-border-highlight);
 }
+
+/* ============================================================
+   Asistencia — encabezado de la pestaña (filtros y acciones)
+   Dos niveles: título/acciones y filtros etiquetados. Las
+   divulgaciones (ayuda, período, recuperación) usan superficie
+   interior, sin doble elevación. Solo clases .attendance-*.
+   ============================================================ */
+.attendance-toolbar {
+  display: grid;
+  gap: 0.85rem;
+  margin-bottom: 1.1rem;
+  padding: 0.85rem 1rem 1rem;
+  background: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  box-shadow: var(--st-shadow-sm);
+}
+.attendance-toolbar-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.85rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--st-border);
+}
+.attendance-toolbar-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--st-on-surface);
+}
+.attendance-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: auto;
+}
+.attendance-action {
+  min-height: 2.75rem;
+  white-space: nowrap;
+}
+.attendance-action:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+.attendance-toolbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--st-neutral);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+/* --- Nivel de filtros --- */
+.attendance-filter-row {
+  display: grid;
+  grid-template-columns: minmax(11rem, 1.4fr) minmax(11rem, auto) minmax(9rem, 1fr) auto;
+  align-items: end;
+  gap: 0.55rem 0.7rem;
+}
+.attendance-filter {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.attendance-filter-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--st-neutral);
+}
+.attendance-filter--clear {
+  justify-self: end;
+}
+.attendance-clear {
+  height: 2.75rem;
+  min-height: 2.75rem;
+  padding-inline: 0.65rem;
+}
+.attendance-clear:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+/* Los campos de la fila igualan la altura real del disparador de período y de
+   Limpiar (2.75rem): la base compartida deja los campos en 2.85rem. El valor
+   se recorta con elipsis en vez de partirse en dos líneas dentro del control. */
+.attendance-filter .select-trigger {
+  height: 2.75rem;
+  min-height: 2.75rem;
+}
+.attendance-filter .select-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Disparador compacto del período: misma altura que los demás campos. */
+.attendance-period-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  max-width: 100%;
+  padding: 0 0.7rem;
+  border: 1px solid var(--st-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--st-card);
+  color: var(--st-on-surface);
+  font-family: var(--font);
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+.attendance-period-trigger > svg {
+  flex-shrink: 0;
+  color: var(--st-primary);
+}
+.attendance-period-trigger:hover {
+  border-color: var(--st-primary-fixed-dim);
+}
+.attendance-period-trigger[aria-expanded="true"] {
+  border-color: var(--st-primary);
+  background: var(--st-surface-low);
+}
+.attendance-period-trigger:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+.attendance-period-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attendance-period-editor {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.6rem 0.7rem;
+  background: var(--st-surface-low);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-sm);
+}
+.attendance-period-separator {
+  color: var(--st-neutral);
+  font-size: 0.8rem;
+}
+
+/* --- Ayuda de columnas (bajo demanda) --- */
+.attendance-help {
+  padding: 0.7rem 0.85rem 0.5rem;
+  background: var(--st-surface-low);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-sm);
+}
+.attendance-help-intro {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  color: var(--st-neutral);
+}
+.attendance-help-grid {
+  padding: 0 0 0.35rem;
+}
+
+/* --- Más acciones: dos entradas, nada más --- */
+.attendance-more-wrap {
+  position: relative;
+}
+.attendance-more {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 60;
+  display: grid;
+  gap: 0.1rem;
+  width: min(21rem, calc(100vw - 2.5rem));
+  padding: 0.3rem;
+  background: var(--st-card);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  box-shadow: var(--st-shadow-md);
+}
+.attendance-more-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  border: 0;
+  border-radius: var(--st-radius-sm);
+  background: transparent;
+  color: var(--st-on-surface);
+  font-family: var(--font);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.attendance-more-item:hover {
+  background: var(--st-surface-low);
+}
+.attendance-more-item:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: -2px;
+}
+.attendance-more-item > svg {
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+  color: var(--st-primary);
+}
+.attendance-more-title {
+  display: block;
+  font-size: 0.83rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.attendance-more-hint {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.74rem;
+  color: var(--st-neutral);
+}
+
+/* --- Recuperación de tablet (se abre desde Más acciones) --- */
+.attendance-recovery {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem 0.9rem 0.9rem;
+  background: var(--st-surface-low);
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-sm);
+}
+.attendance-recovery-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.attendance-recovery-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--st-on-surface);
+}
+.attendance-recovery-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: var(--st-neutral);
+}
+.attendance-recovery-close {
+  flex-shrink: 0;
+  min-height: 2.25rem;
+}
+.attendance-recovery-close:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+.attendance-recovery-copy {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 0.8rem;
+  color: var(--st-on-surface-variant);
+}
+.attendance-recovery-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.7rem;
+}
+.attendance-recovery-lookup {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--st-on-surface-variant);
+}
+.attendance-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (max-width: 1100px) and (min-width: 781px) {
+  .attendance-filter-row {
+    grid-template-columns: minmax(9rem, 1.2fr) auto minmax(8rem, 1fr) auto;
+  }
+}
+
+@media (max-width: 780px) {
+  .attendance-toolbar {
+    padding: 0.8rem 0.85rem 0.9rem;
+  }
+  .attendance-toolbar-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  /* Una columna: el nombre completo del filtro cabe sin partirse en dos
+     líneas dentro del control, y Limpiar queda a la derecha. */
+  .attendance-filter-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .attendance-filter--clear {
+    grid-column: 1 / -1;
+    align-self: end;
+    justify-self: end;
+  }
+  .attendance-period-editor {
+    grid-column: 1 / -1;
+  }
+  .attendance-more {
+    right: auto;
+    left: 0;
+    width: min(20rem, calc(100vw - 2.7rem));
+  }
+}
+
+/* Asistencia: tablas de consulta y acciones, sin alterar otras tablas. */
+.attendance-tables.attendance-responsive-wrap {
+  display: block;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  background: var(--st-card);
+  box-shadow: none;
+}
+.attendance-tables .table {
+  width: 100%;
+  min-width: 54rem;
+  table-layout: fixed;
+}
+.attendance-tables .table th,
+.attendance-tables .table td {
+  padding-inline: 0.65rem;
+  overflow: visible;
+  overflow-wrap: normal;
+  vertical-align: middle;
+}
+.attendance-tables .table th {
+  padding-block: 0.8rem;
+  font-size: 0.73rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  white-space: normal;
+}
+.attendance-tables .table td {
+  padding-block: 0.55rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+.attendance-tables .attendance-daily-table .attendance-col-name { width: 28%; }
+.attendance-tables .attendance-daily-table .attendance-col-date { width: 12%; }
+.attendance-tables .attendance-daily-table .attendance-col-number { width: 10%; }
+.attendance-tables .attendance-daily-table .attendance-col-balance { width: 10%; }
+.attendance-tables .attendance-daily-table .attendance-col-incidents { width: 16%; }
+.attendance-tables .attendance-daily-table .attendance-col-action { width: 14%; }
+.attendance-tables .attendance-records-table .attendance-col-name { width: 27%; }
+.attendance-tables .attendance-records-table .attendance-col-date { width: 10%; }
+.attendance-tables .attendance-records-table .attendance-col-time { width: 11%; }
+.attendance-tables .attendance-records-table .attendance-col-number { width: 10%; }
+.attendance-tables .attendance-records-table .attendance-col-status { width: 10%; }
+.attendance-tables .attendance-records-table .attendance-col-action { width: 21%; }
+.attendance-tables .attendance-cell-name { white-space: normal; }
+.attendance-tables .attendance-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.attendance-tables .attendance-identity > .attendance-name,
+.attendance-tables .attendance-identity__text { flex: 1; min-width: 0; }
+.attendance-tables .attendance-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.attendance-tables .attendance-name--link { color: var(--st-primary); text-underline-offset: 0.18em; }
+.attendance-tables .attendance-name--link:hover { text-decoration: underline; }
+.attendance-tables .attendance-role {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+}
+.attendance-tables .attendance-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.attendance-tables .attendance-date { text-align: left; }
+.attendance-tables .attendance-balance { display: block; font-weight: 650; }
+.attendance-tables .attendance-balance--positive { color: var(--st-primary); }
+.attendance-tables .attendance-balance--negative { color: #875000; }
+.attendance-tables .attendance-balance--zero { color: var(--st-on-surface-variant); }
+.attendance-tables .attendance-exit-date {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+}
+.attendance-tables .attendance-incidents { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.attendance-tables .attendance-incident,
+.attendance-tables .attendance-no-incident,
+.attendance-tables .attendance-status {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+.attendance-tables .attendance-actions { display: flex; align-items: center; gap: 0.35rem; }
+.attendance-tables .attendance-action {
+  flex: 0 0 auto;
+  width: auto;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  gap: 0.35rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--st-border-strong);
+  border-radius: var(--st-radius-sm);
+  background: var(--st-card);
+  color: var(--st-on-surface);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.attendance-tables .attendance-action > svg { flex-shrink: 0; }
+.attendance-tables .attendance-action--soft {
+  border-color: color-mix(in srgb, var(--st-primary) 28%, var(--st-card));
+  background: color-mix(in srgb, var(--st-primary) 7%, var(--st-card));
+  color: var(--st-primary);
+}
+.attendance-tables .attendance-action:hover:not(:disabled) {
+  border-color: var(--st-primary);
+  background: var(--st-surface-low);
+}
+.attendance-tables .attendance-action--secondary { color: var(--st-on-surface-variant); }
+.attendance-tables .attendance-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.attendance-tables .attendance-row-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.35rem;
+  border: 1px solid transparent;
+  border-radius: var(--st-radius-sm);
+  background: transparent;
+  color: var(--st-on-surface-variant);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attendance-tables .attendance-row-toggle:hover,
+.attendance-tables .attendance-row-toggle[aria-expanded="true"] {
+  background: var(--st-surface-low);
+  color: var(--st-primary);
+}
+.attendance-tables .attendance-row-toggle[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.attendance-tables .attendance-action:focus-visible,
+.attendance-tables .attendance-row-toggle:focus-visible {
+  outline: 2px solid var(--st-primary);
+  outline-offset: 2px;
+}
+.attendance-tables .attendance-detail-row td { background: var(--st-surface-low); }
+.attendance-tables .attendance-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem 1.1rem;
+  margin: 0;
+  padding: 0.5rem 0.25rem;
+}
+.attendance-tables .attendance-detail dt,
+.attendance-tables .attendance-card__primary dt {
+  margin: 0 0 0.25rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+}
+.attendance-tables .attendance-detail dd { margin: 0; white-space: normal; }
+.attendance-tables .attendance-detail .attendance-num,
+.attendance-tables .attendance-detail .attendance-balance { text-align: left; }
+.attendance-tables .attendance-detail__person { grid-column: 1 / -1; }
+.attendance-tables .attendance-detail__person dd { font-weight: 600; overflow-wrap: anywhere; }
+.attendance-tables .attendance-detail__flag { display: inline-block; margin-left: 0.4rem; }
+.attendance-tables.attendance-cards { display: none; gap: 0.75rem; margin-bottom: 1rem; }
+.attendance-tables .attendance-card {
+  padding: 1rem;
+  border: 1px solid var(--st-border);
+  border-radius: var(--st-radius-md);
+  background: var(--st-card);
+  box-shadow: none;
+}
+.attendance-tables .attendance-card__head { display: flex; align-items: flex-start; gap: 0.8rem; }
+.attendance-tables .attendance-card__name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.attendance-tables .attendance-card .attendance-name { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.attendance-tables .attendance-card__date { flex-shrink: 0; font-size: 0.78rem; color: var(--st-on-surface-variant); }
+.attendance-tables .attendance-card__role { display: block; margin-top: 0.2rem; font-size: 0.75rem; color: var(--st-on-surface-variant); }
+.attendance-tables .attendance-card__primary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin: 1rem 0; }
+.attendance-tables .attendance-card__primary dd { margin: 0; font-weight: 600; font-size: 0.9rem; }
+.attendance-tables .attendance-card__primary .attendance-num,
+.attendance-tables .attendance-card__primary .attendance-balance { text-align: left; }
+.attendance-tables .attendance-card__detail { margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--st-border); }
+.attendance-tables .attendance-card__actions { flex-wrap: wrap; margin-top: 0.75rem; }
+.attendance-tables .attendance-card__status { margin-bottom: 0.25rem; }
+
+@media (max-width: 1099px) {
+  .attendance-tables.attendance-responsive-wrap { display: none; }
+  .attendance-tables.attendance-cards { display: grid; }
+}
+
+/* Fluidez local: sólo contenido recién desplegado, sin animar filas ni cifras.
+   :focus-visible deja el teclado inmediato; sin soporte, todo sigue visible.
+   El desmontaje y el cierre originales no se retrasan con presencia o timers. */
+@media (prefers-reduced-motion: no-preference) {
+  .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more),
+  .attendance-tables:not(:has(:focus-visible)) .attendance-detail {
+    opacity: 1;
+    transition: opacity 150ms var(--ease-out);
+  }
+
+  @starting-style {
+    .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more),
+    .attendance-tables:not(:has(:focus-visible)) .attendance-detail {
+      opacity: 0;
+    }
+  }
+
+  .attendance-tables:not(:has(:focus-visible)) .attendance-row-toggle > svg {
+    transition: transform 120ms var(--ease-out);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+  .attendance-tables:not(:has(:focus-visible)) .attendance-row-toggle {
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+}
