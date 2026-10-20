@@ -1,6 +1,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAdminViewState } from "@/components/AdminViewState";
 import DateField from "@/components/DateField";
 import { Alert, Filter, Refresh, Search, Shield, X } from "@/components/Icons";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
@@ -237,13 +238,14 @@ export default function AdminAuditPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [searchTerm, setSearchTerm] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<
+  // Contexto de vista explícito: se recupera al volver durante la sesión.
+  const [searchTerm, setSearchTerm] = useAdminViewState("audit.searchTerm", "");
+  const [categoryFilter, setCategoryFilter] = useAdminViewState<
     "all" | "attendance" | "payroll" | "schedules" | "users"
-  >("all");
-  const [actorFilter, setActorFilter] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  >("audit.categoryFilter", "all");
+  const [actorFilter, setActorFilter] = useAdminViewState("audit.actorFilter", "all");
+  const [dateFrom, setDateFrom] = useAdminViewState("audit.dateFrom", "");
+  const [dateTo, setDateTo] = useAdminViewState("audit.dateTo", "");
 
   const load = useCallback(async () => {
     try {

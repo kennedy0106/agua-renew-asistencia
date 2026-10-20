@@ -1855,6 +1855,64 @@ h4,
   gap: 0.7rem;
 }
 
+/* Colapso de altura medida compartido (teclado DNI y desgloses de tablas).
+   La altura la fija el componente; el contenedor sólo recorta y el interior
+   conserva el flujo natural, incluidos los márgenes de su contenido. */
+.attendance-collapse {
+  min-width: 0;
+  overflow: hidden;
+}
+.attendance-collapse__inner {
+  display: flow-root;
+  min-height: 0;
+}
+
+/* Campo + teclado forman un solo ítem del formulario: al plegar el teclado no
+   queda el hueco del `gap` entre ítems del formulario. */
+.kiosk-id-cluster {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+.kiosk-keypad-slot {
+  min-width: 0;
+}
+.kiosk-keypad {
+  padding-top: 0.7rem;
+}
+
+/* El campo real se conserva en ambos modos; el display segmentado sólo se
+   desvanece y la altura del campo no cambia. */
+.kiosk-id-field {
+  min-height: 2.75rem;
+}
+.kiosk-dni-display {
+  transition: opacity 160ms var(--ease-out), visibility 0s linear 0s;
+}
+.kiosk-id-field:not(.is-dni) .kiosk-dni-display {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 160ms var(--ease-out), visibility 0s linear 160ms;
+}
+.kiosk-id-input {
+  transition: opacity 160ms var(--ease-out);
+}
+.kiosk-id-input:not(.is-dni) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 2.75rem;
+  z-index: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .attendance-collapse,
+  .attendance-collapse__inner,
+  .kiosk-dni-display,
+  .kiosk-id-input {
+    transition: none !important;
+  }
+}
+
 /* Tabs segmentadas */
 .kiosk-id-mode-group {
   display: grid;
@@ -2586,7 +2644,16 @@ h4,
   outline: 2px solid var(--st-primary);
   outline-offset: 2px;
 }
-.attendance-tables .attendance-detail-row td { background: var(--st-surface-low); }
+.attendance-tables .attendance-detail-row > td {
+  padding: 0;
+  border-bottom: 0;
+  background: var(--st-surface-low);
+}
+/* El relleno exterior que tenía la celda se traslada al interior medido para
+   conservar el aire del desglose sin un offset fijo que impida cerrar a 0. */
+.attendance-tables .attendance-detail-row .attendance-collapse__inner {
+  padding: 0.55rem 0.65rem;
+}
 .attendance-tables .attendance-detail {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
@@ -2623,7 +2690,9 @@ h4,
 .attendance-tables .attendance-card__primary dd { margin: 0; font-weight: 600; font-size: 0.9rem; }
 .attendance-tables .attendance-card__primary .attendance-num,
 .attendance-tables .attendance-card__primary .attendance-balance { text-align: left; }
-.attendance-tables .attendance-card__detail { margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--st-border); }
+.attendance-tables .attendance-card__footer-stack { display: block; min-width: 0; }
+.attendance-tables .attendance-card__footer-stack .attendance-card__detail { margin-top: 1.35rem; padding-top: 0.75rem; border-top: 1px solid var(--st-border); }
+.attendance-tables .attendance-card__detail-slot { min-width: 0; }
 .attendance-tables .attendance-card__actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0; }
 .attendance-tables .attendance-card__status { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
 .attendance-tables .attendance-card__status .badge { width: fit-content; max-width: 100%; white-space: normal; }
@@ -2655,17 +2724,15 @@ h4,
 
 /* Fluidez local: sólo contenido recién desplegado, sin animar filas ni cifras.
    :focus-visible deja el teclado inmediato; sin soporte, todo sigue visible.
-   El desmontaje y el cierre originales no se retrasan con presencia o timers. */
+   El desglose ya anima su propia opacidad; no se duplica aquí. */
 @media (prefers-reduced-motion: no-preference) {
-  .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more),
-  .attendance-tables:not(:has(:focus-visible)) .attendance-detail {
+  .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more) {
     opacity: 1;
     transition: opacity 150ms var(--ease-out);
   }
 
   @starting-style {
-    .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more),
-    .attendance-tables:not(:has(:focus-visible)) .attendance-detail {
+    .attendance-toolbar:not(:has(:focus-visible)) :is(.attendance-help, .attendance-period-editor, .attendance-more) {
       opacity: 0;
     }
   }

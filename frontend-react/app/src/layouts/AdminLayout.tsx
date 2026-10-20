@@ -10,6 +10,8 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ApiError, authApi, type UserOut } from "@/lib/api";
 import RouteFallback from "@/components/RouteFallback";
+import { AdminShellLayout } from "@/components/AdminShell";
+import { AdminViewStateProvider } from "@/components/AdminViewState";
 import {
   AdminSessionContext,
   clearAdminSessionHint,
@@ -28,6 +30,11 @@ export default function AdminLayout() {
   }, [navigate]);
   const { pathname } = useLocation();
   const isLogin = pathname === "/admin/login";
+  const isChangePassword = pathname === "/admin/change-password";
+  // Login, cambio de contraseña y el índice (404) siguen sin shell. El resto
+  // del área privada comparte un único host persistente.
+  const usesAdminShell =
+    !isLogin && !isChangePassword && pathname !== "/admin" && pathname !== "/admin/";
   const [user, setUser] = useState<UserOut | null>(null);
   const [ready, setReady] = useState(false);
   const mustChangePassword = user?.must_change_password;
@@ -92,9 +99,19 @@ export default function AdminLayout() {
                 : "Comprobando sesión…"
           }
         />
+      ) : usesAdminShell ? (
+        // Provider de memoria de sesión + host persistente: sidebar, topbar y
+        // main se montan UNA vez y sobreviven a los cambios de ruta. El límite
+        // de Suspense vive dentro del contenido para que descargar el chunk de
+        // una página no desmonte el shell ni repita /me.
+        <AdminViewStateProvider key={user?.id ?? "anonymous"}>
+          <AdminShellLayout>
+            <Suspense fallback={<RouteFallback />}>
+              <Outlet />
+            </Suspense>
+          </AdminShellLayout>
+        </AdminViewStateProvider>
       ) : (
-        // El límite de Suspense vive DENTRO del layout para que la descarga del
-        // chunk de una página hija no desmonte `AdminLayout` (ni repita /me).
         <Suspense fallback={<RouteFallback />}>
           <Outlet />
         </Suspense>

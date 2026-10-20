@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useAdminUser } from "@/components/AdminSession";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useNotifications } from "@/components/Notifications";
 import { Alert, Check, Eye, EyeOff, Key, Plus, Refresh, Search, Shield, User as UserIcon, X } from "@/components/Icons";
 import { InlineLoading, Spinner, TableSkeleton } from "@/components/Loading";
@@ -44,11 +45,13 @@ export default function AdminUsersPage() {
   const [busy, setBusy] = useState(false);
   const { markSaved, isHighlighted } = useRowHighlight();
 
-  // Search & in-memory filters
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive" | "pending_password">("");
+  // Search & in-memory filters (contexto de vista de la sesión)
+  const [search, setSearch] = useAdminViewState("users.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [roleFilter, setRoleFilter] = useAdminViewState("users.roleFilter", "");
+  const [statusFilter, setStatusFilter] = useAdminViewState<
+    "" | "active" | "inactive" | "pending_password"
+  >("users.statusFilter", "");
 
   // Creation form
   const [showForm, setShowForm] = useState(false);
@@ -100,10 +103,12 @@ export default function AdminUsersPage() {
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  // Load data
+  // Carga de listados independiente del rol elegido en el formulario. Al
+  // depender antes de `form.system_role_id`, inicializar ese campo y cada
+  // cambio del selector disparaban otra ronda de usuarios/roles/empleados.
   const load = useCallback(async () => {
     try {
-      if (user?.role !== "ADMIN") return;
+      if (!isAdmin) return;
       setError(null);
       const [list, roleList, empList] = await Promise.all([
         usersApi.list(),
@@ -113,15 +118,17 @@ export default function AdminUsersPage() {
       setUsers(list);
       setRoles(roleList);
       setEmployees(empList);
-      if (roleList.length > 0 && !form.system_role_id) {
-        setForm((current) => ({ ...current, system_role_id: roleList[0].id }));
+      if (roleList.length > 0) {
+        setForm((current) =>
+          current.system_role_id ? current : { ...current, system_role_id: roleList[0].id },
+        );
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [user, form.system_role_id]);
+  }, [isAdmin]);
 
   useEffect(() => {
     load();

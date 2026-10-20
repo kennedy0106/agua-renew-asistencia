@@ -1,5 +1,5 @@
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse, PreparationSnapshot } from "@/lib/api";
 import {
   LOCATION_MAX_AGE_MS,
@@ -10,6 +10,7 @@ import {
   type LocationFailure,
 } from "@/lib/attendance-location";
 import AttendanceLocationDialog from "@/components/AttendanceLocationDialog";
+import { Collapse } from "@/components/Collapse";
 import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 
@@ -186,6 +187,9 @@ export default function AsistenciaPage() {
   const [attemptSubmitted, setAttemptSubmitted] = useState(false);
   const [lastAttemptStatus, setLastAttemptStatus] = useState<RecoverOutcome | null>(null);
   const [idMode, setIdMode] = useState<"dni" | "code">("dni");
+  // Teclado/lector de pantalla cambian de modo sin animación; el puntero sí la
+  // conserva. La escritura que fuerza Código también es inmediata.
+  const [idModeInstant, setIdModeInstant] = useState(true);
   const [copiedNonce, setCopiedNonce] = useState(false);
   const [requestingLocation, setRequestingLocation] = useState(false);
   const [locationFailure, setLocationFailure] = useState<LocationFailure | null>(null);
@@ -392,6 +396,11 @@ export default function AsistenciaPage() {
     return () => window.clearTimeout(timer);
   }, [phase, countdown]);
 
+  // El callback que consume el QR vive en un effect event: el escaneo usa
+  // siempre la última versión confirmada de `identifyValue` sin que los
+  // rerenders del reloj del kiosco reinicien `getUserMedia`.
+  const identifyFromScan = useEffectEvent((value: string, gen: number) => identifyValue(value, gen));
+
   useEffect(() => {
     if (phase !== "escaneando_qr") {
       stopStream(qrStreamRef.current);
@@ -435,7 +444,7 @@ export default function AsistenciaPage() {
               stopStream(qrStreamRef.current);
               qrStreamRef.current = null;
               const value = raw.startsWith("AR:") ? raw : `AR:${raw}`;
-              await identifyValue(value, gen);
+              await identifyFromScan(value, gen);
               return;
             }
           } catch {
@@ -1151,7 +1160,8 @@ export default function AsistenciaPage() {
                   role="tab"
                   aria-selected={idMode === "dni"}
                   className={`kiosk-mode-tab${idMode === "dni" ? " is-active" : ""}`}
-                  onClick={() => {
+                  onClick={(event) => {
+                    setIdModeInstant(event.detail <= 0);
                     setIdMode("dni");
                     idInputRef.current?.focus();
                   }}
@@ -1163,7 +1173,8 @@ export default function AsistenciaPage() {
                   role="tab"
                   aria-selected={idMode === "code"}
                   className={`kiosk-mode-tab${idMode === "code" ? " is-active" : ""}`}
-                  onClick={() => {
+                  onClick={(event) => {
+                    setIdModeInstant(event.detail <= 0);
                     setIdMode("code");
                     idInputRef.current?.focus();
                   }}
@@ -1176,8 +1187,10 @@ export default function AsistenciaPage() {
                 {idMode === "dni" ? "Número de DNI (8 dígitos)" : "Código de trabajador o QR"}
               </label>
 
-              <div className={`kiosk-id-field${idMode === "dni" ? " is-dni" : ""}`}>
-                {idMode === "dni" && (
+              <div className="kiosk-id-cluster">
+                <div className={`kiosk-id-field${idMode === "dni" ? " is-dni" : ""}`}>
+                  {/* El campo real es siempre este input; el display segmentado
+                      sólo refleja su valor y se desvanece al escribir un código. */}
                   <div className="kiosk-dni-display" aria-hidden>
                     {Array.from({ length: 8 }).map((_, index) => {
                       const digit = identifier[index] ?? "";
@@ -1192,53 +1205,58 @@ export default function AsistenciaPage() {
                       );
                     })}
                   </div>
-                )}
-                {/* El DNI usa el teclado propio sin bloquear la escritura con teclado físico. */}
-                <input
-                  ref={idInputRef}
-                  id="kiosk-id"
-                  className={`kiosk-id-input${idMode === "dni" ? " is-dni" : " input"}`}
-                  type="text"
-                  inputMode={idMode === "dni" ? "none" : "text"}
-                  enterKeyHint="go"
-                  autoCapitalize="characters"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  value={identifier}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    pendingIdentifierRef.current = null;
-                    setIdentifier(val);
+                  {/* El DNI usa el teclado propio sin bloquear la escritura con teclado físico. */}
+                  <input
+                    ref={idInputRef}
+                    id="kiosk-id"
+                    className={`kiosk-id-input${idMode === "dni" ? " is-dni" : " input"}`}
+                    type="text"
+                    inputMode={idMode === "dni" ? "none" : "text"}
+                    enterKeyHint="go"
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    value={identifier}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      pendingIdentifierRef.current = null;
+                      setIdentifier(val);
                     if (/[^0-9\s]/.test(val) && idMode === "dni") {
+                      setIdModeInstant(true);
                       setIdMode("code");
                     }
-                  }}
-                  placeholder={idMode === "dni" ? "Ej. 71112233" : "Ej. EMP-002 o AR:…"}
-                  autoFocus
-                  autoComplete="off"
-                  disabled={identifying}
-                  data-testid="kiosk-identifier"
-                />
-              </div>
-
-              {idMode === "dni" && (
-                <div className="kiosk-keypad" role="group" aria-label="Teclado numérico">
-                  {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
-                    <button key={digit} type="button" className="kiosk-key" onClick={() => appendDigit(digit)}>
-                      {digit}
-                    </button>
-                  ))}
-                  <button type="button" className="kiosk-key kiosk-key--muted" onClick={clearIdentifier} aria-label="Limpiar DNI">
-                    C
-                  </button>
-                  <button type="button" className="kiosk-key" onClick={() => appendDigit("0")}>
-                    0
-                  </button>
-                  <button type="button" className="kiosk-key kiosk-key--muted" onClick={backspaceDigit} aria-label="Borrar último dígito">
-                    <ArrowLeft size={18} />
-                  </button>
+                    }}
+                    placeholder={idMode === "dni" ? "Ej. 71112233" : "Ej. EMP-002 o AR:…"}
+                    autoFocus
+                    autoComplete="off"
+                    disabled={identifying}
+                    data-testid="kiosk-identifier"
+                  />
                 </div>
-              )}
+
+                <Collapse
+                  open={idMode === "dni"}
+                  duration={idModeInstant ? 0 : undefined}
+                  className="kiosk-keypad-slot"
+                >
+                  <div className="kiosk-keypad" role="group" aria-label="Teclado numérico">
+                    {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
+                      <button key={digit} type="button" className="kiosk-key" onClick={() => appendDigit(digit)}>
+                        {digit}
+                      </button>
+                    ))}
+                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={clearIdentifier} aria-label="Limpiar DNI">
+                      C
+                    </button>
+                    <button type="button" className="kiosk-key" onClick={() => appendDigit("0")}>
+                      0
+                    </button>
+                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={backspaceDigit} aria-label="Borrar último dígito">
+                      <ArrowLeft size={18} />
+                    </button>
+                  </div>
+                </Collapse>
+              </div>
 
               {requestingLocation && !locationDialogOpen && (
                 <p className="alert alert-notice" role="status" data-testid="kiosk-location-status">

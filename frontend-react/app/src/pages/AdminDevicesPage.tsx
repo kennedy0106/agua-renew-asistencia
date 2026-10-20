@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { Alert, Refresh, Search, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { AsyncButton } from "@/components/AsyncButton";
@@ -40,8 +41,11 @@ export default function AdminDevicesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionKey, setActionKey] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "revoked">("all");
+  const [searchTerm, setSearchTerm] = useAdminViewState("devices.searchTerm", "");
+  const [statusFilter, setStatusFilter] = useAdminViewState<"all" | "active" | "revoked">(
+    "devices.statusFilter",
+    "all",
+  );
   const [confirmAction, setConfirmAction] = useState<AttendanceDevice | null>(null);
   const { markSaved, isHighlighted } = useRowHighlight();
 

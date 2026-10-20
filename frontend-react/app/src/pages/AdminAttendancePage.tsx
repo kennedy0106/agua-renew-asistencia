@@ -1,6 +1,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAdminViewState } from "@/components/AdminViewState";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import {
   AttendanceDailyCards,
@@ -302,10 +303,12 @@ export default function AdminAttendancePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [employeeFilter, setEmployeeFilter] = useState("");
-  const [dateFrom, setDateFrom] = useState(initialRange.from);
-  const [dateTo, setDateTo] = useState(initialRange.to);
-  const [statusFilter, setStatusFilter] = useState("");
+  // Filtros de consulta: se restauran al volver y la carga inicial usa el
+  // rango recuperado, no el mes actual por defecto.
+  const [employeeFilter, setEmployeeFilter] = useAdminViewState("attendance.employeeFilter", "");
+  const [dateFrom, setDateFrom] = useAdminViewState("attendance.dateFrom", initialRange.from);
+  const [dateTo, setDateTo] = useAdminViewState("attendance.dateTo", initialRange.to);
+  const [statusFilter, setStatusFilter] = useAdminViewState("attendance.statusFilter", "");
 
   const [correcting, setCorrecting] = useState<AttendanceListItem | null>(null);
   const [corrCheckInDate, setCorrCheckInDate] = useState("");

@@ -4,9 +4,11 @@
 // conoce los diálogos de corrección, evidencia o refrigerio (la página los
 // conserva y entrega los callbacks).
 
-import { Fragment, useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Camera, ChevronRight, Clock, Pencil } from "@/components/Icons";
+import { Collapse } from "@/components/Collapse";
+import { useCollapse } from "@/lib/useCollapse";
 import { TableSkeleton } from "@/components/Loading";
 import { formatOperationalDate } from "@/lib/dates";
 import type { AttendanceDailyItem, AttendanceListItem } from "@/lib/api";
@@ -210,11 +212,11 @@ function RecordDetail({ record }: { record: AttendanceListItem }) {
 function RowToggle({
   open,
   controls,
-  onClick,
+  onToggle,
 }: {
   open: boolean;
   controls: string;
-  onClick: () => void;
+  onToggle: (animate: boolean) => void;
 }) {
   return (
     <button
@@ -222,11 +224,47 @@ function RowToggle({
       className="attendance-row-toggle"
       aria-expanded={open}
       aria-controls={controls}
-      onClick={onClick}
+      onClick={(event) => onToggle(event.detail > 0)}
     >
       <ChevronRight size={14} />
       <span>{open ? "Ocultar desglose" : "Desglose"}</span>
     </button>
+  );
+}
+
+/**
+ * Fila de desglose semántica (tr > td > contenedor). Se mantiene montada sólo
+ * durante la apertura y el cierre; al plegarse no deja fila vacía ni relleno.
+ */
+function CollapsibleDetailRow({
+  open,
+  id,
+  colSpan,
+  instant,
+  children,
+}: {
+  open: boolean;
+  id: string;
+  colSpan: number;
+  instant: boolean;
+  children: ReactNode;
+}) {
+  const { mounted, outerRef, innerRef, handleTransitionEnd } = useCollapse(
+    open,
+    instant ? 0 : undefined,
+  );
+  if (!mounted) return null;
+
+  return (
+    <tr className="attendance-detail-row" id={id} aria-hidden={open ? undefined : true} inert={!open}>
+      <td colSpan={colSpan}>
+        <div ref={outerRef} className="attendance-collapse" onTransitionEnd={handleTransitionEnd}>
+          <div ref={innerRef} className="attendance-collapse__inner">
+            {children}
+          </div>
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -240,6 +278,7 @@ type DailyProps = {
 /** Tabla del resumen diario (escritorio ancho). */
 export function AttendanceDailyTable({ days, loading, canManage, onEditBreak }: DailyProps) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const [instantKeys, setInstantKeys] = useState<Record<string, boolean>>({});
   const columns = canManage ? 7 : 6;
 
   return (
@@ -282,7 +321,10 @@ export function AttendanceDailyTable({ days, loading, canManage, onEditBreak }: 
                       <RowToggle
                         open={open}
                         controls={detailId}
-                        onClick={() => setOpenKeys((current) => ({ ...current, [key]: !open }))}
+                        onToggle={(animate) => {
+                          setInstantKeys((current) => ({ ...current, [key]: !animate }));
+                          setOpenKeys((current) => ({ ...current, [key]: !open }));
+                        }}
                       />
                     </div>
                   </td>
@@ -317,13 +359,14 @@ export function AttendanceDailyTable({ days, loading, canManage, onEditBreak }: 
                     </td>
                   )}
                 </tr>
-                {open && (
-                  <tr className="attendance-detail-row" id={detailId}>
-                    <td colSpan={columns}>
-                      <DailyDetail day={day} />
-                    </td>
-                  </tr>
-                )}
+                <CollapsibleDetailRow
+                  open={open}
+                  id={detailId}
+                  colSpan={columns}
+                  instant={Boolean(instantKeys[key])}
+                >
+                  <DailyDetail day={day} />
+                </CollapsibleDetailRow>
               </Fragment>
             );
           })}
@@ -336,6 +379,7 @@ export function AttendanceDailyTable({ days, loading, canManage, onEditBreak }: 
 /** Tarjetas del resumen diario (laptop y móvil). */
 export function AttendanceDailyCards({ days, loading, canManage, onEditBreak }: DailyProps) {
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const [instantKeys, setInstantKeys] = useState<Record<string, boolean>>({});
 
   return (
     <div className="responsive-table-cards attendance-cards attendance-tables" role="region" aria-label="Resumen diario del equipo">
@@ -373,37 +417,47 @@ export function AttendanceDailyCards({ days, loading, canManage, onEditBreak }: 
             <div className="attendance-card__status">
               <Incidents codes={day.incident_codes} />
             </div>
-            <div className="attendance-card__footer">
-              <RowToggle
-                open={open}
-                controls={detailId}
-                onClick={() => setOpenKeys((current) => ({ ...current, [key]: !open }))}
-              />
-              {canManage && (
-                <div className="attendance-card__actions attendance-actions">
-                  <button
-                    type="button"
-                    className="btn attendance-action attendance-action--secondary"
-                    disabled={day.has_open_entry}
-                    title={
-                      day.has_open_entry
-                        ? "Cierre todas las marcaciones antes de ajustar el refrigerio"
-                        : undefined
-                    }
-                    aria-label={`Editar refrigerio de ${day.employee_name ?? "este empleado"}`}
-                    onClick={(event) => onEditBreak(day, event.currentTarget)}
-                  >
-                    <Clock size={16} />
-                    Refrigerio
-                  </button>
-                </div>
-              )}
-            </div>
-            {open && (
-              <div id={detailId} className="attendance-card__detail">
-                <DailyDetail day={day} />
+            <div className="attendance-card__footer-stack">
+              <div className="attendance-card__footer">
+                <RowToggle
+                  open={open}
+                  controls={detailId}
+                  onToggle={(animate) => {
+                    setInstantKeys((current) => ({ ...current, [key]: !animate }));
+                    setOpenKeys((current) => ({ ...current, [key]: !open }));
+                  }}
+                />
+                {canManage && (
+                  <div className="attendance-card__actions attendance-actions">
+                    <button
+                      type="button"
+                      className="btn attendance-action attendance-action--secondary"
+                      disabled={day.has_open_entry}
+                      title={
+                        day.has_open_entry
+                          ? "Cierre todas las marcaciones antes de ajustar el refrigerio"
+                          : undefined
+                      }
+                      aria-label={`Editar refrigerio de ${day.employee_name ?? "este empleado"}`}
+                      onClick={(event) => onEditBreak(day, event.currentTarget)}
+                    >
+                      <Clock size={16} />
+                      Refrigerio
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
+              <Collapse
+                open={open}
+                id={detailId}
+                className="attendance-card__detail-slot"
+                duration={instantKeys[key] ? 0 : undefined}
+              >
+                <div className="attendance-card__detail">
+                  <DailyDetail day={day} />
+                </div>
+              </Collapse>
+            </div>
           </article>
         );
       })}
@@ -422,6 +476,7 @@ type RecordProps = {
 /** Tabla del detalle de marcaciones (escritorio ancho). */
 export function AttendanceRecordsTable({ records, loading, canManage, onPhotos, onCorrect }: RecordProps) {
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
+  const [instantIds, setInstantIds] = useState<Record<string, boolean>>({});
   const columns = canManage ? 7 : 6;
 
   return (
@@ -471,7 +526,10 @@ export function AttendanceRecordsTable({ records, loading, canManage, onPhotos, 
                       <RowToggle
                         open={open}
                         controls={detailId}
-                        onClick={() => setOpenIds((current) => ({ ...current, [record.id]: !open }))}
+                        onToggle={(animate) => {
+                          setInstantIds((current) => ({ ...current, [record.id]: !animate }));
+                          setOpenIds((current) => ({ ...current, [record.id]: !open }));
+                        }}
                       />
                     </div>
                   </td>
@@ -520,13 +578,14 @@ export function AttendanceRecordsTable({ records, loading, canManage, onPhotos, 
                     </td>
                   )}
                 </tr>
-                {open && (
-                  <tr className="attendance-detail-row" id={detailId}>
-                    <td colSpan={columns}>
-                      <RecordDetail record={record} />
-                    </td>
-                  </tr>
-                )}
+                <CollapsibleDetailRow
+                  open={open}
+                  id={detailId}
+                  colSpan={columns}
+                  instant={Boolean(instantIds[record.id])}
+                >
+                  <RecordDetail record={record} />
+                </CollapsibleDetailRow>
               </Fragment>
             );
           })}
@@ -539,6 +598,7 @@ export function AttendanceRecordsTable({ records, loading, canManage, onPhotos, 
 /** Tarjetas del detalle de marcaciones (laptop y móvil). */
 export function AttendanceRecordsCards({ records, loading, canManage, onPhotos, onCorrect }: RecordProps) {
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
+  const [instantIds, setInstantIds] = useState<Record<string, boolean>>({});
 
   return (
     <div className="responsive-table-cards attendance-cards attendance-tables" role="region" aria-label="Detalle de marcaciones">
@@ -590,42 +650,52 @@ export function AttendanceRecordsCards({ records, loading, canManage, onPhotos, 
                 <span className="badge badge-neutral attendance-status">Cerrada</span>
               )}
             </div>
-            <div className="attendance-card__footer">
-              <RowToggle
-                open={open}
-                controls={detailId}
-                onClick={() => setOpenIds((current) => ({ ...current, [record.id]: !open }))}
-              />
-              {canManage && (
-                <div className="attendance-card__actions attendance-actions">
-                  <button
-                    type="button"
-                    className="btn attendance-action attendance-action--soft"
-                    onClick={() => onPhotos(record.id)}
-                    aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`}
-                    title="Ver fotos"
-                  >
-                    <Camera size={17} />
-                    Fotos
-                  </button>
-                  <button
-                    type="button"
-                    className="btn attendance-action attendance-action--neutral"
-                    onClick={() => onCorrect(record)}
-                    aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`}
-                    title="Corregir registro"
-                  >
-                    <Pencil size={16} />
-                    Corregir
-                  </button>
-                </div>
-              )}
-            </div>
-            {open && (
-              <div id={detailId} className="attendance-card__detail">
-                <RecordDetail record={record} />
+            <div className="attendance-card__footer-stack">
+              <div className="attendance-card__footer">
+                <RowToggle
+                  open={open}
+                  controls={detailId}
+                  onToggle={(animate) => {
+                    setInstantIds((current) => ({ ...current, [record.id]: !animate }));
+                    setOpenIds((current) => ({ ...current, [record.id]: !open }));
+                  }}
+                />
+                {canManage && (
+                  <div className="attendance-card__actions attendance-actions">
+                    <button
+                      type="button"
+                      className="btn attendance-action attendance-action--soft"
+                      onClick={() => onPhotos(record.id)}
+                      aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`}
+                      title="Ver fotos"
+                    >
+                      <Camera size={17} />
+                      Fotos
+                    </button>
+                    <button
+                      type="button"
+                      className="btn attendance-action attendance-action--neutral"
+                      onClick={() => onCorrect(record)}
+                      aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`}
+                      title="Corregir registro"
+                    >
+                      <Pencil size={16} />
+                      Corregir
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
+              <Collapse
+                open={open}
+                id={detailId}
+                className="attendance-card__detail-slot"
+                duration={instantIds[record.id] ? 0 : undefined}
+              >
+                <div className="attendance-card__detail">
+                  <RecordDetail record={record} />
+                </div>
+              </Collapse>
+            </div>
           </article>
         );
       })}

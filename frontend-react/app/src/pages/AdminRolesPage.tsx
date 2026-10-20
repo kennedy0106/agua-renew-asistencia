@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useAdminUser } from "@/components/AdminSession";
 import { useNotifications } from "@/components/Notifications";
 import { Alert, Briefcase, Check, Pencil, Plus, Refresh, Search, X } from "@/components/Icons";
@@ -13,6 +14,10 @@ import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 
 const ROLES_MANAGE = "ADMIN"; // crear/editar/desactivar cargos: solo ADMIN
 
+type RoleCreateDraft = { name: string; description: string };
+
+const EMPTY_CREATE_DRAFT: RoleCreateDraft = { name: "", description: "" };
+
 export default function AdminRolesPage() {
   const user = useAdminUser();
   const { success } = useNotifications();
@@ -22,9 +27,13 @@ export default function AdminRolesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // New role creation state
-  const [newName, setNewName] = useState("");
-  const [newDescription, setNewDescription] = useState("");
+  // Borrador del alta de cargo: un único objeto en memoria de sesión. Cada
+  // edición crea un objeto nuevo, de modo que el éxito de un POST tardío solo
+  // limpia el borrador exacto que se envió y nunca uno escrito después.
+  const [createDraft, setCreateDraft] = useAdminViewState<RoleCreateDraft>(
+    "jobRoles.createDraft",
+    EMPTY_CREATE_DRAFT,
+  );
   const [creating, setCreating] = useState(false);
 
   // Inline editing state
@@ -35,9 +44,12 @@ export default function AdminRolesPage() {
   const [actionKey, setActionKey] = useState<string | null>(null);
 
   // Search & in-memory filters
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
+  const [search, setSearch] = useAdminViewState("jobRoles.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [statusFilter, setStatusFilter] = useAdminViewState<"" | "active" | "inactive">(
+    "jobRoles.statusFilter",
+    "",
+  );
 
   // Sensitive confirmation modal for active status toggle
   const [confirmToggleRole, setConfirmToggleRole] = useState<JobRole | null>(null);
@@ -94,14 +106,18 @@ export default function AdminRolesPage() {
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
-    if (!newName.trim()) return;
+    const submittedDraft = createDraft;
+    const name = submittedDraft.name.trim();
+    if (!name) return;
     setCreating(true);
     setError(null);
     try {
-      const created = await jobRolesApi.create(newName.trim(), newDescription.trim() || null);
+      const created = await jobRolesApi.create(name, submittedDraft.description.trim() || null);
       setRoles((prev) => [...prev, created]);
-      setNewName("");
-      setNewDescription("");
+      // Limpia únicamente el borrador enviado. Si mientras el POST estaba en
+      // vuelo se editó el nombre o la descripción (incluso tras salir y
+      // volver), el objeto actual es otro y el borrador nuevo se conserva.
+      setCreateDraft((current) => (current === submittedDraft ? { ...EMPTY_CREATE_DRAFT } : current));
       markSaved(created.id);
       success(`Cargo "${created.name}" creado con éxito.`);
     } catch (err) {
@@ -226,8 +242,10 @@ export default function AdminRolesPage() {
                 id={newNameId}
                 type="text"
                 className="input"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                value={createDraft.name}
+                onChange={(e) =>
+                  setCreateDraft((current) => ({ ...current, name: e.target.value }))
+                }
                 required
                 placeholder="Ej. Operario de envasado"
                 autoComplete="off"
@@ -241,8 +259,10 @@ export default function AdminRolesPage() {
                 id={newDescId}
                 type="text"
                 className="input"
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
+                value={createDraft.description}
+                onChange={(e) =>
+                  setCreateDraft((current) => ({ ...current, description: e.target.value }))
+                }
                 placeholder="Ej. Planta de tratamiento y llenado"
                 autoComplete="off"
               />
@@ -251,7 +271,7 @@ export default function AdminRolesPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={creating || !newName.trim()}
+                disabled={creating || !createDraft.name.trim()}
                 aria-busy={creating}
                 style={{ minHeight: "2.75rem", whiteSpace: "nowrap" }}
               >

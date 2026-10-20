@@ -253,6 +253,19 @@ describe("kiosk identifier keyboard", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("cambia de DNI a Código por teclado sin retener el teclado numérico", async () => {
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    const codeTab = screen.getByRole("tab", { name: /código/i });
+    codeTab.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByTestId("kiosk-identifier")).toHaveAttribute("inputmode", "text");
+    expect(document.querySelector(".kiosk-keypad")).toBeNull();
+    expect(screen.getByTestId("kiosk-identify")).not.toBeDisabled();
+  });
+
   it("keeps the native text keyboard for worker codes and restores DNI mode", async () => {
     const user = userEvent.setup();
     render(<AsistenciaPage />);
@@ -1086,5 +1099,97 @@ describe("kiosco alerta de ubicación al escanear QR", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(media.getUserMedia).toHaveBeenCalledTimes(1);
     expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+  });
+});
+
+describe("kiosco escaneo QR con el reloj en marcha", () => {
+  it("mantiene una sola cámara abierta entre rerenders del reloj e identifica el QR una sola vez", async () => {
+    vi.useFakeTimers();
+    try {
+      const media = installQrMediaDouble();
+      const detector = installBarcodeDetector();
+      const geolocation = installGeolocation((success) => success(successPosition()));
+      const identifyBodies: unknown[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/identify")) {
+          identifyBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+          return jsonResponse(identifyResponse("tok-ana"));
+        }
+        return jsonResponse({ detail: "inesperado" }, 404);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<AsistenciaPage />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-scan-qr"));
+      });
+      expect(document.querySelector("[data-phase='escaneando_qr']")).not.toBeNull();
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(media.constraints[0]).toMatchObject({ video: { facingMode: { ideal: "environment" } } });
+      expect(detector.formats()).toEqual(["qr_code"]);
+
+      // Tres lecturas del reloj (un rerender por segundo) sin reabrir la cámara.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(detector.detect.mock.calls.length).toBeGreaterThan(1);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // El siguiente cuadro sí trae el QR: se identifica exactamente una vez.
+      detector.setPayload(["EMP-777"]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      const identifyCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/identify"));
+      expect(identifyCalls).toHaveLength(1);
+      expect(identifyBodies).toEqual([{ identifier: "AR:EMP-777" }]);
+      // La ubicación sigue siendo requisito previo: se leyó antes de identificar.
+      expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
+      // Al entregar el valor se cierra la cámara del QR y sigue el flujo normal.
+      expect(media.streams[0].trackStop).toHaveBeenCalled();
+      expect(screen.getByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancelar el escaneo detiene la cámara del QR sin identificar ni reabrirla", async () => {
+    vi.useFakeTimers();
+    try {
+      const media = installQrMediaDouble();
+      const detector = installBarcodeDetector();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const view = render(<AsistenciaPage />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-scan-qr"));
+      });
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+
+      detector.setPayload(["EMP-777"]);
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-cancel-qr"));
+      });
+      expect(media.streams[0].trackStop).toHaveBeenCalled();
+      expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // Un cuadro pendiente ya no identifica ni vuelve a abrir la cámara.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+
+      view.unmount();
+      expect(media.streams[0].trackStop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

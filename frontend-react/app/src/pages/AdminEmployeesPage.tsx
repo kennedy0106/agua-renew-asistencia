@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useAdminUser } from "@/components/AdminSession";
 import { useNotifications } from "@/components/Notifications";
 import DateField from "@/components/DateField";
@@ -31,9 +32,15 @@ export default function AdminEmployeesPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
+  // Contexto de vista: se conserva al salir y volver durante la sesión. El
+  // debounce arranca ya sincronizado con la búsqueda restaurada para no pedir
+  // una lista sin filtro en el primer render.
+  const [search, setSearch] = useAdminViewState("employees.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [statusFilter, setStatusFilter] = useAdminViewState<"" | "active" | "inactive">(
+    "employees.statusFilter",
+    "",
+  );
 
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);

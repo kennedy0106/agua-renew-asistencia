@@ -339,6 +339,25 @@ describe("Admin — tablas de asistencia", () => {
     expect(scheduled).not.toHaveTextContent(/limitado/i);
   });
 
+  it("el desglose activado por teclado abre y cierra sin esperar animación", async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const row = rowFor(dailyTable(), "Ana Prueba");
+    const trigger = within(row).getByRole("button", { name: /desglose/i });
+    trigger.focus();
+
+    await user.keyboard("{Enter}");
+    const controlledId = trigger.getAttribute("aria-controls");
+    expect(controlledId).toBeTruthy();
+    expect(document.getElementById(controlledId!)).not.toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    await user.keyboard("{Enter}");
+    expect(document.getElementById(controlledId!)).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("SUPERVISOR conserva el desglose de solo lectura del resumen diario sin acciones de gestión", async () => {
     const user = userEvent.setup();
     vi.mocked(attendanceAdminApi.daily).mockResolvedValue([

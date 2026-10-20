@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import AdminShell from "@/components/AdminShell";
+import { useAdminViewState } from "@/components/AdminViewState";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
@@ -113,7 +114,10 @@ export default function AdminPayrollPage() {
   const user = useAdminUser();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // La selección que abre el panel de registros se conserva en la sesión; los
+  // datos del periodo siempre se vuelven a pedir a la API al regresar.
+  const [selectedId, setSelectedId] = useAdminViewState<string | null>("payroll.selectedId", null);
+  const restoredSelectionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [periodsLoading, setPeriodsLoading] = useState(true);
@@ -198,6 +202,30 @@ export default function AdminPayrollPage() {
       setRecordsLoading(false);
     }
   }
+
+  // Al volver a Planilla, si había un periodo abierto para revisión, se
+  // restaura esa selección y se piden sus registros frescos una sola vez.
+  // La referencia evita repetir la consulta cuando carga la lista o cambia el
+  // número de filas; la doble invocación de StrictMode comparte la misma
+  // petición en curso.
+  useEffect(() => {
+    if (periodsLoading || restoredSelectionRef.current) return;
+    restoredSelectionRef.current = true;
+    if (!selectedId) return;
+    if (!periods.some((period) => period.id === selectedId)) {
+      setSelectedId(null);
+      return;
+    }
+    if (records.length > 0) return;
+    setRecordsLoading(true);
+    payrollApi
+      .records(selectedId)
+      .then(setRecords)
+      .catch((err) => {
+        setError(err instanceof ApiError ? err.message : "No se pudieron cargar los registros");
+      })
+      .finally(() => setRecordsLoading(false));
+  }, [periodsLoading, periods, selectedId, records.length, setSelectedId]);
 
   function openCreateDialog() {
     setCreateError(null);
