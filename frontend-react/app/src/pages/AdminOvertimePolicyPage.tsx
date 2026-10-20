@@ -1,6 +1,7 @@
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import DateField from "@/components/DateField";
 import MetricCard from "@/components/MetricCard";
 import { Alert, Check, Plus, X } from "@/components/Icons";
@@ -29,6 +30,7 @@ export default function OvertimePolicyPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [form, setForm] = useState({
     effective_from: "",
     first_two_hours_rate: "25.00",
@@ -36,6 +38,7 @@ export default function OvertimePolicyPage() {
     reason: "",
   });
   const [saving, setSaving] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +58,16 @@ export default function OvertimePolicyPage() {
     load();
   }, [load]);
 
+  // El primer campo útil del formulario es la fecha de vigencia; el botón de
+  // cierre no debe recibir el foco inicial al abrir el diálogo.
+  useEffect(() => {
+    if (!showForm) return;
+    const frame = window.requestAnimationFrame(() => {
+      formRef.current?.querySelector<HTMLElement>(".datefield-trigger")?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showForm]);
+
   const pagination = useTablePagination(history, history.length);
 
   const firstRateNum = Number(form.first_two_hours_rate);
@@ -69,7 +82,7 @@ export default function OvertimePolicyPage() {
     e.preventDefault();
     if (!isFormValid || saving) return;
     setSaving(true);
-    setError(null);
+    setFormError(null);
     try {
       await overtimePolicyApi.create({
         effective_from: form.effective_from,
@@ -78,6 +91,7 @@ export default function OvertimePolicyPage() {
         reason: form.reason.trim(),
       });
       setShowForm(false);
+      setFormError(null);
       setForm({
         effective_from: "",
         first_two_hours_rate: "25.00",
@@ -86,22 +100,31 @@ export default function OvertimePolicyPage() {
       });
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo guardar la política");
+      setFormError(err instanceof ApiError ? err.message : "No se pudo guardar la política");
     } finally {
       setSaving(false);
     }
   }
 
-  function handleToggleForm() {
-    if (!showForm && active) {
-      setForm({
-        effective_from: dayAfter(active.effective_from),
-        first_two_hours_rate: active.first_two_hours_rate,
-        additional_hours_rate: active.additional_hours_rate,
-        reason: "",
-      });
-    }
-    setShowForm((v) => !v);
+  function openForm() {
+    setFormError(null);
+    setForm((current) =>
+      current.effective_from || !active
+        ? current
+        : {
+            effective_from: dayAfter(active.effective_from),
+            first_two_hours_rate: active.first_two_hours_rate,
+            additional_hours_rate: active.additional_hours_rate,
+            reason: "",
+          },
+    );
+    setShowForm(true);
+  }
+
+  function closeForm() {
+    if (saving) return;
+    setFormError(null);
+    setShowForm(false);
   }
 
   return (
@@ -141,128 +164,14 @@ export default function OvertimePolicyPage() {
           <button
             type="button"
             className="btn btn-outline btn-sm overtime-toggle-form-btn"
-            onClick={handleToggleForm}
+            onClick={openForm}
+            aria-haspopup="dialog"
             aria-expanded={showForm}
-            aria-controls="overtime-policy-form"
+            aria-controls={showForm ? "overtime-policy-form" : undefined}
           >
-            {showForm ? (
-              <>
-                <X size={14} aria-hidden="true" /> Cancelar
-              </>
-            ) : (
-              <>
-                <Plus size={14} aria-hidden="true" /> Nueva política
-              </>
-            )}
+            <Plus size={14} aria-hidden="true" /> Nueva política
           </button>
         </div>
-
-        {showForm && (
-          <form
-            id="overtime-policy-form"
-            onSubmit={handleSubmit}
-            className="overtime-policy-form"
-            aria-label="Formulario para registrar nueva política de horas extra"
-          >
-            <div className="overtime-form-grid">
-              <div className="overtime-field-group">
-                <label id="overtime-effective-from-label" className="label">
-                  Vigente desde <span className="overtime-required-mark" aria-hidden="true">*</span>
-                </label>
-                <DateField
-                  value={form.effective_from}
-                  onChange={(v) => setForm((prev) => ({ ...prev, effective_from: v }))}
-                  required
-                  placeholder="Seleccionar fecha"
-                  aria-label="Fecha de inicio de vigencia (requerido)"
-                />
-                <p id="overtime-effective-from-hint" className="field-hint overtime-field-hint">
-                  Fecha requerida para nueva vigencia
-                </p>
-              </div>
-
-              <div className="overtime-field-group">
-                <label htmlFor="overtime-first-two-hours" className="label">
-                  Primeras 2 h (%) <span className="overtime-required-mark" aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="overtime-first-two-hours"
-                  type="number"
-                  min={25}
-                  step={0.01}
-                  className="input"
-                  value={form.first_two_hours_rate}
-                  onChange={(e) => setForm((prev) => ({ ...prev, first_two_hours_rate: e.target.value }))}
-                  required
-                  aria-describedby="overtime-first-two-hours-hint"
-                />
-                <p id="overtime-first-two-hours-hint" className="field-hint overtime-field-hint">
-                  Mínimo 25% (legal D.L. 728)
-                </p>
-              </div>
-
-              <div className="overtime-field-group">
-                <label htmlFor="overtime-additional-hours" className="label">
-                  Tercera hora en adelante (%) <span className="overtime-required-mark" aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="overtime-additional-hours"
-                  type="number"
-                  min={35}
-                  step={0.01}
-                  className="input"
-                  value={form.additional_hours_rate}
-                  onChange={(e) => setForm((prev) => ({ ...prev, additional_hours_rate: e.target.value }))}
-                  required
-                  aria-describedby="overtime-additional-hours-hint"
-                />
-                <p id="overtime-additional-hours-hint" className="field-hint overtime-field-hint">
-                  Mínimo 35% (legal D.L. 728)
-                </p>
-              </div>
-
-              <div className="overtime-field-group">
-                <label htmlFor="overtime-reason" className="label">
-                  Motivo del cambio <span className="overtime-required-mark" aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="overtime-reason"
-                  type="text"
-                  className="input"
-                  value={form.reason}
-                  onChange={(e) => setForm((prev) => ({ ...prev, reason: e.target.value }))}
-                  required
-                  minLength={3}
-                  placeholder="Ej. Actualización de política salarial anual"
-                  aria-describedby="overtime-reason-hint"
-                />
-                <p id="overtime-reason-hint" className="field-hint overtime-field-hint">
-                  Mínimo 3 caracteres requeridos
-                </p>
-              </div>
-            </div>
-
-            <div className="overtime-form-actions">
-              <button
-                type="submit"
-                className="btn btn-primary overtime-submit-btn"
-                disabled={saving || !isFormValid}
-                aria-busy={saving}
-              >
-                {saving ? <Spinner /> : <Check size={15} aria-hidden="true" />}
-                {saving ? "Guardando…" : "Guardar política"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-outline overtime-cancel-btn"
-                onClick={() => setShowForm(false)}
-                disabled={saving}
-              >
-                Cancelar
-              </button>
-            </div>
-          </form>
-        )}
 
         {loading ? (
           <TableSkeleton rows={2} cols={4} />
@@ -375,6 +284,157 @@ export default function OvertimePolicyPage() {
           </>
         )}
       </div>
+
+      {showForm && (
+        <AppDialog
+          labelledBy="overtime-create-title"
+          describedBy="overtime-create-description"
+          onClose={closeForm}
+          dismissible={!saving}
+          className="admin-form-dialog overtime-create-dialog"
+        >
+          <form
+            id="overtime-policy-form"
+            ref={formRef}
+            className="admin-form"
+            onSubmit={handleSubmit}
+            aria-busy={saving}
+            aria-label="Formulario para registrar nueva política de horas extra"
+          >
+            <div className="app-dialog-heading admin-form-heading">
+              <div>
+                <h2 id="overtime-create-title">Nueva política de horas extra</h2>
+                <p id="overtime-create-description" className="muted">
+                  Define desde cuándo rige y los porcentajes aplicados. Los porcentajes son un mínimo legal, no un tope.
+                </p>
+              </div>
+              <AppDialogCloseButton
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={saving}
+                aria-label="Cerrar formulario de nueva política"
+              >
+                <X size={15} aria-hidden="true" />
+              </AppDialogCloseButton>
+            </div>
+
+            {formError && (
+              <p className="alert alert-error" role="alert">
+                {formError}
+              </p>
+            )}
+
+            <div className="admin-form-grid">
+              <div className="admin-field admin-field--full">
+                <label id="overtime-effective-from-label" className="label">
+                  Vigente desde <span className="overtime-required-mark" aria-hidden="true">*</span>
+                </label>
+                <DateField
+                  value={form.effective_from}
+                  onChange={(v) => {
+                    setForm((prev) => ({ ...prev, effective_from: v }));
+                    setFormError(null);
+                  }}
+                  required
+                  disabled={saving}
+                  placeholder="Seleccionar fecha"
+                  aria-label="Fecha de inicio de vigencia (requerido)"
+                />
+                <p id="overtime-effective-from-hint" className="field-hint overtime-field-hint">
+                  Fecha requerida para nueva vigencia
+                </p>
+              </div>
+
+              <div className="admin-field">
+                <label htmlFor="overtime-first-two-hours" className="label">
+                  Primeras 2 h (%) <span className="overtime-required-mark" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="overtime-first-two-hours"
+                  type="number"
+                  min={25}
+                  step={0.01}
+                  className="input"
+                  value={form.first_two_hours_rate}
+                  onChange={(e) => {
+                    setForm((prev) => ({ ...prev, first_two_hours_rate: e.target.value }));
+                    setFormError(null);
+                  }}
+                  required
+                  disabled={saving}
+                  aria-describedby="overtime-first-two-hours-hint"
+                />
+                <p id="overtime-first-two-hours-hint" className="field-hint overtime-field-hint">
+                  Mínimo 25% (legal D.L. 728)
+                </p>
+              </div>
+
+              <div className="admin-field">
+                <label htmlFor="overtime-additional-hours" className="label">
+                  Tercera hora en adelante (%) <span className="overtime-required-mark" aria-hidden="true">*</span>
+                </label>
+                <input
+                  id="overtime-additional-hours"
+                  type="number"
+                  min={35}
+                  step={0.01}
+                  className="input"
+                  value={form.additional_hours_rate}
+                  onChange={(e) => {
+                    setForm((prev) => ({ ...prev, additional_hours_rate: e.target.value }));
+                    setFormError(null);
+                  }}
+                  required
+                  disabled={saving}
+                  aria-describedby="overtime-additional-hours-hint"
+                />
+                <p id="overtime-additional-hours-hint" className="field-hint overtime-field-hint">
+                  Mínimo 35% (legal D.L. 728)
+                </p>
+              </div>
+
+              <div className="admin-field admin-field--full">
+                <label htmlFor="overtime-reason" className="label">
+                  Motivo del cambio <span className="overtime-required-mark" aria-hidden="true">*</span>
+                </label>
+                <textarea
+                  id="overtime-reason"
+                  className="input"
+                  value={form.reason}
+                  onChange={(e) => {
+                    setForm((prev) => ({ ...prev, reason: e.target.value }));
+                    setFormError(null);
+                  }}
+                  required
+                  minLength={3}
+                  rows={3}
+                  disabled={saving}
+                  placeholder="Ej. Actualización de política salarial anual"
+                  aria-describedby="overtime-reason-hint"
+                />
+                <p id="overtime-reason-hint" className="field-hint overtime-field-hint">
+                  Mínimo 3 caracteres requeridos
+                </p>
+              </div>
+            </div>
+
+            <div className="app-dialog-actions admin-form-actions">
+              <AppDialogCloseButton className="btn btn-outline" disabled={saving}>
+                Cancelar
+              </AppDialogCloseButton>
+              <button
+                type="submit"
+                className="btn btn-primary overtime-submit-btn"
+                disabled={saving || !isFormValid}
+                aria-busy={saving}
+              >
+                {saving ? <Spinner /> : <Check size={15} aria-hidden="true" />}
+                {saving ? "Guardando…" : "Guardar política"}
+              </button>
+            </div>
+          </form>
+        </AppDialog>
+      )}
     </AdminShell>
   );
 }

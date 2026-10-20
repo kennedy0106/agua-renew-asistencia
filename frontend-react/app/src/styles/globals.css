@@ -2851,7 +2851,7 @@ textarea {
 
   .topbar {
     align-items: stretch;
-    flex-direction: column;
+    flex-direction: row;
     padding: 1.4rem 1rem 0.75rem;
   }
 
@@ -2860,7 +2860,7 @@ textarea {
   }
 
   .topbar .btn {
-    width: 100%;
+    width: auto;
     font-size: 0.82rem;
   }
 
@@ -3772,7 +3772,7 @@ body::after {
   }
 
   .dashboard-refresh {
-    width: 100%;
+    width: auto;
   }
 
   .dashboard-error {
@@ -4570,8 +4570,7 @@ h2 { letter-spacing: -0.032em; line-height: 1.15; }
 
   /* Keep the page identity at the top and readable */
   .topbar {
-    top: 3.75rem;
-    z-index: 30;
+    position: static;
   }
 }
 
@@ -5965,6 +5964,8 @@ html {
     align-items: stretch;
   }
   .roles-search-field {
+    flex-basis: auto;
+    min-width: 0;
     max-width: 100%;
   }
 }

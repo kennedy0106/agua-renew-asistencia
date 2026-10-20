@@ -121,7 +121,7 @@ export default function AppDialog({
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Si hay un selector o calendario portaleado abierto (ej. DateField),
       // no cerramos este diálogo padre para permitir que el selector se cierre primero.
-      const hasNestedPopup = Boolean(document.querySelector(".datefield-panel, [role='dialog'].is-portaled, [data-floating-portal]"));
+      const hasNestedPopup = Boolean(document.querySelector(".datefield-panel, .monthfield-panel, .glass-select-content[data-state='open'], [role='dialog'].is-portaled, [data-floating-portal]"));
       if (hasNestedPopup) return;
       event.preventDefault();
       requestClose();

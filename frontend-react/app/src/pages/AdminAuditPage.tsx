@@ -1,8 +1,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import DateField from "@/components/DateField";
 import { Alert, Filter, Refresh, Search, Shield, X } from "@/components/Icons";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, auditApi, AuditLog } from "@/lib/api";
 
 const entityCopy: Record<string, string> = {
@@ -335,6 +337,7 @@ export default function AdminAuditPage() {
       dateFrom ||
       dateTo
   );
+  const hasDateFilters = Boolean(dateFrom || dateTo);
 
   function clearFilters() {
     setSearchTerm("");
@@ -407,81 +410,88 @@ export default function AdminAuditPage() {
 
         <div className="audit-filters-group">
           <div className="audit-filter-item">
-            <label htmlFor="audit-category-select" className="sr-only">
+            <label className="label" htmlFor="audit-category-select">
               Categoría
             </label>
-            <select
-              id="audit-category-select"
-              className="input select"
+            <Select
               value={categoryFilter}
-              onChange={(e) =>
+              onValueChange={(value) =>
                 setCategoryFilter(
-                  e.target.value as "all" | "attendance" | "payroll" | "schedules" | "users"
+                  value as "all" | "attendance" | "payroll" | "schedules" | "users"
                 )
               }
-              aria-label="Filtrar por categoría"
             >
-              <option value="all">Todas las categorías</option>
-              <option value="attendance">Marcaciones y Asistencia</option>
-              <option value="payroll">Planilla y Pagos</option>
-              <option value="schedules">Jornadas y Feriados</option>
-              <option value="users">Usuarios del sistema</option>
-            </select>
+              <SelectTrigger id="audit-category-select" aria-label="Filtrar por categoría">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas las categorías</SelectItem>
+                <SelectItem value="attendance">Marcaciones y Asistencia</SelectItem>
+                <SelectItem value="payroll">Planilla y Pagos</SelectItem>
+                <SelectItem value="schedules">Jornadas y Feriados</SelectItem>
+                <SelectItem value="users">Usuarios del sistema</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {actors.length > 1 && (
             <div className="audit-filter-item">
-              <label htmlFor="audit-actor-select" className="sr-only">
+              <label className="label" htmlFor="audit-actor-select">
                 Autor
               </label>
-              <select
-                id="audit-actor-select"
-                className="input select"
-                value={actorFilter}
-                onChange={(e) => setActorFilter(e.target.value)}
-                aria-label="Filtrar por autor"
-              >
-                <option value="all">Todos los autores ({actors.length})</option>
-                {actors.map((act) => (
-                  <option key={act} value={act}>
-                    {act}
-                  </option>
-                ))}
-              </select>
+              <Select value={actorFilter} onValueChange={setActorFilter}>
+                <SelectTrigger id="audit-actor-select" aria-label="Filtrar por autor">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los autores ({actors.length})</SelectItem>
+                  {actors.map((act) => (
+                    <SelectItem key={act} value={act}>
+                      {act}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           )}
 
           <div className="audit-date-range">
-            <label htmlFor="audit-date-from" className="audit-date-label">
-              Desde
-            </label>
-            <input
-              id="audit-date-from"
-              type="date"
-              className="input audit-date-input"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              aria-label="Fecha inicial de auditoría"
-            />
-            <label htmlFor="audit-date-to" className="audit-date-label">
-              Hasta
-            </label>
-            <input
-              id="audit-date-to"
-              type="date"
-              className="input audit-date-input"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              aria-label="Fecha final de auditoría"
-            />
+            <div className="audit-date-field">
+              <span className="audit-date-label">Desde</span>
+              <DateField
+                value={dateFrom}
+                onChange={setDateFrom}
+                aria-label="Fecha inicial de auditoría"
+              />
+            </div>
+            <div className="audit-date-field">
+              <span className="audit-date-label">Hasta</span>
+              <DateField
+                value={dateTo}
+                onChange={setDateTo}
+                aria-label="Fecha final de auditoría"
+              />
+            </div>
           </div>
+
+          {hasDateFilters && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm audit-date-clear"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+            >
+              Limpiar fechas
+            </button>
+          )}
 
           {hasActiveFilters && (
             <button
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={clearFilters}
-              style={{ minHeight: "2.5rem" }}
             >
               Limpiar filtros
             </button>

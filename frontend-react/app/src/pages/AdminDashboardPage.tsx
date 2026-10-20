@@ -79,9 +79,29 @@ export default function AdminDashboardPage() {
   useEffect(() => { void load(); }, [load]);
 
   const openEntries = data?.records.filter((record) => !record.check_out_at) ?? [];
-  const incidents = [
-    ...(data?.missingEmployees.map((employee) => ({ id: `missing-${employee.id}`, title: `${employee.first_name} ${employee.last_name}`, detail: employee.job_role_name ?? "Sin cargo asignado", status: "Sin entrada", kind: "missing" as const })) ?? []),
-    ...openEntries.map((record) => ({ id: `open-${record.id}`, title: record.employee_name ?? "Empleado sin nombre", detail: `Entrada registrada a las ${formatClock(record.check_in_at)}`, status: "Entrada abierta", kind: "open" as const })),
+  const incidents: {
+    id: string;
+    title: string;
+    meta: string;
+    detail?: string;
+    status: string;
+    kind: "missing" | "open";
+  }[] = [
+    ...(data?.missingEmployees.map((employee) => ({
+      id: `missing-${employee.id}`,
+      title: `${employee.first_name} ${employee.last_name}`,
+      meta: employee.job_role_name ?? "Sin cargo asignado",
+      status: "Sin entrada",
+      kind: "missing" as const,
+    })) ?? []),
+    ...openEntries.map((record) => ({
+      id: `open-${record.id}`,
+      title: record.employee_name ?? "Empleado sin nombre",
+      meta: record.job_role_name ?? "Sin cargo asignado",
+      detail: `Entrada registrada a las ${formatClock(record.check_in_at)}`,
+      status: "Entrada abierta",
+      kind: "open" as const,
+    })),
   ];
 
   const handleFocusIncidents = () => {
@@ -98,19 +118,20 @@ export default function AdminDashboardPage() {
   return (
     <AdminShell title="Resumen de asistencia" subtitle={user ? `${formatLongDate()} · ${user.username}` : formatLongDate()}>
       <section className="dash-context" aria-label="Contexto de la jornada">
-        <div>
-          <p className="dash-eyebrow">
-            Módulo en vivo
-            <span className="dash-eyebrow-sep" aria-hidden>·</span>
-            <span className="dash-eyebrow-muted">Jornada de hoy</span>
-          </p>
+        <div className="dash-context-heading dash-context-copy">
           <h2 className="dash-title">Jornada de hoy</h2>
+          <p className="dash-updated" aria-live="polite">
+            {updatedAt ? `Actualizado a las ${formatClock(updatedAt.toISOString())}` : "Esperando datos del servidor"}
+          </p>
         </div>
         <div className="dash-context-actions">
-          <span className="dash-updated" aria-live="polite">
-            {updatedAt ? `Actualizado a las ${formatClock(updatedAt.toISOString())}` : "Esperando datos del servidor"}
-          </span>
-          <button type="button" className="btn btn-outline btn-sm dashboard-refresh" onClick={() => void load(true)} disabled={refreshing}>
+          <button
+            type="button"
+            className="btn btn-outline btn-sm dashboard-refresh"
+            onClick={() => void load(true)}
+            disabled={refreshing}
+            aria-busy={refreshing}
+          >
             {refreshing ? <Spinner /> : <Refresh size={16} />}
             {refreshing ? "Actualizando…" : "Actualizar"}
           </button>
@@ -231,15 +252,15 @@ export default function AdminDashboardPage() {
               {incidents.length > 0 ? (
                 <div className="dash-list">
                   {incidents.slice(0, 6).map((incident, index) => (
-                    <Link key={incident.id} to="/admin/attendance" className="dash-row">
+                    <Link key={incident.id} to="/admin/attendance" className="dash-row dash-row--incident">
                       <span className="dash-row-main">
                         <span className={`dash-avatar ${AVATAR_TONES[index % AVATAR_TONES.length]}`} aria-hidden>{initials(incident.title)}</span>
                         <span className="dash-row-copy">
-                          <span className="dash-row-name">
-                            {incident.title}
-                            <span className="dash-row-role">{incident.detail}</span>
+                          <span className="dash-row-name">{incident.title}</span>
+                          <span className="dash-row-meta">
+                            <span className="dash-row-role">{incident.meta}</span>
+                            {incident.detail && <span className="dash-row-detail">{incident.detail}</span>}
                           </span>
-                          <span className="dash-row-detail">{incident.detail}</span>
                         </span>
                       </span>
                       <span className="dash-row-side">

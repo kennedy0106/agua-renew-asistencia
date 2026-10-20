@@ -6,9 +6,17 @@ import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
+import MonthField from "@/components/MonthField";
 import { Alert, Pencil, Plus, Receipt, X } from "@/components/Icons";
 import { Spinner, TableSkeleton } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   ApiError,
   PayrollPeriod,
@@ -118,6 +126,7 @@ export default function AdminPayrollPage() {
   const [closingLoading, setClosingLoading] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", start_date: "", end_date: "", period_kind: "MONTHLY" as "MONTHLY" | "FIRST_HALF" | "SECOND_HALF", payroll_month: "" });
 
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
@@ -190,22 +199,34 @@ export default function AdminPayrollPage() {
     }
   }
 
+  function openCreateDialog() {
+    setCreateError(null);
+    setShowForm(true);
+  }
+
+  function closeCreateDialog() {
+    if (busy) return;
+    setCreateError(null);
+    setShowForm(false);
+  }
+
   async function handleCreatePeriod(event: React.FormEvent) {
     event.preventDefault();
-    setError(null);
+    if (busy) return;
+    setCreateError(null);
 
     if (form.period_kind === "MONTHLY") {
       if (!form.start_date || !form.end_date) {
-        setError("Debes indicar las fechas de inicio y fin para el periodo mensual.");
+        setCreateError("Debes indicar las fechas de inicio y fin para el periodo mensual.");
         return;
       }
       if (form.start_date > form.end_date) {
-        setError("La fecha de inicio debe ser anterior o igual a la fecha final.");
+        setCreateError("La fecha de inicio debe ser anterior o igual a la fecha final.");
         return;
       }
     } else {
       if (!form.payroll_month) {
-        setError("Debes seleccionar el mes de liquidación.");
+        setCreateError("Debes seleccionar el mes de liquidación.");
         return;
       }
     }
@@ -220,11 +241,12 @@ export default function AdminPayrollPage() {
           : { name: form.name || undefined, year, month, period_kind: form.period_kind },
       );
       setShowForm(false);
+      setCreateError(null);
       setForm({ name: "", start_date: "", end_date: "", period_kind: "MONTHLY", payroll_month: "" });
       setPeriods(await payrollApi.periods());
       success("Periodo de pago creado.");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo crear el periodo");
+      setCreateError(err instanceof ApiError ? err.message : "No se pudo crear el periodo");
     } finally {
       setBusy(false);
       setActionKey(null);
@@ -429,22 +451,21 @@ export default function AdminPayrollPage() {
         </ol>
       )}
 
-      <div className="toolbar">
-        <span className="spacer" />
-        {canManage && (periods.length > 0 || showForm) && (
-          <button className="btn btn-outline" onClick={() => setShowForm((v) => !v)}>
-            {showForm ? (
-              <>
-                <X size={15} /> Cancelar
-              </>
-            ) : (
-              <>
-                <Plus size={15} /> Nuevo periodo
-              </>
-            )}
+      {canManage && periods.length > 0 && (
+        <div className="toolbar payroll-commandbar">
+          <span className="spacer" />
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={openCreateDialog}
+            aria-haspopup="dialog"
+            aria-expanded={showForm}
+            aria-controls={showForm ? "payroll-create-form" : undefined}
+          >
+            <Plus size={15} /> Nuevo periodo
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {error && (
         <p className="alert alert-error" role="alert">
@@ -479,98 +500,38 @@ export default function AdminPayrollPage() {
         </div>
       )}
 
-      {canManage && showForm && (
-        <form onSubmit={handleCreatePeriod} className="card card-pad" style={{ marginBottom: "1.1rem" }}>
-          <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))" }}>
-            <div>
-              <label className="label" htmlFor="new-period-name">Nombre</label>
-              <input
-                id="new-period-name"
-                type="text"
-                className="input"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                required={form.period_kind === "MONTHLY"}
-                placeholder="Agosto 2026"
-              />
-            </div>
-            <div>
-              <label className="label" htmlFor="new-period-kind">Tipo de liquidación</label>
-              <select
-                id="new-period-kind"
-                className="input"
-                value={form.period_kind}
-                onChange={(e) => setForm({ ...form, period_kind: e.target.value as typeof form.period_kind })}
-              >
-                <option value="MONTHLY">Mes completo</option>
-                <option value="FIRST_HALF">Primera quincena</option>
-                <option value="SECOND_HALF">Segunda quincena</option>
-              </select>
-            </div>
-            {form.period_kind !== "MONTHLY" && (
-              <div>
-                <label className="label" htmlFor="new-period-month">Mes de liquidación</label>
-                <input
-                  id="new-period-month"
-                  type="month"
-                  className="input"
-                  value={form.payroll_month}
-                  onChange={(e) => setForm({ ...form, payroll_month: e.target.value })}
-                  required
-                />
-              </div>
-            )}
-            {form.period_kind === "MONTHLY" && (
-              <>
-                <div>
-                  <label className="label" id="new-period-start-label">Desde</label>
-                  <DateField
-                    value={form.start_date}
-                    onChange={(v) => setForm({ ...form, start_date: v })}
-                    required
-                    placeholder="Seleccionar"
-                    aria-label="Fecha de inicio"
-                  />
-                </div>
-                <div>
-                  <label className="label" id="new-period-end-label">Hasta</label>
-                  <DateField
-                    value={form.end_date}
-                    onChange={(v) => setForm({ ...form, end_date: v })}
-                    required
-                    placeholder="Seleccionar"
-                    aria-label="Fecha final"
-                  />
-                </div>
-              </>
-            )}
-            <div style={{ display: "flex", alignItems: "flex-end" }}>
-              <button type="submit" className="btn btn-primary" disabled={busy}>
-                {actionKey === "create" ? <Spinner /> : <Plus size={15} />}
-                {actionKey === "create" ? "Creando periodo…" : "Crear periodo"}
-              </button>
-            </div>
+      {!periodsLoading && periods.length === 0 && (
+        <div className="empty-state card card-pad">
+          <Receipt size={28} />
+          <div>
+            <h3>Aún no hay periodos de pago</h3>
+            <p>Crea el primero para calcular el tiempo trabajado y el monto estimado.</p>
           </div>
-        </form>
+          <button
+            className="btn btn-primary btn-sm"
+            type="button"
+            onClick={openCreateDialog}
+            aria-haspopup="dialog"
+            aria-expanded={showForm}
+            aria-controls={showForm ? "payroll-create-form" : undefined}
+          >
+            <Plus size={15} /> Crear primer periodo
+          </button>
+        </div>
       )}
 
-      <div style={{ display: "grid", gap: "0.9rem", gridTemplateColumns: "repeat(auto-fill,minmax(250px,1fr))", marginBottom: "1.3rem" }}>
-        {!periodsLoading && periods.length === 0 && (
-          <div className="empty-state card card-pad" style={{ gridColumn: "1 / -1" }}>
-            <Receipt size={28} />
-            <div>
-              <h3>Aún no hay periodos de pago</h3>
-              <p>Crea el primero para calcular el tiempo trabajado y el monto estimado.</p>
-            </div>
-            <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowForm(true)}>
-              <Plus size={15} /> Crear primer periodo
-            </button>
-          </div>
-        )}
+      <div className="period-grid">
         {periods.map((period) => (
-          <div key={period.id} className={`card card-pad period-card${selectedId === period.id ? " is-selected" : ""}`}>
+          <div key={period.id} className={`card period-card${selectedId === period.id ? " is-selected" : ""}`}>
             <div className="period-card-head">
-              <p className="period-card-name">{period.name}</p>
+              <div className="period-card-identity">
+                <h3 className="period-card-name">{period.name}</h3>
+                <p className="period-card-range">
+                  <span className="period-card-dates">{formatRange(period.start_date, period.end_date)}</span>
+                  <span className="period-card-sep" aria-hidden="true"> · </span>
+                  <span className="period-card-version">versión {period.version}</span>
+                </p>
+              </div>
               {period.status === "CLOSED" ? (
                 <span className="badge badge-neutral">Cerrado</span>
               ) : period.status === "CALCULATED" ? (
@@ -579,83 +540,84 @@ export default function AdminPayrollPage() {
                 <span className="badge badge-amber">Abierto</span>
               )}
             </div>
-            <p className="period-card-range">{formatRange(period.start_date, period.end_date)} · versión {period.version}</p>
-            <p className="period-card-hint">
+            <p className="period-card-hint period-card-status">
               {period.status === "OPEN"
-                ? "Aún no se calcula. Al calcular se estima el pago con la asistencia y los ajustes del periodo."
+                ? "Sin calcular."
                 : period.status === "CALCULATED"
-                  ? "Listo para revisar y cerrar. Revisa los registros y ajusta lo necesario antes de confirmar."
-                  : "Cerrado y bloqueado. Si necesitas cambiar algo, crea una rectificación."}
+                  ? "Listo para revisar y cerrar."
+                  : "Cerrado y bloqueado."}
             </p>
-            <div className="period-card-actions">
-              {period.status === "OPEN" && (
-                <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
-                  {actionKey === `calculate:${period.id}` && <Spinner />}
-                  {actionKey === `calculate:${period.id}` ? "Calculando…" : "Calcular pago"}
-                </button>
-              )}
-              {period.status === "CALCULATED" && (
-                <div className="period-card-buttons">
-                  <button
-                    className={`btn btn-sm ${selectedId === period.id ? "btn-outline" : "btn-primary"}`}
-                    onClick={() => loadRecords(period.id)}
-                    disabled={busy}
-                  >
-                    {selectedId === period.id ? "Revisando registros" : "Revisar registros"}
-                  </button>
-                  <button
-                    className="btn btn-green btn-sm"
-                    onClick={() => void openCloseDialog(period)}
-                    disabled={busy}
-                  >
-                    {actionKey === `close:${period.id}` && <Spinner />}
-                    {actionKey === `close:${period.id}` ? "Cerrando…" : "Cerrar planilla"}
-                  </button>
-                </div>
-              )}
-              {period.status === "CLOSED" && (
-                <button className="btn btn-outline btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
-                  Ver registros
-                </button>
-              )}
-            </div>
-            <details className="period-more">
-              <summary>Más acciones</summary>
-              <div className="period-more-list">
+            <div className="period-card-footer">
+              <div className="period-card-actions">
                 {period.status === "OPEN" && (
-                  <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
-                    Ver registros
+                  <button className="btn btn-primary btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
+                    {actionKey === `calculate:${period.id}` && <Spinner />}
+                    {actionKey === `calculate:${period.id}` ? "Calculando…" : "Calcular pago"}
                   </button>
                 )}
                 {period.status === "CALCULATED" && (
-                  <>
-                    <button className="btn btn-ghost btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
-                      {actionKey === `calculate:${period.id}` && <Spinner />}
-                      {actionKey === `calculate:${period.id}` ? "Calculando…" : "Recalcular"}
+                  <div className="period-card-buttons">
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={() => loadRecords(period.id)}
+                      disabled={busy}
+                    >
+                      {selectedId === period.id ? "Revisando registros" : "Revisar registros"}
                     </button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => handleReadiness(period.id)} disabled={busy}>
-                      {actionKey === `validate:${period.id}` && <Spinner />}
-                      {actionKey === `validate:${period.id}` ? "Validando…" : "Validar cierre"}
+                    <button
+                      className="btn btn-green btn-sm"
+                      onClick={() => void openCloseDialog(period)}
+                      disabled={busy}
+                    >
+                      {actionKey === `close:${period.id}` && <Spinner />}
+                      {actionKey === `close:${period.id}` ? "Cerrando…" : "Cerrar planilla"}
                     </button>
-                  </>
+                  </div>
                 )}
                 {period.status === "CLOSED" && (
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={(event) => {
-                      rectificationTriggerRef.current = event.currentTarget;
-                      setRectifyingId(period.id);
-                      setRectificationReason("");
-                      setRectificationError(null);
-                    }}
-                    disabled={busy}
-                  >
-                    {actionKey === `rectify:${period.id}` && <Spinner />}
-                    {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
+                  <button className="btn btn-primary btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
+                    Ver registros
                   </button>
                 )}
               </div>
-            </details>
+              <details className="period-more">
+                <summary>Más acciones</summary>
+                <div className="period-more-list">
+                  {period.status === "OPEN" && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => loadRecords(period.id)} disabled={busy}>
+                      Ver registros
+                    </button>
+                  )}
+                  {period.status === "CALCULATED" && (
+                    <>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleCalculate(period.id)} disabled={busy}>
+                        {actionKey === `calculate:${period.id}` && <Spinner />}
+                        {actionKey === `calculate:${period.id}` ? "Calculando…" : "Recalcular"}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleReadiness(period.id)} disabled={busy}>
+                        {actionKey === `validate:${period.id}` && <Spinner />}
+                        {actionKey === `validate:${period.id}` ? "Validando…" : "Validar cierre"}
+                      </button>
+                    </>
+                  )}
+                  {period.status === "CLOSED" && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={(event) => {
+                        rectificationTriggerRef.current = event.currentTarget;
+                        setRectifyingId(period.id);
+                        setRectificationReason("");
+                        setRectificationError(null);
+                      }}
+                      disabled={busy}
+                    >
+                      {actionKey === `rectify:${period.id}` && <Spinner />}
+                      {actionKey === `rectify:${period.id}` ? "Creando…" : "Rectificar"}
+                    </button>
+                  )}
+                </div>
+              </details>
+            </div>
           </div>
         ))}
       </div>
@@ -684,6 +646,143 @@ export default function AdminPayrollPage() {
               <button className="btn btn-primary" type="submit" disabled={busy || rectificationReason.trim().length < 3} aria-busy={busy}>
                 {busy && <Spinner />}
                 {busy ? "Creando rectificación…" : "Crear rectificación"}
+              </button>
+            </div>
+          </form>
+        </AppDialog>
+      )}
+
+      {canManage && showForm && (
+        <AppDialog
+          labelledBy="payroll-create-title"
+          describedBy="payroll-create-description"
+          onClose={closeCreateDialog}
+          dismissible={!busy}
+          className="admin-form-dialog payroll-create-dialog"
+        >
+          <form
+            id="payroll-create-form"
+            className="admin-form"
+            onSubmit={handleCreatePeriod}
+            aria-busy={actionKey === "create"}
+          >
+            <div className="app-dialog-heading admin-form-heading">
+              <div>
+                <h2 id="payroll-create-title">Nuevo periodo de pago</h2>
+                <p id="payroll-create-description" className="muted">
+                  Define el nombre y el tipo de liquidación. Las fechas permiten calcular la asistencia del periodo.
+                </p>
+              </div>
+              <AppDialogCloseButton
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={busy}
+                aria-label="Cerrar formulario de nuevo periodo"
+              >
+                <X size={15} aria-hidden="true" />
+              </AppDialogCloseButton>
+            </div>
+
+            {createError && (
+              <p className="alert alert-error" role="alert">
+                {createError}
+              </p>
+            )}
+
+            <div className="admin-form-grid">
+              <div className="admin-field">
+                <label className="label" htmlFor="new-period-name">Nombre</label>
+                <input
+                  id="new-period-name"
+                  type="text"
+                  className="input"
+                  data-autofocus
+                  value={form.name}
+                  onChange={(e) => {
+                    setForm({ ...form, name: e.target.value });
+                    setCreateError(null);
+                  }}
+                  required={form.period_kind === "MONTHLY"}
+                  placeholder="Agosto 2026"
+                  disabled={busy}
+                />
+              </div>
+
+              <div className="admin-field">
+                <label className="label" htmlFor="new-period-kind">Tipo de liquidación</label>
+                <Select
+                  value={form.period_kind}
+                  onValueChange={(value) => {
+                    setForm({ ...form, period_kind: value as typeof form.period_kind });
+                    setCreateError(null);
+                  }}
+                  disabled={busy}
+                >
+                  <SelectTrigger id="new-period-kind" aria-label="Tipo de liquidación">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="MONTHLY">Mes completo</SelectItem>
+                    <SelectItem value="FIRST_HALF">Primera quincena</SelectItem>
+                    <SelectItem value="SECOND_HALF">Segunda quincena</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {form.period_kind !== "MONTHLY" ? (
+                <div className="admin-field admin-field--full">
+                  <span id="new-period-month-label" className="label">Mes de liquidación</span>
+                  <MonthField
+                    value={form.payroll_month}
+                    onChange={(v) => {
+                      setForm({ ...form, payroll_month: v });
+                      setCreateError(null);
+                    }}
+                    disabled={busy}
+                    aria-label="Mes de liquidación"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="admin-field">
+                    <span className="label" id="new-period-start-label">Desde</span>
+                    <DateField
+                      value={form.start_date}
+                      onChange={(v) => {
+                        setForm({ ...form, start_date: v });
+                        setCreateError(null);
+                      }}
+                      required
+                      disabled={busy}
+                      placeholder="Seleccionar"
+                      aria-label="Fecha de inicio"
+                    />
+                  </div>
+                  <div className="admin-field">
+                    <span className="label" id="new-period-end-label">Hasta</span>
+                    <DateField
+                      value={form.end_date}
+                      onChange={(v) => {
+                        setForm({ ...form, end_date: v });
+                        setCreateError(null);
+                      }}
+                      required
+                      disabled={busy}
+                      placeholder="Seleccionar"
+                      aria-label="Fecha final"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="app-dialog-actions admin-form-actions">
+              <AppDialogCloseButton className="btn btn-outline" disabled={busy}>
+                Cancelar
+              </AppDialogCloseButton>
+              <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy}>
+                {actionKey === "create" ? <Spinner /> : <Plus size={15} />}
+                {actionKey === "create" ? "Creando periodo…" : "Crear periodo"}
               </button>
             </div>
           </form>

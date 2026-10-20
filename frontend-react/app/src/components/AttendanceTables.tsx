@@ -370,34 +370,38 @@ export function AttendanceDailyCards({ days, loading, canManage, onEditBreak }: 
                 </dd>
               </div>
             </dl>
-            <Incidents codes={day.incident_codes} />
-            <RowToggle
-              open={open}
-              controls={detailId}
-              onClick={() => setOpenKeys((current) => ({ ...current, [key]: !open }))}
-            />
+            <div className="attendance-card__status">
+              <Incidents codes={day.incident_codes} />
+            </div>
+            <div className="attendance-card__footer">
+              <RowToggle
+                open={open}
+                controls={detailId}
+                onClick={() => setOpenKeys((current) => ({ ...current, [key]: !open }))}
+              />
+              {canManage && (
+                <div className="attendance-card__actions attendance-actions">
+                  <button
+                    type="button"
+                    className="btn attendance-action attendance-action--secondary"
+                    disabled={day.has_open_entry}
+                    title={
+                      day.has_open_entry
+                        ? "Cierre todas las marcaciones antes de ajustar el refrigerio"
+                        : undefined
+                    }
+                    aria-label={`Editar refrigerio de ${day.employee_name ?? "este empleado"}`}
+                    onClick={(event) => onEditBreak(day, event.currentTarget)}
+                  >
+                    <Clock size={16} />
+                    Refrigerio
+                  </button>
+                </div>
+              )}
+            </div>
             {open && (
               <div id={detailId} className="attendance-card__detail">
                 <DailyDetail day={day} />
-              </div>
-            )}
-            {canManage && (
-              <div className="attendance-card__actions attendance-actions">
-                <button
-                  type="button"
-                  className="btn attendance-action attendance-action--secondary"
-                  disabled={day.has_open_entry}
-                  title={
-                    day.has_open_entry
-                      ? "Cierre todas las marcaciones antes de ajustar el refrigerio"
-                      : undefined
-                  }
-                  aria-label={`Editar refrigerio de ${day.employee_name ?? "este empleado"}`}
-                  onClick={(event) => onEditBreak(day, event.currentTarget)}
-                >
-                  <Clock size={16} />
-                  Refrigerio
-                </button>
               </div>
             )}
           </article>
@@ -586,38 +590,40 @@ export function AttendanceRecordsCards({ records, loading, canManage, onPhotos, 
                 <span className="badge badge-neutral attendance-status">Cerrada</span>
               )}
             </div>
-            <RowToggle
-              open={open}
-              controls={detailId}
-              onClick={() => setOpenIds((current) => ({ ...current, [record.id]: !open }))}
-            />
+            <div className="attendance-card__footer">
+              <RowToggle
+                open={open}
+                controls={detailId}
+                onClick={() => setOpenIds((current) => ({ ...current, [record.id]: !open }))}
+              />
+              {canManage && (
+                <div className="attendance-card__actions attendance-actions">
+                  <button
+                    type="button"
+                    className="btn attendance-action attendance-action--soft"
+                    onClick={() => onPhotos(record.id)}
+                    aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`}
+                    title="Ver fotos"
+                  >
+                    <Camera size={17} />
+                    Fotos
+                  </button>
+                  <button
+                    type="button"
+                    className="btn attendance-action attendance-action--neutral"
+                    onClick={() => onCorrect(record)}
+                    aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`}
+                    title="Corregir registro"
+                  >
+                    <Pencil size={16} />
+                    Corregir
+                  </button>
+                </div>
+              )}
+            </div>
             {open && (
               <div id={detailId} className="attendance-card__detail">
                 <RecordDetail record={record} />
-              </div>
-            )}
-            {canManage && (
-              <div className="attendance-card__actions attendance-actions">
-                <button
-                  type="button"
-                  className="btn attendance-action attendance-action--soft"
-                  onClick={() => onPhotos(record.id)}
-                  aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`}
-                  title="Ver fotos"
-                >
-                  <Camera size={17} />
-                  Fotos
-                </button>
-                <button
-                  type="button"
-                  className="btn attendance-action attendance-action--neutral"
-                  onClick={() => onCorrect(record)}
-                  aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`}
-                  title="Corregir registro"
-                >
-                  <Pencil size={16} />
-                  Corregir
-                </button>
               </div>
             )}
           </article>

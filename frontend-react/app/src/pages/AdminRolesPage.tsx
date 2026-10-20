@@ -266,26 +266,15 @@ export default function AdminRolesPage() {
       {/* Toolbar with Search, Status Filter and Summary */}
       <div className="toolbar roles-filters-toolbar" role="search" aria-label="Búsqueda y filtros de cargos laborales">
         <div className="roles-search-field">
-          <Search
-            size={15}
-            style={{
-              position: "absolute",
-              left: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "var(--muted)",
-              pointerEvents: "none",
-            }}
-          />
+          <Search size={15} className="roles-search-icon" />
           <input
             id={searchInputId}
             type="text"
-            className="input"
+            className="input roles-search-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por cargo o descripción…"
             aria-label="Buscar cargo laboral por nombre o descripción"
-            style={{ paddingLeft: "2.1rem" }}
           />
         </div>
 
@@ -293,7 +282,7 @@ export default function AdminRolesPage() {
           value={statusFilter || "__all"}
           onValueChange={(val) => setStatusFilter(val === "__all" ? "" : (val as "active" | "inactive"))}
         >
-          <SelectTrigger aria-label="Filtrar por estado del cargo" style={{ minWidth: 160, maxWidth: 200 }}>
+          <SelectTrigger aria-label="Filtrar por estado del cargo" className="roles-filter">
             <SelectValue placeholder="Todos los estados" />
           </SelectTrigger>
           <SelectContent>
@@ -306,7 +295,7 @@ export default function AdminRolesPage() {
         {hasActiveFilters && (
           <button
             type="button"
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm roles-clear-filter"
             onClick={clearFilters}
             aria-label="Limpiar filtros de búsqueda"
           >
@@ -315,7 +304,7 @@ export default function AdminRolesPage() {
         )}
 
         <span className="spacer" />
-        <span className="muted" style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}>
+        <span className="roles-count">
           {filteredRoles.length} de {roles.length} cargos · {activeRolesCount} activos
         </span>
       </div>
@@ -324,10 +313,10 @@ export default function AdminRolesPage() {
         <table className="table roles-table employee-stack-table">
           <thead>
             <tr>
-              <th style={{ width: "28%" }}>Nombre</th>
-              <th style={{ width: "38%" }}>Descripción</th>
-              <th style={{ width: "16%" }}>Estado</th>
-              {canManage && <th style={{ width: "18%", textAlign: "right" }}>Acciones</th>}
+              <th className="roles-col-name">Nombre</th>
+              <th className="roles-col-description">Descripción</th>
+              <th className="roles-col-status">Estado</th>
+              {canManage && <th className="roles-col-actions" style={{ textAlign: "right" }}>Acciones</th>}
             </tr>
           </thead>
           <tbody>
@@ -361,7 +350,7 @@ export default function AdminRolesPage() {
                     .join(" ") || undefined
                 }
               >
-                <td data-label="Nombre" style={{ fontWeight: 600 }}>
+                <td data-label="Nombre" className="roles-name-cell">
                   {editingId === role.id ? (
                     <div className="roles-edit-cell">
                       <input
@@ -388,7 +377,7 @@ export default function AdminRolesPage() {
                       {editError && <p className="roles-inline-error">{editError}</p>}
                     </div>
                   ) : (
-                    role.name
+                    <span className="role-name">{role.name}</span>
                   )}
                 </td>
                 <td data-label="Descripción">
@@ -422,13 +411,13 @@ export default function AdminRolesPage() {
                   )}
                 </td>
                 {canManage && (
-                  <td data-label="Acciones" style={{ textAlign: "right" }}>
+                  <td data-label="Acciones" className="roles-actions-cell">
                     <div className="roles-actions-group">
                       {editingId === role.id ? (
                         <>
                           <button
                             type="button"
-                            className="btn btn-green btn-sm"
+                            className="btn btn-green btn-sm role-action role-action--save"
                             onClick={() => void handleSaveEdit(role.id)}
                             disabled={actionKey !== null}
                             aria-busy={actionKey === `save:${role.id}`}
@@ -439,7 +428,7 @@ export default function AdminRolesPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-sm"
+                            className="btn btn-outline btn-sm role-action role-action--cancel"
                             onClick={cancelEdit}
                             disabled={actionKey !== null}
                             aria-label={`Cancelar edición del cargo ${role.name}`}
@@ -451,7 +440,7 @@ export default function AdminRolesPage() {
                         <>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-sm"
+                            className="btn btn-outline btn-sm role-action role-action--edit"
                             onClick={() => startEdit(role)}
                             aria-label={`Editar cargo ${role.name}`}
                           >
@@ -459,7 +448,7 @@ export default function AdminRolesPage() {
                           </button>
                           <button
                             type="button"
-                            className={`btn btn-sm ${role.active ? "btn-danger" : "btn-green"}`}
+                            className={`btn btn-outline btn-sm role-action ${role.active ? "role-action--danger" : "role-action--activate"}`}
                             onClick={() => setConfirmToggleRole(role)}
                             disabled={actionKey !== null}
                             aria-busy={actionKey === `toggle:${role.id}`}

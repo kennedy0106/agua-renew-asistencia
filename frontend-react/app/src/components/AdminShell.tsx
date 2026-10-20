@@ -314,7 +314,7 @@ export default function AdminShell({
       <div className={`main${navigating ? " is-navigating" : ""}`} aria-busy={navigating}>
         <header className="topbar">
           <div className="topbar-copy">
-            <div>
+            <div className="topbar-heading">
               <h1 className="topbar-title">{sectionTitle}</h1>
               {sectionSub && <div className="topbar-sub">{sectionSub}</div>}
             </div>
@@ -338,10 +338,10 @@ export default function AdminShell({
                 href="/asistencia"
                 target="_blank"
                 rel="noreferrer"
-                className="btn btn-outline btn-sm topbar-action topbar-action--secondary"
+                className="btn btn-outline btn-sm topbar-action topbar-action--secondary topbar-public-link"
                 title="Abre el marcador público para la tablet de entrada"
               >
-                <Chart size={15} /> <span>Marcación pública</span>
+                <Chart size={15} /> <span className="topbar-public-label">Marcación pública</span>
               </IntentLink>
             )}
             {user && (
