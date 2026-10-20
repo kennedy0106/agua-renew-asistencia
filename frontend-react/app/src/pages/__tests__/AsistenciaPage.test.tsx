@@ -1086,4 +1086,3 @@ describe("kiosco alerta de ubicación al escanear QR", () => {
     expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
   });
 });
-
