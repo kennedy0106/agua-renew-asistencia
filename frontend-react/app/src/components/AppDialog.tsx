@@ -44,6 +44,8 @@ export default function AppDialog({
   onClose,
   dismissible = true,
   className = "",
+  role = "dialog",
+  onCloseRequest,
 }: {
   children: React.ReactNode;
   labelledBy: string;
@@ -51,10 +53,19 @@ export default function AppDialog({
   onClose: () => void;
   dismissible?: boolean;
   className?: string;
+  /** `alertdialog` sólo para alertas que exigen una decisión inmediata. */
+  role?: "dialog" | "alertdialog";
+  /**
+   * Se invoca en cuanto comienza un cierre (Escape, backdrop o botón), antes
+   * de la animación de salida. Permite al consumidor invalidar trabajo en
+   * vuelo para que un callback tardío no avance durante la salida.
+   */
+  onCloseRequest?: () => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const closeRef = useRef(onClose);
+  const closeRequestRef = useRef(onCloseRequest);
   const dismissibleRef = useRef(dismissible);
   const closingRef = useRef(false);
   const closeTimerRef = useRef<number | null>(null);
@@ -62,11 +73,13 @@ export default function AppDialog({
   const titleId = useId();
 
   useEffect(() => { closeRef.current = onClose; }, [onClose]);
+  useEffect(() => { closeRequestRef.current = onCloseRequest; }, [onCloseRequest]);
   useEffect(() => { dismissibleRef.current = dismissible; }, [dismissible]);
 
   const beginClose = useCallback(() => {
     if (closingRef.current) return;
     closingRef.current = true;
+    closeRequestRef.current?.();
     setMotionState("exiting");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     closeTimerRef.current = window.setTimeout(() => closeRef.current(), reduceMotion ? 120 : DIALOG_EXIT_MS);
@@ -97,7 +110,12 @@ export default function AppDialog({
     document.body.style.overflow = "hidden";
     const frame = requestAnimationFrame(() => {
       setMotionState("open");
-      dialogRef.current?.querySelector<HTMLElement>("[data-autofocus], input, button:not([disabled]), [href]")?.focus();
+      // `data-autofocus` es autoridad explícita; sin él se conserva el primer
+      // control enfocable como hasta ahora.
+      const target =
+        dialogRef.current?.querySelector<HTMLElement>("[data-autofocus]") ??
+        dialogRef.current?.querySelector<HTMLElement>("input, button:not([disabled]), [href]");
+      target?.focus();
     });
     const closeWithEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
@@ -133,7 +151,7 @@ export default function AppDialog({
   if (typeof document === "undefined") return null;
   return createPortal(
     <div className="dialog-backdrop dialog-portal" data-motion-state={motionState} onMouseDown={requestClose}>
-      <div ref={dialogRef} className={`app-dialog ${className}`} role="dialog" aria-modal="true" aria-labelledby={labelledBy || titleId} aria-describedby={describedBy} onMouseDown={(event) => event.stopPropagation()} onKeyDownCapture={trapFocus}>
+      <div ref={dialogRef} className={`app-dialog ${className}`} role={role} aria-modal="true" aria-labelledby={labelledBy || titleId} aria-describedby={describedBy} onMouseDown={(event) => event.stopPropagation()} onKeyDownCapture={trapFocus}>
         <DialogCloseContext.Provider value={closeControls}>{children}</DialogCloseContext.Provider>
       </div>
     </div>,

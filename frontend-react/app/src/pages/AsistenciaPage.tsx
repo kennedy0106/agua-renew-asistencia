@@ -1,9 +1,17 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse, PreparationSnapshot } from "@/lib/api";
+import {
+  LOCATION_MAX_AGE_MS,
+  locationAgeMs,
+  locationFailureMessage,
+  requestBrowserPosition,
+  type ClientPosition,
+  type LocationFailure,
+} from "@/lib/attendance-location";
+import AttendanceLocationDialog from "@/components/AttendanceLocationDialog";
 import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
-import { LOCATION_MAX_AGE_MS, locationAgeMs, locationFailureMessage, requestBrowserPosition, type ClientPosition } from "@/lib/attendance-location";
 
 type Phase =
   | "identificando"
@@ -180,7 +188,8 @@ export default function AsistenciaPage() {
   const [idMode, setIdMode] = useState<"dni" | "code">("dni");
   const [copiedNonce, setCopiedNonce] = useState(false);
   const [requestingLocation, setRequestingLocation] = useState(false);
-  const [locationError, setLocationError] = useState<string | null>(null);
+  const [locationFailure, setLocationFailure] = useState<LocationFailure | null>(null);
+  const [locationDialogOpen, setLocationDialogOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -196,16 +205,44 @@ export default function AsistenciaPage() {
   const submittedRef = useRef(false);
   const positionRef = useRef<ClientPosition | null>(null);
   const locationErrorMessage = useRef<string | null>(null);
+  // Valor leído del QR que no pudo identificarse por falta de ubicación. Vive
+  // sólo en memoria para Reintentar y se limpia al cancelar o editar el campo.
+  const pendingIdentifierRef = useRef<string | null>(null);
 
-  function reportLocationFailure(message: string) {
-    locationErrorMessage.current = message;
-    setLocationError(message);
+  function reportLocationFailure(reason: LocationFailure) {
+    locationErrorMessage.current = locationFailureMessage(reason);
+    setLocationFailure(reason);
   }
 
   function clearLocationState() {
     positionRef.current = null;
     locationErrorMessage.current = null;
-    setLocationError(null);
+    pendingIdentifierRef.current = null;
+    setLocationFailure(null);
+    setLocationDialogOpen(false);
+  }
+
+  /**
+   * Cierra la alerta sin reintentar. Conserva el DNI o código escrito, pero
+   * descarta el valor temporal del QR y cualquier lectura en vuelo.
+   */
+  function closeLocationDialog() {
+    setLocationDialogOpen(false);
+    setLocationFailure(null);
+    locationErrorMessage.current = null;
+    pendingIdentifierRef.current = null;
+    setPhase("identificando");
+  }
+
+  /**
+   * Se invoca al iniciar cualquier cierre (Escape, Volver o backdrop). Invalida
+   * la generación vigente para que una lectura lenta ya no pueda identificar.
+   */
+  function invalidateLocationAttempt() {
+    bumpGeneration();
+    identifyingRef.current = false;
+    setIdentifying(false);
+    setRequestingLocation(false);
   }
 
   function bumpGeneration() {
@@ -427,15 +464,16 @@ export default function AsistenciaPage() {
     identifyingRef.current = true;
     setIdentifying(true);
     setError(null);
-    setLocationError(null);
+    setRequestingLocation(true);
     locationErrorMessage.current = null;
+    pendingIdentifierRef.current = value;
     try {
       // La ubicación es requisito previo: si falla no hay API, cámara ni escritura.
-      const position = await readPositionForOperation(gen);
+      const position = await readPositionForOperation(gen, "identify");
       if (gen !== generationRef.current) return;
       if (!position) {
-        // Si veníamos del escaneo QR, se vuelve al formulario para mostrar el
-        // error accionable y permitir reintentar la marcación.
+        // Si veníamos del escaneo QR, se vuelve al formulario; el valor leído
+        // queda en memoria para que Reintentar no reabra la cámara del QR.
         setPhase((current) => (current === "escaneando_qr" ? "identificando" : current));
         return;
       }
@@ -444,6 +482,9 @@ export default function AsistenciaPage() {
       infoRef.current = result;
       setInfo(result);
       setServerOffset(new Date(result.server_time).getTime() - Date.now());
+      setLocationFailure(null);
+      setLocationDialogOpen(false);
+      pendingIdentifierRef.current = null;
       setIdentifier("");
       setLastPhoto(null);
       setLastAttemptStatus(null);
@@ -451,12 +492,16 @@ export default function AsistenciaPage() {
       setPhase("abriendo_camara");
     } catch (err) {
       if (gen !== generationRef.current) return;
+      setLocationFailure(null);
+      setLocationDialogOpen(false);
+      pendingIdentifierRef.current = null;
       setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
       setPhase("incidencia");
     } finally {
       if (gen === generationRef.current) {
         identifyingRef.current = false;
         setIdentifying(false);
+        setRequestingLocation(false);
       }
     }
   }
@@ -464,26 +509,50 @@ export default function AsistenciaPage() {
   async function handleIdentify(event: React.FormEvent) {
     event.preventDefault();
     if (identifyingRef.current) return;
+    pendingIdentifierRef.current = identifier.trim();
     await identifyValue(identifier.trim(), generationRef.current);
   }
 
-  async function readPositionForOperation(gen: number): Promise<ClientPosition | null> {
+  /**
+   * Un fallo previo a identificar abre la alerta accesible; el fallo posterior
+   * a la foto conserva la recuperación inline existente del mismo intento.
+   */
+  async function readPositionForOperation(
+    gen: number,
+    surface: "identify" | "prepare" = "prepare",
+  ): Promise<ClientPosition | null> {
     setRequestingLocation(true);
     locationErrorMessage.current = null;
-    setLocationError(null);
     try {
       const outcome = await requestBrowserPosition();
       if (gen !== generationRef.current) return null;
       if (!outcome.ok) {
         positionRef.current = null;
-        reportLocationFailure(locationFailureMessage(outcome.reason));
+        reportLocationFailure(outcome.reason);
+        if (surface === "identify") setLocationDialogOpen(true);
         return null;
       }
       positionRef.current = outcome.position;
+      if (surface === "identify") {
+        setLocationFailure(null);
+        setLocationDialogOpen(false);
+      }
       return outcome.position;
     } finally {
       if (gen === generationRef.current) setRequestingLocation(false);
     }
+  }
+
+  /** Un único reintento explícito: reutiliza el flujo y sus locks. */
+  function retryLocation() {
+    if (identifyingRef.current) return;
+    const value = pendingIdentifierRef.current ?? identifier.trim();
+    if (!value) {
+      closeLocationDialog();
+      idInputRef.current?.focus();
+      return;
+    }
+    void identifyValue(value, generationRef.current);
   }
 
   /**
@@ -501,9 +570,10 @@ export default function AsistenciaPage() {
     }
     const ageMs = locationAgeMs(position, nowMs());
     if (ageMs > LOCATION_MAX_AGE_MS) {
-      reportLocationFailure(
-        "La ubicación quedó desactualizada. Vuelva a intentar la marcación para obtener una lectura nueva.",
-      );
+      // Fallo posterior a la foto: conserva el mensaje inline del intento y no
+      // abre la alerta previa a identificar.
+      locationErrorMessage.current =
+        "La ubicación quedó desactualizada. Vuelva a intentar la marcación para obtener una lectura nueva.";
       return { ok: false, reason: "location" };
     }
     const current = infoRef.current;
@@ -1011,6 +1081,7 @@ export default function AsistenciaPage() {
   // Teclado táctil del modo DNI: sólo dígitos, máximo 8 posiciones. El input
   // real sigue siendo el control autoritativo (tests y lectores de pantalla).
   function appendDigit(digit: string) {
+    pendingIdentifierRef.current = null;
     setIdentifier((value) => {
       const digits = value.replace(/\D/g, "");
       if (digits.length >= 8) return value;
@@ -1020,11 +1091,13 @@ export default function AsistenciaPage() {
   }
 
   function backspaceDigit() {
+    pendingIdentifierRef.current = null;
     setIdentifier((value) => value.slice(0, -1));
     idInputRef.current?.focus();
   }
 
   function clearIdentifier() {
+    pendingIdentifierRef.current = null;
     setIdentifier("");
     idInputRef.current?.focus();
   }
@@ -1134,6 +1207,7 @@ export default function AsistenciaPage() {
                   value={identifier}
                   onChange={(e) => {
                     const val = e.target.value;
+                    pendingIdentifierRef.current = null;
                     setIdentifier(val);
                     if (/[^0-9\s]/.test(val) && idMode === "dni") {
                       setIdMode("code");
@@ -1166,16 +1240,10 @@ export default function AsistenciaPage() {
                 </div>
               )}
 
-              {requestingLocation && (
+              {requestingLocation && !locationDialogOpen && (
                 <p className="alert alert-notice" role="status" data-testid="kiosk-location-status">
                   <Info size={15} />
                   <span>Solicitando la ubicación del equipo para marcar asistencia…</span>
-                </p>
-              )}
-              {locationError && (
-                <p className="alert alert-error" role="alert" data-testid="kiosk-location-error">
-                  <Droplet size={15} />
-                  <span>{locationError}</span>
                 </p>
               )}
 
@@ -1393,6 +1461,16 @@ export default function AsistenciaPage() {
         )}
         </div>
       </div>
+
+      {locationDialogOpen && locationFailure && (
+        <AttendanceLocationDialog
+          failure={locationFailure}
+          busy={identifying || requestingLocation}
+          onRetry={retryLocation}
+          onClose={closeLocationDialog}
+          onCloseRequest={invalidateLocationAttempt}
+        />
+      )}
     </div>
   );
 }

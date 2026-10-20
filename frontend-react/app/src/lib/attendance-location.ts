@@ -82,3 +82,62 @@ export function locationFailureMessage(reason: LocationFailure): string {
       return "No se pudo obtener la ubicación del equipo. Revise que la ubicación esté habilitada y vuelva a intentar la marcación.";
   }
 }
+
+export type LocationFailureCopy = {
+  title: string;
+  description: string;
+  help: string;
+};
+
+/**
+ * Texto de la ventana de alerta previa a identificar. Cada causa explica lo
+ * que se sabe sin afirmar una causa que el navegador no demuestra (por
+ * ejemplo, `accuracy` no prueba que el GPS esté apagado) y ofrece una salida
+ * genérica junto a la dirección del navegador, sin prometer ajustes del sistema.
+ */
+export function locationFailureCopy(reason: LocationFailure): LocationFailureCopy {
+  switch (reason) {
+    case "denied":
+      return {
+        title: "Activa la ubicación para continuar",
+        description:
+          "El navegador bloqueó la ubicación para este sitio. Revisa el permiso de ubicación de este sitio en el navegador, junto a la dirección, y comprueba que la ubicación del equipo esté activada.",
+        help: "Si no puedes cambiar el permiso, pide ayuda a tu supervisor.",
+      };
+    case "accuracy":
+      return {
+        title: "Necesitamos una ubicación más precisa",
+        description:
+          "La lectura recibida tiene un margen mayor de 50 metros. Comprueba que la ubicación o el GPS del equipo estén activados y, si tu equipo lo ofrece, activa la ubicación precisa. Espera unos segundos y pulsa Reintentar.",
+        help: "Si la lectura sigue siendo imprecisa, pide ayuda a tu supervisor.",
+      };
+    case "timeout":
+      return {
+        title: "La ubicación está tardando demasiado",
+        description:
+          "La lectura de ubicación tardó más de 20 segundos. Espera unos segundos, revisa la señal del equipo y pulsa Reintentar.",
+        help: "Si vuelve a ocurrir, pide ayuda a tu supervisor.",
+      };
+    case "unsupported":
+      return {
+        title: "Este equipo no puede usar la ubicación",
+        description:
+          "Este navegador no puede obtener la ubicación de este sitio. Usa un equipo o navegador compatible y vuelve a intentarlo.",
+        help: "Si no puedes usar otro equipo, pide ayuda a tu supervisor.",
+      };
+    case "invalid":
+      return {
+        title: "La ubicación recibida no es válida",
+        description:
+          "El equipo devolvió una lectura incompleta o fuera de rango. Espera unos segundos y pulsa Reintentar.",
+        help: "Si el problema continúa, pide ayuda a tu supervisor.",
+      };
+    default:
+      return {
+        title: "No pudimos obtener tu ubicación",
+        description:
+          "El equipo no entregó una ubicación en este momento. Comprueba que la ubicación del equipo esté activada, espera unos segundos y pulsa Reintentar.",
+        help: "Si el problema continúa, pide ayuda a tu supervisor.",
+      };
+  }
+}

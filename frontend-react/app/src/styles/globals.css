@@ -1713,6 +1713,22 @@ textarea {
 .dialog-backdrop[data-motion-state="exiting"] .app-dialog { transition-duration: 170ms; }
 .app-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 0.65rem; }
 .app-dialog-actions .btn { min-height: 2.75rem; }
+
+/* Alerta de ubicación previa a identificar: una sola decisión, sin culpar al
+   usuario ni prometer ajustes que el navegador no puede abrir. */
+.attendance-location-dialog { width: min(100%, 33rem); }
+.attendance-location-dialog-copy { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.8rem; }
+.attendance-location-dialog-icon { display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: 50%; color: var(--brand-blue); background: var(--blue-soft); }
+.attendance-location-dialog h2 { margin: 0; color: var(--brand-ink); font-size: 1.18rem; line-height: 1.25; letter-spacing: -0.025em; }
+.attendance-location-dialog p { margin: 0.45rem 0 0; color: var(--brand-muted); font-size: 0.9rem; line-height: 1.55; }
+.attendance-location-dialog .attendance-location-dialog-help { padding-top: 0.55rem; border-top: 1px solid var(--border); font-size: 0.82rem; }
+.attendance-location-dialog-actions { margin-top: 0.35rem; }
+.attendance-location-dialog-actions .btn { min-width: 9rem; min-height: 2.75rem; }
+@media (max-width: 480px) {
+  .attendance-location-dialog { padding: 1rem; }
+  .attendance-location-dialog-actions { flex-direction: column-reverse; }
+  .attendance-location-dialog-actions .btn { width: 100%; }
+}
 .correction-dialog { width: min(100%, 42rem); }
 .correction-form { display: grid; gap: 0.8rem; }
 .correction-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; }
