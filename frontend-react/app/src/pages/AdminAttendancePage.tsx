@@ -12,7 +12,7 @@ import AttendanceToolbar from "@/components/AttendanceToolbar";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
-import { Alert, Pencil, X } from "@/components/Icons";
+import { Alert, Download, Eye, Pencil, X } from "@/components/Icons";
 import { Spinner } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
 import { formatOperationalDate } from "@/lib/dates";
@@ -112,6 +112,17 @@ function formatOfficialTime(iso: string | null | undefined): string | null {
   });
 }
 
+/** Redondeo honesto para lectura: como máximo un decimal, sin perder el dato en el enlace. */
+function formatAccuracyMeters(value: number | null | undefined): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return `±${Number(value.toFixed(1))} m`;
+}
+
+/** Coordenadas legibles; el enlace a Maps conserva los valores completos del registro. */
+function formatEvidenceCoordinate(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(5) : "—";
+}
+
 function EvidenceFigure({
   side,
   label,
@@ -123,7 +134,7 @@ function EvidenceFigure({
   loading,
 }: {
   side: "check_in" | "check_out";
-  label: string;
+  label: "Entrada" | "Salida";
   originalSrc: string | null;
   stampedSrc: string | null;
   stampedAdvertised: boolean;
@@ -132,94 +143,145 @@ function EvidenceFigure({
   loading: boolean;
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
-  const showingStamped = Boolean(stampedSrc) && !showOriginal;
+  const hasStamped = Boolean(stampedSrc);
+  const canSwitchVersion = Boolean(stampedSrc && originalSrc);
+  const showingStamped = hasStamped && !showOriginal;
   const displaySrc = showingStamped ? stampedSrc : originalSrc;
   const location = meta?.location ?? null;
   const officialTime = formatOfficialTime(meta?.marked_at);
+  const accuracy = location ? formatAccuracyMeters(location.accuracy_m) : null;
   const stampUnavailable = stampedAdvertised && !stampedSrc && stampedFailed;
+  const photoName = label.toLowerCase();
 
   return (
-    <figure className="evidence-image" data-testid={`evidence-figure-${side}`}>
-      <figcaption className="label">{label}</figcaption>
-      <p className="muted" style={{ fontSize: "0.75rem", margin: "0.1rem 0 0.3rem" }} data-testid={`evidence-version-${side}`}>
-        {showingStamped ? "Versión con sello" : "Versión original (sin sello)"}
-      </p>
+    <figure className="evidence-figure" data-testid={`evidence-figure-${side}`}>
+      <figcaption className="evidence-figure__caption">
+        <h3 className="evidence-figure__title">{label}</h3>
+        {displaySrc && (
+          <span
+            className={`badge ${showingStamped ? "badge-blue" : "badge-neutral"} evidence-version`}
+            data-testid={`evidence-version-${side}`}
+            data-version={showingStamped ? "stamped" : "original"}
+          >
+            {showingStamped ? "Con sello" : "Original"}
+          </span>
+        )}
+      </figcaption>
+
+      <div className="evidence-stage">
+        {loading ? (
+          <div className="skeleton evidence-stage__skeleton" role="status">
+            <span className="sr-only">Cargando foto de {photoName}</span>
+          </div>
+        ) : displaySrc ? (
+          <img
+            src={displaySrc}
+            alt={`${label} ${showingStamped ? "con sello" : "original sin sello"}`}
+            data-testid={`evidence-image-${side}`}
+          />
+        ) : (
+          <p className="evidence-stage__empty" data-testid={`evidence-empty-${side}`}>
+            Sin foto de {photoName}.
+          </p>
+        )}
+      </div>
+
       {stampUnavailable && (
-        <p className="alert alert-notice" role="status" data-testid={`evidence-stamp-warning-${side}`}>
+        <p className="evidence-notice" role="status" data-testid={`evidence-stamp-warning-${side}`}>
           No se pudo cargar la versión con sello de esta foto. La imagen mostrada y descargable es la original, sin sello.
         </p>
       )}
-      {loading ? (
-        <div className="skeleton evidence-skeleton" aria-label={`Cargando ${label.toLowerCase()}`} />
-      ) : displaySrc ? (
-        <img
-          src={displaySrc}
-          alt={showingStamped ? `${label} con sello` : `${label} original sin sello`}
-          data-testid={`evidence-image-${side}`}
-        />
-      ) : (
-        <p className="muted">Sin {label.toLowerCase()}.</p>
+
+      {canSwitchVersion && (
+        <div className="evidence-view-row">
+          <span className="evidence-view-row__label" aria-hidden="true">
+            <Eye size={14} /> Vista
+          </span>
+          <div
+            className="evidence-view"
+            role="group"
+            aria-label={`Vista de la foto de ${photoName}`}
+            data-testid={`evidence-toggle-${side}`}
+          >
+            <button
+              type="button"
+              className="evidence-view__option"
+              aria-pressed={!showOriginal}
+              onClick={() => setShowOriginal(false)}
+            >
+              Con sello
+            </button>
+            <button
+              type="button"
+              className="evidence-view__option"
+              aria-pressed={showOriginal}
+              onClick={() => setShowOriginal(true)}
+            >
+              Original
+            </button>
+          </div>
+        </div>
       )}
+
       {(originalSrc || stampedSrc) && (
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
+        <div className="evidence-downloads">
           {stampedSrc && (
             <a
-              className="btn btn-ghost btn-sm"
+              className="btn btn-primary evidence-action"
               href={stampedSrc}
               download={`evidencia-${side}-sello.jpg`}
               data-testid={`evidence-stamped-download-${side}`}
             >
+              <Download size={16} />
               Descargar con sello
             </a>
           )}
           {originalSrc && (
             <a
-              className="btn btn-ghost btn-sm"
+              className={`btn ${stampedSrc ? "btn-outline" : "btn-primary"} evidence-action`}
               href={originalSrc}
               download={`evidencia-${side}.jpg`}
               data-testid={`evidence-original-${side}`}
             >
+              {!stampedSrc && <Download size={16} />}
               Descargar original
             </a>
           )}
-          {stampedSrc && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowOriginal((value) => !value)}
-              data-testid={`evidence-toggle-${side}`}
-            >
-              {showOriginal ? "Ver con sello" : "Ver original"}
-            </button>
-          )}
         </div>
       )}
+
       {meta && (
-        <dl className="muted" style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
-          <div>
-            <dt>Hora oficial</dt>
-            <dd data-testid={`evidence-official-time-${side}`}>{officialTime ?? "Hora oficial no disponible"}</dd>
+        <dl className="evidence-meta">
+          <div className="evidence-meta__row">
+            <dt>Hora oficial (Lima)</dt>
+            <dd data-testid={`evidence-official-time-${side}`}>
+              {officialTime ? <time dateTime={meta.marked_at ?? undefined}>{officialTime}</time> : "No registrada"}
+            </dd>
           </div>
-          <div>
+          <div className="evidence-meta__row">
             <dt>Ubicación</dt>
             {location ? (
               <dd data-testid={`evidence-location-${side}`}>
-                <span>{location.latitude}, {location.longitude}</span>
-                <span> · precisión ±{location.accuracy_m} m</span>
-                {location.address ? <span> · {location.address}</span> : null}
+                <span className={location.address ? "evidence-meta__address" : "evidence-meta__muted"}>
+                  {location.address ?? "Dirección no registrada"}
+                </span>
+                <span className="evidence-meta__coords">
+                  {formatEvidenceCoordinate(location.latitude)}, {formatEvidenceCoordinate(location.longitude)}
+                </span>
+                {accuracy && <span className="evidence-meta__accuracy">Precisión {accuracy}</span>}
                 <a
-                  className="btn btn-ghost btn-sm"
+                  className="evidence-meta__maps"
                   href={googleMapsCoordinateUrl(location.latitude, location.longitude)}
                   target="_blank"
                   rel="noopener noreferrer"
                   data-testid={`evidence-maps-${side}`}
-                  style={{ marginLeft: "0.4rem" }}
                 >
                   Ver en Google Maps
+                  <span className="sr-only"> (se abre en una pestaña nueva)</span>
                 </a>
               </dd>
             ) : (
-              <dd className="muted" data-testid={`evidence-location-missing-${side}`}>
+              <dd className="evidence-meta__muted" data-testid={`evidence-location-missing-${side}`}>
                 Ubicación no disponible para este registro.
               </dd>
             )}
@@ -262,6 +324,7 @@ export default function AdminAttendancePage() {
     reason?: boolean;
   }>({});
   const [photosFor, setPhotosFor] = useState<string | null>(null);
+  const [photoLoading, setPhotoLoading] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<{ check_in: string | null; check_out: string | null; missing: string | null }>({
     check_in: null,
     check_out: null,
@@ -293,6 +356,7 @@ export default function AdminAttendancePage() {
   const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const evidenceRecord = photosFor ? records.find((item) => item.id === photosFor) ?? null : null;
   const dailyPagination = useTablePagination(daily, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${daily.length}`);
   const recordsPagination = useTablePagination(records, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${records.length}`);
 
@@ -377,6 +441,7 @@ export default function AdminAttendancePage() {
 
   async function loadPhotos(recordId: string) {
     setPhotosFor(recordId);
+    setPhotoLoading(true);
     setPhotoUrls({ check_in: null, check_out: null, missing: null });
     setPhotoMeta({ check_in: null, check_out: null });
     setStampedUrls({ check_in: null, check_out: null });
@@ -417,6 +482,8 @@ export default function AdminAttendancePage() {
       setStampFailed({ check_in: false, check_out: false });
       setPhotoUrls({ check_in: null, check_out: null, missing: message });
       setError(message);
+    } finally {
+      setPhotoLoading(false);
     }
   }
 
@@ -642,31 +709,63 @@ export default function AdminAttendancePage() {
       />
 
       {photosFor && (
-        <AppDialog labelledBy="evidence-dialog-title" onClose={() => setPhotosFor(null)} className="evidence-dialog">
-          <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" aria-label="Cerrar evidencia"><X size={15} /></AppDialogCloseButton></div>
-          <div className="evidence-grid">
-            <EvidenceFigure
-              side="check_in"
-              label="Foto de entrada"
-              originalSrc={photoUrls.check_in}
-              stampedSrc={stampedUrls.check_in}
-              stampedAdvertised={Boolean(photoMeta.check_in?.stamped_available)}
-              stampedFailed={stampFailed.check_in}
-              meta={photoMeta.check_in}
-              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
-            />
-            <EvidenceFigure
-              side="check_out"
-              label="Foto de salida"
-              originalSrc={photoUrls.check_out}
-              stampedSrc={stampedUrls.check_out}
-              stampedAdvertised={Boolean(photoMeta.check_out?.stamped_available)}
-              stampedFailed={stampFailed.check_out}
-              meta={photoMeta.check_out}
-              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
-            />
+        <AppDialog
+          labelledBy="evidence-dialog-title"
+          describedBy="evidence-dialog-description"
+          onClose={() => setPhotosFor(null)}
+          className="evidence-dialog"
+        >
+          <header className="evidence-dialog__header">
+            <div className="evidence-dialog__heading">
+              <h2 id="evidence-dialog-title">Evidencia fotográfica</h2>
+              <p className="evidence-dialog__subject" data-testid="evidence-subject">
+                <strong>{evidenceRecord?.employee_name ?? "Nombre no disponible"}</strong>
+                {evidenceRecord?.work_date && (
+                  <>
+                    <span className="evidence-dialog__separator" aria-hidden="true"> · </span>
+                    <time dateTime={evidenceRecord.work_date}>{formatOperationalDate(evidenceRecord.work_date)}</time>
+                  </>
+                )}
+              </p>
+            </div>
+            <AppDialogCloseButton className="btn btn-ghost evidence-dialog__close" aria-label="Cerrar evidencia">
+              <X size={18} />
+            </AppDialogCloseButton>
+          </header>
+          <div className="evidence-dialog__body">
+            <p className="evidence-dialog__intro" id="evidence-dialog-description">
+              La versión <strong>con sello</strong> integra los datos del registro (hora y ubicación); la{" "}
+              <strong>original</strong> es la captura de la cámara, sin ese sello.
+            </p>
+            {photoUrls.missing ? (
+              <p className="evidence-dialog__empty" role="status">
+                {photoUrls.missing}
+              </p>
+            ) : (
+              <div className="evidence-grid">
+                <EvidenceFigure
+                  side="check_in"
+                  label="Entrada"
+                  originalSrc={photoUrls.check_in}
+                  stampedSrc={stampedUrls.check_in}
+                  stampedAdvertised={Boolean(photoMeta.check_in?.stamped_available)}
+                  stampedFailed={stampFailed.check_in}
+                  meta={photoMeta.check_in}
+                  loading={photoLoading}
+                />
+                <EvidenceFigure
+                  side="check_out"
+                  label="Salida"
+                  originalSrc={photoUrls.check_out}
+                  stampedSrc={stampedUrls.check_out}
+                  stampedAdvertised={Boolean(photoMeta.check_out?.stamped_available)}
+                  stampedFailed={stampFailed.check_out}
+                  meta={photoMeta.check_out}
+                  loading={photoLoading}
+                />
+              </div>
+            )}
           </div>
-          {photoUrls.missing && <p className="muted">{photoUrls.missing}</p>}
         </AppDialog>
       )}
 
