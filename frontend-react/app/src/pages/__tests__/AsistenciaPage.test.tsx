@@ -403,6 +403,8 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
     await user.click(screen.getByTestId("kiosk-identify"));
     const dialog = await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
 
+    // Esperar el foco inicial programado por AppDialog antes de interactuar.
+    await waitFor(() => expect(screen.getByTestId("kiosk-location-back")).toHaveFocus());
     await user.click(screen.getByTestId("kiosk-location-retry"));
     const retry = screen.getByTestId("kiosk-location-retry");
     await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
