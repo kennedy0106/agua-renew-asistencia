@@ -129,7 +129,7 @@ describe("Admin · empleados: alta en diálogo", () => {
     await waitFor(() => expect(employeesApi.list).toHaveBeenCalledTimes(1));
 
     await openCreate(user);
-    expect(screen.getByLabelText(/dni \(8 dígitos\)/i)).toHaveFocus();
+    await waitFor(() => expect(screen.getByLabelText(/dni \(8 dígitos\)/i)).toHaveFocus());
     expect(screen.getByRole("button", { name: /consultar dni/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/código interno/i)).toHaveValue("Se asignará automáticamente");
 
