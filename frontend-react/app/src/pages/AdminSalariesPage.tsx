@@ -2,6 +2,7 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAdminViewState } from "@/components/AdminViewState";
 import MetricCard from "@/components/MetricCard";
 import { useAdminSession } from "@/components/AdminSession";
 import { Alert, Coins, Download, Receipt, Refresh, Search, X } from "@/components/Icons";
@@ -112,7 +113,9 @@ function SalariesTableSkeleton() {
 export default function AdminSalariesPage() {
   const { user, ready } = useAdminSession();
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("");
+  // El periodo elegido se conserva al volver; loadPeriods valida que siga
+  // existiendo y, si no, elige el primero disponible como antes.
+  const [selectedId, setSelectedId] = useAdminViewState("salaries.selectedId", "");
   const [summary, setSummary] = useState<PayrollSummary | null>(null);
   const [records, setRecords] = useState<PayrollRecord[]>([]);
   const [dailyReport, setDailyReport] = useState<PayrollDailyReport | null>(null);
@@ -123,8 +126,10 @@ export default function AdminSalariesPage() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [search, setSearch] = useAdminViewState("salaries.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() =>
+    search.trim().toLocaleLowerCase("es-PE"),
+  );
 
   const activePeriodRequestId = useRef(0);
   const canView = user ? MANAGE_ROLES.includes(user.role) : false;
@@ -257,7 +262,7 @@ export default function AdminSalariesPage() {
     } finally {
       setLoading(false);
     }
-  }, [canView]);
+  }, [canView, setSelectedId]);
 
   useEffect(() => {
     if (ready && canView) {
@@ -268,9 +273,13 @@ export default function AdminSalariesPage() {
   }, [ready, canView, loadPeriods]);
 
   useEffect(() => {
-    if (!selectedId || !canView) return;
+    // No consultar datos de un periodo restaurado hasta que la lista fresca
+    // haya cargado y confirmado que sigue existiendo. loadPeriods ya sustituye
+    // un id obsoleto por el primero válido.
+    if (loading || !selectedId || !canView) return;
+    if (!periods.some((period) => period.id === selectedId)) return;
     void fetchPeriodData(selectedId, { silent: false });
-  }, [selectedId, canView, fetchPeriodData]);
+  }, [loading, periods, selectedId, canView, fetchPeriodData]);
 
   const handlePeriodChange = useCallback(
     (newId: string) => {
@@ -278,7 +287,7 @@ export default function AdminSalariesPage() {
       setSelectedId(newId);
       setExpanded(null);
     },
-    [selectedId],
+    [selectedId, setSelectedId],
   );
 
   /**
@@ -304,7 +313,7 @@ export default function AdminSalariesPage() {
     } else if (selectedId) {
       await fetchPeriodData(selectedId, { silent: false });
     }
-  }, [periods.length, selectedId, fetchPeriodData]);
+  }, [periods.length, selectedId, fetchPeriodData, setSelectedId]);
 
   /**
    * Refresco manual desde la barra de herramientas que sincroniza KPI, tabla y desglose.

@@ -31,6 +31,7 @@ import unicodedata
 import warnings
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone, tzinfo
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 
@@ -306,6 +307,9 @@ def reverse_address(latitude: float, longitude: float, *, api_key: str = "") -> 
 # --------------------------------------------------------------------------- #
 
 _BRAND_ASSET = Path(__file__).resolve().parents[2] / "assets" / "brand" / "agua-renew-drop.png"
+_FONT_DIR = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "lato"
+# Versiona sólo el derivado: los originales y sus hashes permanecen inmutables.
+STAMP_VERSION = "v2"
 
 # El origen ya llega normalizado por app.core.images (<= 1280 px, <= 2 MB);
 # estos límites son defensa adicional, alineados con los del núcleo.
@@ -322,24 +326,12 @@ _MAX_EVIDENCE_CHARS = 64
 _MAX_EVENT_CHARS = 24
 
 _MAX_LINES_PER_FIELD = 3
-_MAX_STAMP_LINES = 12
 _MAX_LOGO_PX = 160
-_JPEG_QUALITY = 92
-
-# Fuente bitmap incluida en Pillow ("load_default_imagefont"): cubre ISO-8859-1,
-# así que conserva los acentos españoles y la eñe. La fuente vectorial de
-# ``load_default(size=...)`` (Aileron) no los incluye y los dibujaría como cajas.
-_TEXT_LINE_PX = 15
-_MAX_TEXT_SCALE = 3
-_TEXT_PAD_PX = 8
+_JPEG_QUALITY = 95
 _TEXT_ACCENT_PX = 3
 
-# Tope real del JPEG: fotografía acotada + banda inferior máxima (12 líneas
-# a la escala mayor). A escalas menores caben más líneas dentro de los mismos
-# píxeles; no se pierden créditos por aplicarles el presupuesto de escala 3.
-_MAX_BAND_HEIGHT = (
-    2 * _TEXT_PAD_PX + _TEXT_ACCENT_PX + _MAX_STAMP_LINES * _TEXT_LINE_PX
-) * _MAX_TEXT_SCALE
+# Conserva el límite físico anterior, sin descartar referencia ni atribución.
+_MAX_BAND_HEIGHT = 597
 _MAX_OUTPUT_HEIGHT = _MAX_OUTPUT_SIDE + _MAX_BAND_HEIGHT
 
 # Caracteres fuera de Latin-1 con su equivalente legible.
@@ -358,6 +350,7 @@ _FOOTER_BG = (15, 23, 42)
 _FOOTER_FG = (241, 245, 249)
 _ACCENT = (14, 165, 233)
 _ACCENT_TEXT = (125, 211, 252)
+_FOOTER_MUTED = (184, 198, 218)
 
 _EVENT_LABELS = {
     "CHECK_IN": "Entrada",
@@ -443,12 +436,15 @@ def _stamp_lines(
     return lines
 
 
-def _load_text_font() -> ImageFont.ImageFont:
-    """Fuente incluida en Pillow con cobertura Latin-1 (acentos y eñe).
-
-    Requiere Pillow >= 10.1 (``pyproject.toml`` ya exige >= 11).
-    """
-    return ImageFont.load_default_imagefont()
+@lru_cache(maxsize=32)
+def _load_text_font(size: int = 18, bold: bool = False) -> ImageFont.FreeTypeFont:
+    """Lato vectorial incluida en el proyecto (SIL OFL), sin fuentes del SO."""
+    name = "Lato-Bold.ttf" if bold else "Lato-Regular.ttf"
+    try:
+        # BytesIO evita mantener abiertos archivos de fuente en Windows.
+        return ImageFont.truetype(BytesIO((_FONT_DIR / name).read_bytes()), size=size)
+    except (OSError, ValueError) as exc:
+        raise StampRenderError("la fuente del sello no está disponible") from exc
 
 
 def _to_latin1(text: str) -> str:
@@ -524,6 +520,8 @@ def _load_base(original: bytes) -> Image.Image:
 
 def _fit_with_ellipsis(draw: ImageDraw.ImageDraw, text: str, font, max_width: float) -> str:
     """Recorta el texto para que quepa con puntos suspensivos."""
+    if draw.textlength("...", font=font) > max_width:
+        raise StampRenderError("la fotografía es demasiado estrecha para un sello legible")
     trimmed = text
     while trimmed and draw.textlength(trimmed + "...", font=font) > max_width:
         trimmed = trimmed[:-1]
@@ -531,13 +529,24 @@ def _fit_with_ellipsis(draw: ImageDraw.ImageDraw, text: str, font, max_width: fl
 
 
 def _wrap_text(
-    draw: ImageDraw.ImageDraw, text: str, font, max_width: float, max_lines: int
+    draw: ImageDraw.ImageDraw, text: str, font, max_width: float, max_lines: int | None
 ) -> list[str]:
-    """Ajusta el texto al ancho, acotando el número de líneas."""
-    words = text.split(" ")
+    """Envuelve incluso códigos sin espacios; sólo trunca campos descriptivos."""
+    # Divide palabras largas por caracteres para no pintar fuera del lienzo.
+    words: list[str] = []
+    for word in text.split():
+        chunk = ""
+        for char in word:
+            if draw.textlength(char, font=font) > max_width:
+                raise StampRenderError("la fotografía es demasiado estrecha para un sello legible")
+            if chunk and draw.textlength(chunk + char, font=font) > max_width:
+                words.append(chunk)
+                chunk = ""
+            chunk += char
+        if chunk:
+            words.append(chunk)
     lines: list[str] = []
     current = ""
-    truncated = False
     for word in words:
         candidate = f"{current} {word}".strip()
         if not current or draw.textlength(candidate, font=font) <= max_width:
@@ -545,87 +554,70 @@ def _wrap_text(
             continue
         lines.append(current)
         current = word
-        if len(lines) >= max_lines:
-            truncated = True
-            current = ""
-            break
     if current:
         lines.append(current)
-    if len(lines) > max_lines:
-        truncated = True
+    if max_lines is not None and len(lines) > max_lines:
         lines = lines[:max_lines]
-    if truncated and lines:
         lines[-1] = _fit_with_ellipsis(draw, lines[-1], font, max_width)
     return lines
 
 
 def _paste_brand(canvas: Image.Image, logo: Image.Image, base_height: int) -> None:
-    """Pega la gota de marca con una placa clara, en la esquina superior derecha."""
+    """Compone la gota con su alfa original, sin placa de fondo."""
     limit = max(24, min(canvas.width // 6, base_height // 5, _MAX_LOGO_PX))
     ratio = min(limit / max(1, logo.width), limit / max(1, logo.height))
     target = (max(1, int(logo.width * ratio)), max(1, int(logo.height * ratio)))
     scaled = logo.resize(target, Image.Resampling.LANCZOS)
     margin = max(8, canvas.width // 50)
-    plate_pad = max(4, target[0] // 8)
     x = max(0, canvas.width - target[0] - margin)
     y = margin
-    plate_w = target[0] + 2 * plate_pad
-    plate_h = target[1] + 2 * plate_pad
-    plate = Image.new("RGBA", (plate_w, plate_h), (255, 255, 255, 0))
-    ImageDraw.Draw(plate).rounded_rectangle(
-        [0, 0, plate_w - 1, plate_h - 1],
-        radius=max(4, plate_pad),
-        fill=(255, 255, 255, 190),
-    )
-    canvas.paste(plate, (x - plate_pad, y - plate_pad), plate)
     canvas.paste(scaled, (x, y), scaled)
 
 
 def _compose(base: Image.Image, lines: list[str], logo: Image.Image) -> Image.Image:
-    """Extiende el lienzo hacia abajo y dibuja gota y metadatos.
-
-    El texto se dibuja con la fuente bitmap incluida y luego se amplía por un
-    factor entero (vecino más cercano) para mantenerlo legible sin depender de
-    fuentes del sistema.
-    """
+    """Banda con jerarquía tipográfica, medida y dibujada a resolución final."""
     width, base_height = base.size
-    font = _load_text_font()
-    # ~1.7 % del ancho por línea de texto: legible sin dominar la fotografía.
-    scale = max(1, min(_MAX_TEXT_SCALE, width // 480))
-    columns = max(40, width // scale)
-    max_text_width = max(20, columns - 2 * _TEXT_PAD_PX)
+    pad = max(12, min(28, width // 36))
+    gap = max(6, min(12, width // 90))
+    title = _load_text_font(max(16, min(36, width // 32)), bold=True)
+    body = _load_text_font(max(14, min(28, width // 40)))
+    small = _load_text_font(max(12, min(22, width // 48)))
+    max_text_width = width - 2 * pad
+    if max_text_width <= 0:
+        raise StampRenderError("la fotografía es demasiado estrecha para un sello legible")
     measure = ImageDraw.Draw(Image.new("RGB", (4, 4)))
-
-    wrapped: list[str] = []
-    for line in lines:
-        wrapped.extend(
-            _wrap_text(measure, _to_latin1(line), font, max_text_width, _MAX_LINES_PER_FIELD)
-        )
-    # El límite es físico: una foto estrecha usa escala 1 y puede aprovechar
-    # más filas sin aumentar la banda máxima ni recortar referencias/créditos.
-    max_lines = (
-        _MAX_BAND_HEIGHT // scale - 2 * _TEXT_PAD_PX - _TEXT_ACCENT_PX
-    ) // _TEXT_LINE_PX
-    truncated = len(wrapped) > max_lines
-    if truncated:
-        wrapped = wrapped[:max_lines]
-    if truncated and wrapped:
-        wrapped[-1] = _fit_with_ellipsis(measure, wrapped[-1], font, max_text_width)
-
-    band_height = 2 * _TEXT_PAD_PX + _TEXT_ACCENT_PX + len(wrapped) * _TEXT_LINE_PX
-    canvas = Image.new("RGB", (width, base_height + band_height * scale), _FOOTER_BG)
+    name, _, code = lines[0].partition(" · Código interno: ")
+    # Sólo nombre/dirección son descriptivos. Hora, GPS, código, ID y créditos
+    # conservan todas sus filas, incluso en fotos estrechas (hotfix anterior).
+    fields = [
+        (name, title, _FOOTER_FG, 2, 0),
+        (f"Código interno: {code}", small, _FOOTER_MUTED, None, 0),
+        (lines[1], body, _ACCENT_TEXT, None, gap),
+        (lines[2], body, _FOOTER_FG, None, gap),
+        (lines[3], body, _FOOTER_MUTED, _MAX_LINES_PER_FIELD, 0),
+        (lines[4], small, _FOOTER_MUTED, None, gap),
+    ]
+    fields.extend((line, small, _FOOTER_MUTED, None, 0) for line in lines[5:])
+    rows = []
+    y = _TEXT_ACCENT_PX + pad
+    for text, font, colour, max_lines, before in fields:
+        y += before
+        # Bbox con ancla superior: no se cortan acentos ni descendentes.
+        ascent, descent = font.getmetrics()
+        line_height = ascent + descent + 3
+        for line in _wrap_text(measure, _to_latin1(text), font, max_text_width, max_lines):
+            rows.append((line, font, colour, y))
+            y += line_height
+    band_height = y + pad
+    if band_height > _MAX_BAND_HEIGHT:
+        raise StampRenderError("la fotografía es demasiado estrecha para contener el sello completo")
+    canvas = Image.new("RGB", (width, base_height + band_height), _FOOTER_BG)
     canvas.paste(base, (0, 0))
     _paste_brand(canvas, logo, base_height)
-
-    band = Image.new("RGB", (columns, band_height), _FOOTER_BG)
-    draw = ImageDraw.Draw(band)
-    draw.rectangle([0, 0, columns, _TEXT_ACCENT_PX - 1], fill=_ACCENT)
-    y = _TEXT_ACCENT_PX + _TEXT_PAD_PX
-    for index, line in enumerate(wrapped):
-        colour = _ACCENT_TEXT if index == 1 else _FOOTER_FG
-        draw.text((_TEXT_PAD_PX, y), line, font=font, fill=colour)
-        y += _TEXT_LINE_PX
-    canvas.paste(band.resize((columns * scale, band_height * scale), Image.Resampling.NEAREST), (0, base_height))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([0, base_height, width - 1, base_height + _TEXT_ACCENT_PX - 1], fill=_ACCENT)
+    for line, font, colour, top in rows:
+        draw.text((pad, base_height + top), line, font=font, fill=colour, anchor="lt")
     return canvas
 
 
@@ -647,17 +639,15 @@ def render_stamp(
     - La hora oficial es ``marked_at`` (argumento inmutable): nunca se usa el
       reloj del dispositivo, de la subida ni de la base de datos.
     - Se imprime el código interno del trabajador, no el DNI.
-    - La gota de marca va en la esquina superior derecha sobre una placa
-      clara; los metadatos van en una banda inferior que extiende el lienzo,
-      por lo que no se tapa el rostro. El texto usa la fuente bitmap incluida
-      en Pillow (cobertura Latin-1: acentos y eñe legibles) ampliada por un
-      factor entero.
+    - La gota transparente va en la esquina superior derecha; los metadatos
+      van en una banda inferior que extiende el lienzo, sin tapar el rostro.
+      Lato vectorial (incluida con licencia) se dibuja a resolución final.
     - La atribución de Geoapify/OpenStreetMap sólo aparece cuando se usó la
       dirección aproximada.
     - El lado mayor de la fotografía se acota a ``_MAX_OUTPUT_SIDE`` (2048 px)
-      y la banda inferior a 597 px. Caben 12 líneas a escala máxima y más
-      filas a escalas menores sin superar ``_MAX_OUTPUT_HEIGHT``
-      (2048 + 597 = 2645 px de alto). La banda y el logo nunca se recortan.
+      y la banda inferior a 597 px, así que el tope final declarado es
+      ``_MAX_OUTPUT_HEIGHT`` (2048 + 597 = 2645 px de alto). La banda y el
+      logo nunca se recortan.
     - Los bytes de ``original`` nunca se modifican y el resultado es
       determinista para los mismos metadatos.
 
@@ -681,7 +671,7 @@ def render_stamp(
     try:
         canvas = _compose(base, lines, logo)
         buffer = BytesIO()
-        canvas.save(buffer, format="JPEG", quality=_JPEG_QUALITY, optimize=True)
+        canvas.save(buffer, format="JPEG", quality=_JPEG_QUALITY, subsampling=0, optimize=True)
     except StampRenderError:
         raise
     except Exception as exc:

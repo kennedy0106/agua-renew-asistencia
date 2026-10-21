@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import { useAdminUser } from "@/components/AdminSession";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { Alert, Refresh, Search, X } from "@/components/Icons";
 import { TableSkeleton } from "@/components/Loading";
 import { AsyncButton } from "@/components/AsyncButton";
 import { useRowHighlight } from "@/components/RowHighlight";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, devicesApi, AttendanceDevice } from "@/lib/api";
 
 
@@ -39,8 +41,11 @@ export default function AdminDevicesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionKey, setActionKey] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "revoked">("all");
+  const [searchTerm, setSearchTerm] = useAdminViewState("devices.searchTerm", "");
+  const [statusFilter, setStatusFilter] = useAdminViewState<"all" | "active" | "revoked">(
+    "devices.statusFilter",
+    "all",
+  );
   const [confirmAction, setConfirmAction] = useState<AttendanceDevice | null>(null);
   const { markSaved, isHighlighted } = useRowHighlight();
 
@@ -168,19 +173,23 @@ export default function AdminDevicesPage() {
         </div>
 
         <div className="devices-filter-group">
-          <label htmlFor="device-status-filter" className="sr-only">Filtrar por estado</label>
-          <select
-            id="device-status-filter"
-            className="input select"
+          <Select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "revoked")}
-            aria-label="Filtrar por estado"
-            style={{ minHeight: "2.5rem" }}
+            onValueChange={(value) => setStatusFilter(value as "all" | "active" | "revoked")}
           >
-            <option value="all">Todos los estados ({devices.length})</option>
-            <option value="active">Solo activas ({devices.filter((d) => d.active).length})</option>
-            <option value="revoked">Solo revocadas ({devices.filter((d) => !d.active).length})</option>
-          </select>
+            <SelectTrigger
+              id="device-status-filter"
+              className="statusfilter"
+              aria-label="Filtrar por estado"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos los estados ({devices.length})</SelectItem>
+              <SelectItem value="active">Solo activas ({devices.filter((d) => d.active).length})</SelectItem>
+              <SelectItem value="revoked">Solo revocadas ({devices.filter((d) => !d.active).length})</SelectItem>
+            </SelectContent>
+          </Select>
 
           {(searchTerm || statusFilter !== "all") && (
             <button
@@ -269,7 +278,7 @@ export default function AdminDevicesPage() {
                       {device.active && (
                         <div className="device-row-actions">
                           <AsyncButton
-                            className="btn btn-ghost btn-sm btn-danger-ghost"
+                            className="btn btn-outline btn-sm device-revoke-button"
                             type="button"
                             busy={actionKey === `revoke:${device.id}`}
                             busyLabel="Revocando…"

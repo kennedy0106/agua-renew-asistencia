@@ -6,7 +6,12 @@ import {
   attendanceApi,
   type AttendanceLocationSnapshot,
 } from "@/lib/api";
-import { LOCATION_MAX_AGE_MS, locationAgeMs, requestBrowserPosition } from "@/lib/attendance-location";
+import {
+  LOCATION_MAX_AGE_MS,
+  locationAgeMs,
+  locationFailureCopy,
+  requestBrowserPosition,
+} from "@/lib/attendance-location";
 
 /**
  * Contrato HTTP del flujo de ubicación y evidencia privada con sello.
@@ -112,6 +117,37 @@ describe("lectura puntual de ubicación", () => {
       },
     });
     expect(await requestBrowserPosition()).toEqual({ ok: false, reason: "denied" });
+  });
+});
+
+describe("texto de la alerta de ubicación", () => {
+  it("el permiso bloqueado explica el sitio y la salida por supervisor", () => {
+    const copy = locationFailureCopy("denied");
+    expect(copy.title).toBe("Activa la ubicación para continuar");
+    expect(copy.description).toMatch(/permiso de ubicación/i);
+    expect(copy.description).toMatch(/dirección/i);
+    expect(copy.help).toMatch(/supervisor/i);
+    // No promete un botón que el navegador no puede abrir.
+    expect(copy.description).not.toMatch(/botón|abrir ajustes/i);
+  });
+
+  it("la precisión pide esperar y reintentar sin diagnosticar GPS apagado", () => {
+    const copy = locationFailureCopy("accuracy");
+    expect(copy.title).toBe("Necesitamos una ubicación más precisa");
+    expect(copy.description).toMatch(/50 metros|más de 50/i);
+    expect(copy.description).toMatch(/ubicación precisa/i);
+    expect(copy.description).toMatch(/Reintentar/i);
+    expect(copy.description).not.toMatch(/GPS (está )?apagado/i);
+  });
+
+  it("timeout e invalid describen el hecho sin culpar al usuario", () => {
+    expect(locationFailureCopy("timeout").description).toMatch(/20 segundos/i);
+    expect(locationFailureCopy("invalid").title).toBe("La ubicación recibida no es válida");
+    expect(locationFailureCopy("unavailable").title).toBe("No pudimos obtener tu ubicación");
+    expect(locationFailureCopy("unsupported").description).toMatch(/navegador/i);
+    for (const reason of ["timeout", "invalid", "unavailable", "unsupported"] as const) {
+      expect(locationFailureCopy(reason).help).toMatch(/supervisor/i);
+    }
   });
 });
 

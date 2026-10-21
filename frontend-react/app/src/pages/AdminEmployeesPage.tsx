@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useAdminUser } from "@/components/AdminSession";
 import { useNotifications } from "@/components/Notifications";
 import DateField from "@/components/DateField";
@@ -31,9 +32,15 @@ export default function AdminEmployeesPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
+  // Contexto de vista: se conserva al salir y volver durante la sesión. El
+  // debounce arranca ya sincronizado con la búsqueda restaurada para no pedir
+  // una lista sin filtro en el primer render.
+  const [search, setSearch] = useAdminViewState("employees.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [statusFilter, setStatusFilter] = useAdminViewState<"" | "active" | "inactive">(
+    "employees.statusFilter",
+    "",
+  );
 
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -204,25 +211,24 @@ export default function AdminEmployeesPage() {
       title="Empleados"
       subtitle={`${employees.length} registro(s) · un cesado no se elimina, se desactiva`}
     >
-      <div className="toolbar">
-        <div style={{ position: "relative", maxWidth: 280, width: "100%" }}>
-          <Search size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--muted)" }} />
+      <div className="toolbar employees-toolbar" role="search" aria-label="Búsqueda y filtros de empleados">
+        <div className="employees-search-field">
+          <Search size={15} className="employees-search-icon" />
           <input
             id="employee-search"
             type="text"
-            className="input"
+            className="input employees-search-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nombre, DNI o código…"
             aria-label="Buscar por nombre, DNI o código"
-            style={{ paddingLeft: "2.1rem" }}
           />
         </div>
         <Select
           value={statusFilter || "__all"}
           onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v as "active" | "inactive")}
         >
-          <SelectTrigger aria-label="Estado" style={{ maxWidth: 160 }}>
+          <SelectTrigger aria-label="Estado" className="employees-filter">
             <SelectValue placeholder="Todos los estados" />
           </SelectTrigger>
           <SelectContent>
@@ -232,14 +238,14 @@ export default function AdminEmployeesPage() {
           </SelectContent>
         </Select>
         {(search || statusFilter) && (
-          <button className="btn btn-ghost btn-sm" type="button" onClick={() => { setSearch(""); setStatusFilter(""); }}>
+          <button className="btn btn-ghost btn-sm employees-clear-filter" type="button" onClick={() => { setSearch(""); setStatusFilter(""); }}>
             <X size={14} /> Limpiar filtros
           </button>
         )}
         {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
         {canManage && (
-          <button className="btn btn-primary" onClick={() => (showCreate ? handleCancelCreate() : setShowCreate(true))}>
+          <button className="btn btn-primary employees-create" onClick={() => (showCreate ? handleCancelCreate() : setShowCreate(true))}>
             {showCreate ? (
               <>
                 <X size={15} /> Cancelar
@@ -341,16 +347,16 @@ export default function AdminEmployeesPage() {
         </form>
       )}
 
-      <div className="table-wrap employee-stack-wrap">
-        <table className="table employee-stack-table">
+      <div className="table-wrap employee-stack-wrap employees-table-wrap">
+        <table className="table employee-stack-table employees-table">
           <thead>
             <tr>
-              <th>Empleado</th>
-              <th>DNI</th>
-              <th>Código</th>
-              <th>Cargo</th>
-              <th>Estado</th>
-              {canManage && <th style={{ textAlign: "right" }}>Acciones</th>}
+              <th className="employees-col-person">Empleado</th>
+              <th className="employees-col-dni">DNI</th>
+              <th className="employees-col-code">Código</th>
+              <th className="employees-col-role">Cargo</th>
+              <th className="employees-col-status">Estado</th>
+              {canManage && <th className="employees-col-actions" style={{ textAlign: "right" }}>Acciones</th>}
             </tr>
           </thead>
           <tbody>
@@ -380,7 +386,7 @@ export default function AdminEmployeesPage() {
               >
                 {editingId === employee.id && edit ? (
                   <>
-                    <td data-label="Nombre">
+                    <td data-label="Nombre" className="employee-person">
                       <div style={{ display: "grid", gap: "0.3rem" }}>
                         <input
                           type="text"
@@ -425,13 +431,13 @@ export default function AdminEmployeesPage() {
                     <td data-label="Estado">
                       <span className="badge badge-neutral">{employee.active ? "Activo" : "Inactivo"}</span>
                     </td>
-                    <td data-label="Acciones" style={{ textAlign: "right" }}>
-                      <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
-                        <button className="btn btn-green btn-sm" onClick={handleSaveEdit}>
+                    <td data-label="Acciones" className="employee-actions-cell">
+                      <div className="employee-actions">
+                        <button className="btn btn-green btn-sm employee-action employee-action--save" onClick={handleSaveEdit}>
                           Guardar
                         </button>
                         <button
-                          className="btn btn-ghost btn-sm"
+                          className="btn btn-outline btn-sm employee-action employee-action--cancel"
                           onClick={() => {
                             setEditingId(null);
                             setEdit(null);
@@ -444,8 +450,8 @@ export default function AdminEmployeesPage() {
                   </>
                 ) : (
                   <>
-                    <td data-label="Empleado">
-                      <Link to={`/admin/employees/${employee.id}`} style={{ fontWeight: 600 }}>
+                    <td data-label="Empleado" className="employee-person">
+                      <Link to={`/admin/employees/${employee.id}`} className="employee-person-name">
                         {employee.first_name} {employee.last_name}
                       </Link>
                     </td>
@@ -460,18 +466,18 @@ export default function AdminEmployeesPage() {
                       )}
                     </td>
                     {canManage && (
-                      <td data-label="Acciones" style={{ textAlign: "right" }}>
-                        <div style={{ display: "flex", gap: "0.4rem", justifyContent: "flex-end" }}>
-                          <button className="btn btn-ghost btn-sm" onClick={() => startEdit(employee)}>
+                      <td data-label="Acciones" className="employee-actions-cell">
+                        <div className="employee-actions">
+                          <button className="btn btn-outline btn-sm employee-action employee-action--edit" onClick={() => startEdit(employee)}>
                             <Pencil size={13} />
                             Editar
                           </button>
                           {employee.active ? (
-                            <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDeactivate(employee)}>
+                            <button className="btn btn-outline btn-sm employee-action employee-action--danger" onClick={() => setConfirmDeactivate(employee)}>
                               Desactivar
                             </button>
                           ) : (
-                            <button className="btn btn-green btn-sm" onClick={() => handleToggleActive(employee)}>
+                            <button className="btn btn-outline btn-sm employee-action employee-action--activate" onClick={() => handleToggleActive(employee)}>
                               Activar
                             </button>
                           )}

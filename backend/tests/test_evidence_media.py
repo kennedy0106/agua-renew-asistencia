@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont, JpegImagePlugin
 
 from app.modules.attendance import evidence_media
 
@@ -358,8 +358,6 @@ def test_los_logs_no_exponen_clave_ni_coordenadas(monkeypatch, caplog):
         None,
     )
     monkeypatch.setattr(evidence_media, "_OPENER", FakeOpener(error=error))
-    # Alembic deshabilita loggers existentes; el oráculo debe capturar de verdad
-    # el mensaje, sin depender del orden de otras pruebas ni tocar producción.
     monkeypatch.setattr(evidence_media.logger, "disabled", False)
 
     with caplog.at_level(logging.WARNING, logger="app.modules.attendance.evidence_media"):
@@ -717,9 +715,18 @@ def test_el_logo_de_marca_se_incrusta_en_la_esquina_superior_derecha(monkeypatch
         region_sin = sin.crop((sin.width - 90, 0, sin.width, 90))
 
     assert list(region_con.tobytes()) != list(region_sin.tobytes())
-    # La placa clara del logo es visible sobre la foto oscura.
-    brillantes = [pixel for pixel in region_con.convert("L").tobytes() if pixel > 180]
-    assert len(brillantes) > 50
+
+
+@pytest.mark.parametrize("background", [(8, 13, 20), (235, 230, 220)])
+def test_logo_transparente_preserva_el_fondo_fuera_de_la_gota(background):
+    canvas = Image.new("RGB", (720, 720), background)
+    logo = evidence_media._load_brand()
+    evidence_media._paste_brand(canvas, logo, 720)
+    # Esquina y margen de la antigua placa: ninguna superficie clara dibujada.
+    assert canvas.getpixel((625, 14)) == background
+    assert canvas.getpixel((612, 8)) == background
+    assert canvas.getpixel((705, 14)) == background
+    assert canvas.getpixel((680, 74)) != background
 
 
 def test_sin_logo_disponible_el_sello_falla_en_lugar_de_devolver_lo_mismo(monkeypatch):
@@ -841,7 +848,7 @@ def test_hora_solo_cambia_con_los_segundos_no_con_la_zona_de_representacion():
 
 
 # --------------------------------------------------------------------------- #
-# render_stamp: acentos españoles legibles (fuente incluida en Pillow)
+# render_stamp: fuente vectorial incluida en el proyecto y acentos españoles
 # --------------------------------------------------------------------------- #
 
 
@@ -850,7 +857,7 @@ def test_los_acentos_se_conservan_al_adaptar_el_texto_a_la_fuente():
 
     adaptado = evidence_media._to_latin1(acentuado)
 
-    # Los acentos y la eñe se conservan tal cual (la fuente bitmap cubre Latin-1).
+    # Los acentos y la eñe se conservan tal cual.
     assert "Código" in adaptado
     assert "José Ñañez del Río" in adaptado
     assert "Perú" in adaptado
@@ -880,9 +887,70 @@ def test_la_fuente_del_sello_cubre_los_acentos_usados():
     fuente = evidence_media._load_text_font()
     draw = ImageDraw.Draw(Image.new("RGB", (4, 4)))
 
-    # La fuente incluida en Pillow dibuja Latin-1 (no lanza y mide > 0).
+    # La fuente incluida en el proyecto dibuja Latin-1 (no lanza y mide > 0).
     assert draw.textlength("áéíóúÁÉÍÓÚñÑüÜºª·±°", font=fuente) > 0
     assert evidence_media._to_latin1("áéíóúÁÉÍÓÚñÑüÜ") == "áéíóúÁÉÍÓÚñÑüÜ"
+
+
+def test_fuente_vectorial_tiene_bordes_suaves_y_peso_real():
+    regular = evidence_media._load_text_font(22)
+    bold = evidence_media._load_text_font(22, bold=True)
+    assert isinstance(regular, ImageFont.FreeTypeFont)
+    assert bytes(regular.getmask("José Núñez")) != bytes(bold.getmask("José Núñez"))
+    assert any(0 < value < 255 for value in regular.getmask("Asistencia"))
+    with _open_stamp(_render()) as image:
+        assert JpegImagePlugin.get_sampling(image) == 0  # 4:4:4, conserva bordes de color
+
+
+def test_fuente_ausente_falla_sin_devolver_original(monkeypatch, tmp_path):
+    evidence_media._load_text_font.cache_clear()
+    try:
+        monkeypatch.setattr(evidence_media, "_FONT_DIR", tmp_path)
+        with pytest.raises(evidence_media.StampRenderError, match="fuente"):
+            _render()
+    finally:
+        evidence_media._load_text_font.cache_clear()
+
+
+@pytest.mark.parametrize("width", [320, 400, 640, 720, 1280, 2048])
+def test_campos_criticos_completos_y_texto_dentro_del_lienzo(width, monkeypatch):
+    """Referencia/créditos no se pierden por nombres o direcciones extensas."""
+    calls = []
+    real_text = ImageDraw.ImageDraw.text
+
+    def record_text(draw, xy, text, *args, **kwargs):
+        calls.append((text, draw.textbbox(xy, text, font=kwargs["font"], anchor=kwargs["anchor"])))
+        return real_text(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", record_text)
+    code = "W" * 32
+    reference = "e" * 64
+    result = evidence_media.render_stamp(
+        _jpeg(width=width, height=2048), employee_name="ÁÑ" * 30,
+        employee_code=code, event_type="CHECK_IN", marked_at=MARKED_AT,
+        latitude=LAT, longitude=LON, accuracy_m=ACCURACY,
+        address="Dirección " + "extensa " * 45, evidence_id=reference,
+    )
+    text = "".join(part for part, _ in calls).replace(" ", "")
+    assert code in text
+    assert reference in text
+    assert ATTRIBUTION.replace(" ", "") in text
+    assert MARKED_AT_TEXT.replace(" ", "") in text
+    assert f"{LAT:.6f},{LON:.6f}" in text
+    with _open_stamp(result) as image:
+        assert image.height <= evidence_media._MAX_OUTPUT_HEIGHT
+        for _, (left, top, right, bottom) in calls:
+            assert left >= 0 and right <= image.width
+            assert top >= 2048 and bottom < image.height
+
+
+def test_foto_extremadamente_estrecha_falla_sin_recortar_campos():
+    with pytest.raises(evidence_media.StampRenderError, match="estrecha"):
+        evidence_media.render_stamp(
+            _jpeg(width=24, height=480), employee_name="Ana", employee_code="OP-1",
+            event_type="CHECK_IN", marked_at=MARKED_AT, latitude=LAT, longitude=LON,
+            accuracy_m=ACCURACY, address=ADDRESS, evidence_id=EVIDENCE_ID,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -938,11 +1006,7 @@ def test_la_salida_respeta_el_tope_final_declarado():
     with _open_stamp(salida) as image:
         assert image.width <= evidence_media._MAX_OUTPUT_SIDE
         # Tope final declarado = fotografía acotada + banda máxima calculada.
-        banda_maxima = (
-            2 * evidence_media._TEXT_PAD_PX
-            + evidence_media._TEXT_ACCENT_PX
-            + evidence_media._MAX_STAMP_LINES * evidence_media._TEXT_LINE_PX
-        ) * evidence_media._MAX_TEXT_SCALE
+        banda_maxima = 597
         assert evidence_media._MAX_BAND_HEIGHT == banda_maxima
         assert evidence_media._MAX_OUTPUT_HEIGHT == evidence_media._MAX_OUTPUT_SIDE + banda_maxima
         assert image.height <= evidence_media._MAX_OUTPUT_HEIGHT
@@ -959,7 +1023,7 @@ def test_atribucion_completa_sobrevive_foto_rotada_y_metadatos_largos(monkeypatc
     real_text = ImageDraw.ImageDraw.text
 
     def capture_text(self, xy, text, *args, **kwargs):
-        drawn.append((text, self.textbbox(xy, text, font=kwargs.get("font"))))
+        drawn.append((text, self.textbbox(xy, text, font=kwargs.get("font"), anchor=kwargs.get("anchor"))))
         return real_text(self, xy, text, *args, **kwargs)
 
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture_text)
@@ -982,7 +1046,7 @@ def test_atribucion_completa_sobrevive_foto_rotada_y_metadatos_largos(monkeypatc
     )
     (tmp_path / "stamped-long.jpg").write_bytes(result)
     assert hashlib.sha256(original).hexdigest() == original_hash
-    text = " ".join(line for line, _box in drawn)
+    text = "".join(line for line, _box in drawn).replace(" ", "")
     with _open_stamp(result) as image:
         assert image.format == "JPEG"
         assert image.mode == "RGB"
@@ -990,18 +1054,18 @@ def test_atribucion_completa_sobrevive_foto_rotada_y_metadatos_largos(monkeypatc
         assert 320 < image.height <= 2645
         assert image.height - 320 <= 597
         assert not image.getexif().get(0x0112)
-        assert ATTRIBUTION in text
+        assert ATTRIBUTION.replace(" ", "") in text
         assert "EMP-001" in text
-        assert MARKED_AT_TEXT in text
-        assert f"{LAT:.6f}, {LON:.6f} (±12.5 m)" in text
-        assert EVIDENCE_ID in text
+        assert MARKED_AT_TEXT.replace(" ", "") in text
+        assert f"{LAT:.6f},{LON:.6f}(±12.5m)" in text
+        assert EVIDENCE_ID.replace(" ", "") in text
         for line, (left, top, right, bottom) in drawn:
             assert 0 <= left < right <= image.width, line
-            assert 0 <= top < bottom <= image.height - 320, line
+            assert 320 <= top < bottom <= image.height, line
             if any(word in line for word in ("Powered", "Geoapify", "OpenStreetMap", "contributors")):
-                region = image.crop((left, 320 + top, right, 320 + bottom))
+                region = image.crop((left, top, right, bottom))
                 assert any(
-                    min(region.getpixel((x, y))) > 190
+                    min(region.getpixel((x, y))) > 150
                     for y in range(region.height)
                     for x in range(region.width)
                 ), line

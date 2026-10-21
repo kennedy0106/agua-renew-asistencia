@@ -71,28 +71,31 @@ function seedHint() {
 describe("AdminLayout — guardas de sesión", () => {
   it("resuelve /me, muestra el contenido privado y deja el hint", async () => {
     const fetchMock = stubMe(200, USER);
-    renderAdmin("/admin/dashboard");
+    const { container } = renderAdmin("/admin/dashboard");
 
     expect(await screen.findByText("Ruta panel")).toBeInTheDocument();
+    expect(container.querySelectorAll(".app-shell")).toHaveLength(1);
     await waitFor(() => expect(window.sessionStorage.getItem(HINT_KEY)).not.toBeNull());
     expect(fetchMock).toHaveBeenCalledWith(ME_URL, expect.objectContaining({ credentials: "include" }));
   });
 
   it("un 401 limpia el hint y redirige a /admin/login", async () => {
     stubMe(401, { detail: { code: "UNAUTHENTICATED", message: "Sesión expirada" } });
-    renderAdmin("/admin/dashboard");
+    const { container } = renderAdmin("/admin/dashboard");
 
     expect(await screen.findByText("Ruta login")).toBeInTheDocument();
     expect(screen.queryByText("Ruta panel")).not.toBeInTheDocument();
+    expect(container.querySelector(".app-shell")).toBeNull();
     expect(window.sessionStorage.getItem(HINT_KEY)).toBeNull();
   });
 
-  it("must_change_password fuerza el cambio de contraseña", async () => {
+  it("must_change_password fuerza el cambio de contraseña fuera del shell", async () => {
     stubMe(200, { ...USER, must_change_password: true });
-    renderAdmin("/admin/dashboard");
+    const { container } = renderAdmin("/admin/dashboard");
 
     expect(await screen.findByText("Ruta cambio")).toBeInTheDocument();
     expect(screen.queryByText("Ruta panel")).not.toBeInTheDocument();
+    expect(container.querySelector(".app-shell")).toBeNull();
   });
 
   it("sin cambio pendiente, /admin/change-password vuelve al panel", async () => {
@@ -103,12 +106,13 @@ describe("AdminLayout — guardas de sesión", () => {
     expect(screen.queryByText("Ruta cambio")).not.toBeInTheDocument();
   });
 
-  it("en /admin/login descarta el hint sin consultar /me", async () => {
+  it("en /admin/login descarta el hint sin consultar /me y sin shell", async () => {
     const fetchMock = stubMe(200, USER);
     seedHint();
-    renderAdmin("/admin/login");
+    const { container } = renderAdmin("/admin/login");
 
     expect(await screen.findByText("Ruta login")).toBeInTheDocument();
+    expect(container.querySelector(".app-shell")).toBeNull();
     await waitFor(() => expect(window.sessionStorage.getItem(HINT_KEY)).toBeNull());
     expect(fetchMock).not.toHaveBeenCalled();
   });
