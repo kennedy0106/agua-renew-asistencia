@@ -2879,7 +2879,7 @@ h4,
   box-shadow: none;
 }
 .employee-create-dialog .employee-create-fields { gap: 0.95rem 1rem; }
-.employee-create-dialog .employee-dni-controls .input { flex: 1 1 11rem; }
+.employee-create-dialog .employee-dni-controls .input { flex: 1 1 auto; }
 .employee-create-dialog .employee-dni-lookup { flex: 0 0 auto; white-space: nowrap; }
 .employee-create-dialog .employee-dni-field .field-help {
   margin: 0.4rem 0 0;
