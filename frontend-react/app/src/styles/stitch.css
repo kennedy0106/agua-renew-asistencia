@@ -1807,7 +1807,9 @@ h4,
 @media (max-width: 768px) {
   .roles-filters-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
   .roles-search-field { flex: none; min-width: 0; width: 100%; max-width: none; }
-  .roles-filters-toolbar .roles-filter { width: 100%; }
+  .roles-filters-toolbar .roles-filter,
+  .roles-filters-toolbar .roles-create { width: 100%; }
+  .roles-filters-toolbar .roles-create { justify-content: center; }
   .roles-table.employee-stack-table > tbody > tr { padding: 0.85rem; box-shadow: none; border-color: var(--st-border); }
   .roles-table.employee-stack-table > tbody > tr > td { padding: 0.5rem 0; border: 0; grid-template-columns: minmax(5rem, 30%) minmax(0, 1fr); }
   .roles-table.employee-stack-table > tbody > tr > td.roles-name-cell { display: block; text-align: left !important; font-size: 0.95rem; padding: 0 0 0.75rem; }
@@ -2654,25 +2656,112 @@ h4,
 .attendance-tables .attendance-detail-row .attendance-collapse__inner {
   padding: 0.55rem 0.65rem;
 }
+/* Desglose: identidad como contexto a la izquierda y resultados agrupados a la
+   derecha. Las cifras mandan; el nombre repetido de la fila no compite con
+   ellas y los condicionales (ajustes, límites, cargo) quedan en contexto. */
 .attendance-tables .attendance-detail {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 0.75rem 1.1rem;
+  grid-template-columns: minmax(10rem, 0.72fr) minmax(0, 2.2fr);
+  align-items: start;
+  gap: 0.9rem 1.4rem;
   margin: 0;
-  padding: 0.5rem 0.25rem;
+  padding: 0.65rem 0.3rem 0.5rem;
 }
-.attendance-tables .attendance-detail dt,
+.attendance-tables .attendance-detail__person {
+  min-width: 0;
+  margin: 0;
+  padding: 0.1rem 0.9rem 0.1rem 0;
+  border-right: 1px solid var(--st-border);
+}
+.attendance-tables .attendance-detail__person dt {
+  margin: 0 0 0.3rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.attendance-tables .attendance-detail__person dd {
+  margin: 0;
+  color: var(--st-on-surface);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.attendance-tables .attendance-detail__groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: 0.85rem 1.4rem;
+  min-width: 0;
+}
+.attendance-tables .attendance-detail__group { min-width: 0; }
+.attendance-tables .attendance-detail__group-label {
+  margin: 0 0 0.45rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.attendance-tables .attendance-detail__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr));
+  gap: 0.65rem 1.1rem;
+  margin: 0;
+  padding: 0;
+}
+.attendance-tables .attendance-detail__item { min-width: 0; }
+.attendance-tables .attendance-detail__metrics dt {
+  margin: 0 0 0.25rem;
+  color: var(--st-on-surface-variant);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+.attendance-tables .attendance-detail__metrics dd {
+  margin: 0;
+  color: var(--st-on-surface);
+  font-size: 0.98rem;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.attendance-tables .attendance-detail__metrics .attendance-num,
+.attendance-tables .attendance-detail__metrics .attendance-balance {
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.attendance-tables .attendance-detail__metrics .attendance-balance { font-size: 1rem; }
+.attendance-tables .attendance-detail__item--wide { grid-column: 1 / -1; }
+.attendance-tables .attendance-detail__item--wide dd {
+  color: var(--st-on-surface-variant);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+.attendance-tables .attendance-detail__flag { display: inline-block; margin-left: 0.4rem; }
 .attendance-tables .attendance-card__primary dt {
   margin: 0 0 0.25rem;
   color: var(--st-on-surface-variant);
   font-size: 0.72rem;
 }
-.attendance-tables .attendance-detail dd { margin: 0; white-space: normal; }
-.attendance-tables .attendance-detail .attendance-num,
-.attendance-tables .attendance-detail .attendance-balance { text-align: left; }
-.attendance-tables .attendance-detail__person { grid-column: 1 / -1; }
-.attendance-tables .attendance-detail__person dd { font-weight: 600; overflow-wrap: anywhere; }
-.attendance-tables .attendance-detail__flag { display: inline-block; margin-left: 0.4rem; }
+@media (max-width: 1099px) {
+  .attendance-tables .attendance-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.7rem;
+    padding: 0.55rem 0.15rem 0.35rem;
+  }
+  .attendance-tables .attendance-detail__person {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.15rem 0.6rem;
+    padding: 0 0 0.55rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--st-border);
+  }
+  .attendance-tables .attendance-detail__person dt { margin: 0; }
+  .attendance-tables .attendance-detail__person dd { flex: 1 1 10rem; }
+  .attendance-tables .attendance-detail__groups { gap: 0.8rem 1rem; }
+}
 .attendance-tables.attendance-cards { display: none; gap: 0.75rem; margin-bottom: 1rem; }
 .attendance-tables .attendance-card {
   padding: 1rem;
@@ -2777,6 +2866,82 @@ h4,
 .admin-form-dialog .users-create-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .admin-form-dialog .users-field-wide { grid-column: 1 / -1; }
 .admin-form-dialog .alert { margin: 0; }
+/* Altas de empleado y cargo: ventana flotante, lectura en dos columnas y
+   acciones siempre alcanzables. El scroll vive dentro del diálogo. */
+.dialog-portal .app-dialog.employee-create-dialog { width: min(100%, 40rem); }
+.dialog-portal .app-dialog.roles-create-dialog { width: min(100%, 34rem); }
+.employee-create-dialog .employee-create-form,
+.roles-create-dialog .roles-create-form {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.employee-create-dialog .employee-create-fields { gap: 0.95rem 1rem; }
+.employee-create-dialog .employee-dni-controls .input { flex: 1 1 11rem; }
+.employee-create-dialog .employee-dni-lookup { flex: 0 0 auto; white-space: nowrap; }
+.employee-create-dialog .employee-dni-field .field-help {
+  margin: 0.4rem 0 0;
+  color: var(--st-on-surface-variant);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.employee-create-dialog .employee-create-code { max-width: 21rem; }
+.employee-create-dialog .employee-create-code-input {
+  min-height: 2.4rem;
+  border-style: dashed;
+  background: var(--st-surface-low);
+  color: var(--st-on-surface-variant);
+  font-size: 0.82rem;
+}
+.employee-create-dialog .employee-create-actions,
+.roles-create-dialog .roles-create-actions { margin-top: 0.15rem; }
+.roles-create-dialog .roles-create-fields { grid-template-columns: minmax(0, 1fr); }
+.roles-filters-toolbar .roles-create { flex: 0 0 auto; min-height: 2.75rem; white-space: nowrap; }
+
+/* Cierre de sesión: una sola decisión, título y explicación apilados. */
+.dialog-portal .app-dialog.logout-dialog {
+  width: min(100%, 30rem);
+  gap: 1.1rem;
+  padding: 1.4rem;
+}
+.logout-dialog__heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.85rem;
+}
+.logout-dialog__icon {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  border: 1px solid var(--st-border);
+  background: var(--st-surface-low);
+  color: var(--st-primary);
+}
+.logout-dialog__copy { min-width: 0; }
+.logout-dialog h2 {
+  margin: 0;
+  color: var(--st-on-surface);
+  font-size: 1.2rem;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+.logout-dialog p {
+  margin: 0.4rem 0 0;
+  color: var(--st-on-surface-variant);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+.logout-dialog p strong { color: var(--st-on-surface); font-weight: 650; overflow-wrap: anywhere; }
+.logout-dialog__actions {
+  padding-top: 0.9rem;
+  padding-bottom: 0.15rem;
+  border-top: 1px solid var(--st-border);
+}
 .payroll-commandbar.toolbar { justify-content: space-between; gap: 1rem; padding: 0; margin-bottom: 1rem; background: none; border: 0; box-shadow: none; backdrop-filter: none; }
 .payroll-commandbar .btn { min-height: 2.75rem; }
 .period-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 28rem), 1fr)); gap: 1rem; align-items: start; margin-bottom: 1.25rem; }
@@ -2837,4 +3002,10 @@ h4,
   .devices-filter-group .select-trigger { flex: 1 1 auto; }
   .audit-filters-group { grid-template-columns: minmax(0, 1fr); }
   .audit-date-range { grid-column: auto; grid-template-columns: minmax(0, 1fr); }
+  .logout-dialog__actions .btn { flex: 1 1 8rem; }
+}
+@media (max-width: 480px) {
+  .dialog-portal .app-dialog.logout-dialog { padding: 1.15rem; }
+  .logout-dialog__heading { gap: 0.7rem; }
+  .logout-dialog__icon { width: 2.25rem; height: 2.25rem; }
 }
