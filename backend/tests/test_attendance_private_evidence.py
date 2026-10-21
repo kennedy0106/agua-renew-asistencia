@@ -137,6 +137,7 @@ def test_stamped_image_falla_no_anula_evento(client, db_session, monkeypatch):
 
     module.render_stamp = render_stamp
     module.reverse_address = lambda *args, **kwargs: None
+    module.STAMP_VERSION = "v2"
     monkeypatch.setitem(sys.modules, "app.modules.attendance.evidence_media", module)
 
     _login(client)
@@ -226,7 +227,7 @@ def test_stamped_image_usa_bucket_original_y_no_escribe_en_default(client, db_se
     store = provision_test_bucket()
     assert store.bucket != original_bucket
 
-    stamped_key = original_key.rsplit(".jpg", 1)[0] + ".stamped.jpg"
+    stamped_key = original_key.rsplit(".jpg", 1)[0] + ".stamped-v2.jpg"
     first = client.get(f"/api/v1/attendance/evidence/{evidence_id}/stamped-image")
     assert first.status_code == 200, first.text
     assert first.content == rendered
