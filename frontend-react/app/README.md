@@ -294,3 +294,36 @@ Ver [`CUTOVER.md`](./CUTOVER.md) §8. En alto nivel:
    profunda, no solo con el alias.
 
 No se requiere migración de datos: ambos frontends consumen el mismo API.
+
+## Asistencia: tablas y acciones
+
+El resumen diario prioriza empleado, fecha, efectivo, esperado, saldo e
+incidencias. El detalle de marcaciones prioriza empleado, fecha, entrada,
+salida, trabajado y estado. Cada fila ofrece **Desglose** para consultar los
+campos secundarios sin eliminarlos: sesiones, presencia, refrigerio aplicado y
+solicitado, origen y limitación; o jornada, saldo y cargo del registro.
+La información de solo lectura sigue disponible para SUPERVISOR.
+
+- **Fotos**, **Corregir** y **Refrigerio** conservan sus permisos ADMIN/BOSS,
+  identificadores y diálogos. Ahora tienen SVG y etiquetas visibles; Refrigerio
+  sigue deshabilitado si hay una marcación abierta, con el motivo indicado.
+- **Cerrada** significa que el registro tiene estado cerrado, no que esté libre
+  de incidencias. Las advertencias del resumen se conservan por separado.
+- Las tablas y tarjetas muestran duraciones en `h:mm`, sin reiniciar después de
+  24 horas. Un saldo de `-299` minutos se presenta como `-04:59`; un valor
+  pendiente sigue siendo `—`. Los minutos guardados y el CSV no cambian.
+- La hora sigue siendo la de America/Lima; si la salida ocurre en otra fecha,
+  esa fecha se muestra debajo de la hora. No se cambia la fecha operativa.
+- Desde 1100 px se muestran tablas; en pantallas menores se usan tarjetas con
+  los mismos datos y acciones. Las dos paginaciones y los filtros se conservan.
+
+El editor de refrigerio mantiene su formato y validación originales en minutos.
+
+### Movimiento discreto en Asistencia
+
+Ayuda, Período, Más acciones y los desgloses incorporan una entrada de opacidad
+breve (150 ms) al abrirse con puntero; el indicador gira en 120 ms. No se animan
+las filas, los valores ni su posición, y el cierre no espera una animación.
+La activación con teclado y la preferencia de movimiento reducido no reciben
+estos efectos nuevos. Se reutilizan las curvas existentes, sin dependencias ni
+cambios de lógica; sin soporte de CSS moderno la información aparece al instante.

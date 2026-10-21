@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useAdminUser } from "@/components/AdminSession";
 import { useNotifications } from "@/components/Notifications";
 import { Alert, Briefcase, Check, Pencil, Plus, Refresh, Search, X } from "@/components/Icons";
@@ -13,6 +14,10 @@ import { ApiError, jobRolesApi, JobRole } from "@/lib/api";
 
 const ROLES_MANAGE = "ADMIN"; // crear/editar/desactivar cargos: solo ADMIN
 
+type RoleCreateDraft = { name: string; description: string };
+
+const EMPTY_CREATE_DRAFT: RoleCreateDraft = { name: "", description: "" };
+
 export default function AdminRolesPage() {
   const user = useAdminUser();
   const { success } = useNotifications();
@@ -22,9 +27,13 @@ export default function AdminRolesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // New role creation state
-  const [newName, setNewName] = useState("");
-  const [newDescription, setNewDescription] = useState("");
+  // Borrador del alta de cargo: un único objeto en memoria de sesión. Cada
+  // edición crea un objeto nuevo, de modo que el éxito de un POST tardío solo
+  // limpia el borrador exacto que se envió y nunca uno escrito después.
+  const [createDraft, setCreateDraft] = useAdminViewState<RoleCreateDraft>(
+    "jobRoles.createDraft",
+    EMPTY_CREATE_DRAFT,
+  );
   const [creating, setCreating] = useState(false);
 
   // Inline editing state
@@ -35,9 +44,12 @@ export default function AdminRolesPage() {
   const [actionKey, setActionKey] = useState<string | null>(null);
 
   // Search & in-memory filters
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive">("");
+  const [search, setSearch] = useAdminViewState("jobRoles.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [statusFilter, setStatusFilter] = useAdminViewState<"" | "active" | "inactive">(
+    "jobRoles.statusFilter",
+    "",
+  );
 
   // Sensitive confirmation modal for active status toggle
   const [confirmToggleRole, setConfirmToggleRole] = useState<JobRole | null>(null);
@@ -94,14 +106,18 @@ export default function AdminRolesPage() {
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
-    if (!newName.trim()) return;
+    const submittedDraft = createDraft;
+    const name = submittedDraft.name.trim();
+    if (!name) return;
     setCreating(true);
     setError(null);
     try {
-      const created = await jobRolesApi.create(newName.trim(), newDescription.trim() || null);
+      const created = await jobRolesApi.create(name, submittedDraft.description.trim() || null);
       setRoles((prev) => [...prev, created]);
-      setNewName("");
-      setNewDescription("");
+      // Limpia únicamente el borrador enviado. Si mientras el POST estaba en
+      // vuelo se editó el nombre o la descripción (incluso tras salir y
+      // volver), el objeto actual es otro y el borrador nuevo se conserva.
+      setCreateDraft((current) => (current === submittedDraft ? { ...EMPTY_CREATE_DRAFT } : current));
       markSaved(created.id);
       success(`Cargo "${created.name}" creado con éxito.`);
     } catch (err) {
@@ -226,8 +242,10 @@ export default function AdminRolesPage() {
                 id={newNameId}
                 type="text"
                 className="input"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
+                value={createDraft.name}
+                onChange={(e) =>
+                  setCreateDraft((current) => ({ ...current, name: e.target.value }))
+                }
                 required
                 placeholder="Ej. Operario de envasado"
                 autoComplete="off"
@@ -241,8 +259,10 @@ export default function AdminRolesPage() {
                 id={newDescId}
                 type="text"
                 className="input"
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
+                value={createDraft.description}
+                onChange={(e) =>
+                  setCreateDraft((current) => ({ ...current, description: e.target.value }))
+                }
                 placeholder="Ej. Planta de tratamiento y llenado"
                 autoComplete="off"
               />
@@ -251,7 +271,7 @@ export default function AdminRolesPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={creating || !newName.trim()}
+                disabled={creating || !createDraft.name.trim()}
                 aria-busy={creating}
                 style={{ minHeight: "2.75rem", whiteSpace: "nowrap" }}
               >
@@ -266,26 +286,15 @@ export default function AdminRolesPage() {
       {/* Toolbar with Search, Status Filter and Summary */}
       <div className="toolbar roles-filters-toolbar" role="search" aria-label="Búsqueda y filtros de cargos laborales">
         <div className="roles-search-field">
-          <Search
-            size={15}
-            style={{
-              position: "absolute",
-              left: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "var(--muted)",
-              pointerEvents: "none",
-            }}
-          />
+          <Search size={15} className="roles-search-icon" />
           <input
             id={searchInputId}
             type="text"
-            className="input"
+            className="input roles-search-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por cargo o descripción…"
             aria-label="Buscar cargo laboral por nombre o descripción"
-            style={{ paddingLeft: "2.1rem" }}
           />
         </div>
 
@@ -293,7 +302,7 @@ export default function AdminRolesPage() {
           value={statusFilter || "__all"}
           onValueChange={(val) => setStatusFilter(val === "__all" ? "" : (val as "active" | "inactive"))}
         >
-          <SelectTrigger aria-label="Filtrar por estado del cargo" style={{ minWidth: 160, maxWidth: 200 }}>
+          <SelectTrigger aria-label="Filtrar por estado del cargo" className="roles-filter">
             <SelectValue placeholder="Todos los estados" />
           </SelectTrigger>
           <SelectContent>
@@ -306,7 +315,7 @@ export default function AdminRolesPage() {
         {hasActiveFilters && (
           <button
             type="button"
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm roles-clear-filter"
             onClick={clearFilters}
             aria-label="Limpiar filtros de búsqueda"
           >
@@ -315,7 +324,7 @@ export default function AdminRolesPage() {
         )}
 
         <span className="spacer" />
-        <span className="muted" style={{ fontSize: "0.82rem", whiteSpace: "nowrap" }}>
+        <span className="roles-count">
           {filteredRoles.length} de {roles.length} cargos · {activeRolesCount} activos
         </span>
       </div>
@@ -324,10 +333,10 @@ export default function AdminRolesPage() {
         <table className="table roles-table employee-stack-table">
           <thead>
             <tr>
-              <th style={{ width: "28%" }}>Nombre</th>
-              <th style={{ width: "38%" }}>Descripción</th>
-              <th style={{ width: "16%" }}>Estado</th>
-              {canManage && <th style={{ width: "18%", textAlign: "right" }}>Acciones</th>}
+              <th className="roles-col-name">Nombre</th>
+              <th className="roles-col-description">Descripción</th>
+              <th className="roles-col-status">Estado</th>
+              {canManage && <th className="roles-col-actions" style={{ textAlign: "right" }}>Acciones</th>}
             </tr>
           </thead>
           <tbody>
@@ -361,7 +370,7 @@ export default function AdminRolesPage() {
                     .join(" ") || undefined
                 }
               >
-                <td data-label="Nombre" style={{ fontWeight: 600 }}>
+                <td data-label="Nombre" className="roles-name-cell">
                   {editingId === role.id ? (
                     <div className="roles-edit-cell">
                       <input
@@ -388,7 +397,7 @@ export default function AdminRolesPage() {
                       {editError && <p className="roles-inline-error">{editError}</p>}
                     </div>
                   ) : (
-                    role.name
+                    <span className="role-name">{role.name}</span>
                   )}
                 </td>
                 <td data-label="Descripción">
@@ -422,13 +431,13 @@ export default function AdminRolesPage() {
                   )}
                 </td>
                 {canManage && (
-                  <td data-label="Acciones" style={{ textAlign: "right" }}>
+                  <td data-label="Acciones" className="roles-actions-cell">
                     <div className="roles-actions-group">
                       {editingId === role.id ? (
                         <>
                           <button
                             type="button"
-                            className="btn btn-green btn-sm"
+                            className="btn btn-green btn-sm role-action role-action--save"
                             onClick={() => void handleSaveEdit(role.id)}
                             disabled={actionKey !== null}
                             aria-busy={actionKey === `save:${role.id}`}
@@ -439,7 +448,7 @@ export default function AdminRolesPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-sm"
+                            className="btn btn-outline btn-sm role-action role-action--cancel"
                             onClick={cancelEdit}
                             disabled={actionKey !== null}
                             aria-label={`Cancelar edición del cargo ${role.name}`}
@@ -451,7 +460,7 @@ export default function AdminRolesPage() {
                         <>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-sm"
+                            className="btn btn-outline btn-sm role-action role-action--edit"
                             onClick={() => startEdit(role)}
                             aria-label={`Editar cargo ${role.name}`}
                           >
@@ -459,7 +468,7 @@ export default function AdminRolesPage() {
                           </button>
                           <button
                             type="button"
-                            className={`btn btn-sm ${role.active ? "btn-danger" : "btn-green"}`}
+                            className={`btn btn-outline btn-sm role-action ${role.active ? "role-action--danger" : "role-action--activate"}`}
                             onClick={() => setConfirmToggleRole(role)}
                             disabled={actionKey !== null}
                             aria-busy={actionKey === `toggle:${role.id}`}

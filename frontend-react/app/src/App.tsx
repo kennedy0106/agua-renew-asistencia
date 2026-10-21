@@ -1,9 +1,10 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Route, Routes } from "react-router-dom";
 import { Notifications } from "@/components/Notifications";
 import RouteFallback from "@/components/RouteFallback";
 import AdminLayout from "@/layouts/AdminLayout";
 import { routeLoaders } from "@/lib/routePreload";
+import { installScrollbarActivity } from "@/lib/scrollbar-activity";
 import HomePage from "@/pages/HomePage";
 import NotFoundPage from "@/pages/NotFoundPage";
 import AdminLoginPage from "@/pages/AdminLoginPage";
@@ -37,6 +38,11 @@ const AdminSalariesPage = lazy(routeLoaders["/admin/salaries"]);
 const AdminUsersPage = lazy(routeLoaders["/admin/users"]);
 
 export default function App() {
+  // Las barras de desplazamiento nativas se instalan una sola vez por
+  // documento: un listener en captura cubre la raíz, los paneles internos y
+  // los que aún no existen (diálogos en portal), sin registros por pantalla.
+  useEffect(() => installScrollbarActivity(), []);
+
   return (
     <Notifications>
       <Suspense fallback={<RouteFallback />}>

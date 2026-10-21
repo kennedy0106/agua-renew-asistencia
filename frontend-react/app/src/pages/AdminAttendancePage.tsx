@@ -1,15 +1,21 @@
 
-import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AdminShell from "@/components/AdminShell";
+import { useAdminViewState } from "@/components/AdminViewState";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
+import {
+  AttendanceDailyCards,
+  AttendanceDailyTable,
+  AttendanceRecordsCards,
+  AttendanceRecordsTable,
+} from "@/components/AttendanceTables";
+import AttendanceToolbar from "@/components/AttendanceToolbar";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
-import { Alert, Camera, Clock, Download, Pencil, X } from "@/components/Icons";
-import { Spinner, TableSkeleton } from "@/components/Loading";
+import { Alert, Download, Eye, Pencil, X } from "@/components/Icons";
+import { Spinner } from "@/components/Loading";
 import { TablePagination, useTablePagination } from "@/components/Pagination";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatOperationalDate } from "@/lib/dates";
 import {
   API_URL,
@@ -39,41 +45,12 @@ function currentLimaMonth(): { from: string; to: string } {
   };
 }
 
-function formatClock(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("es-PE", { timeZone: "America/Lima", hour: "2-digit", minute: "2-digit" });
-}
-
 function formatMinutes(minutes: number | null): string {
   if (minutes === null) return "—";
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   if (h === 0) return `${m} min`;
   return `${h} h ${m.toString().padStart(2, "0")}`;
-}
-
-function formatDifference(minutes: number | null): string {
-  if (minutes === null) return "—";
-  const sign = minutes > 0 ? "+" : "";
-  return `${sign}${formatMinutes(minutes)}`;
-}
-
-function formatIncidentCode(code: string): string {
-  const labels: Record<string, string> = {
-    EARLY_ENTRY: "Entrada anticipada",
-    LATE_ENTRY: "Entrada tardía",
-    EARLY_EXIT: "Salida anticipada",
-    MISSING_ENTRY: "Sin entrada",
-    MISSING_EXIT: "Sin salida",
-    OVERTIME: "Horas extra",
-    INCOMPLETE: "Jornada incompleta",
-    LONG_ATTENDANCE: "Jornada excesivamente larga",
-    OPEN_ATTENDANCE: "Entrada sin salida",
-    OVERLAPPING_SESSIONS: "Sesiones superpuestas",
-  };
-  if (labels[code]) return labels[code];
-  const fallback = code.replace(/[_-]+/g, " ").trim().toLocaleLowerCase("es-PE");
-  return fallback ? `${fallback.charAt(0).toLocaleUpperCase("es-PE")}${fallback.slice(1)}` : "Incidencia sin detalle";
 }
 
 /** Estado de un intento de kiosco en lenguaje cotidiano (evita jerga interna). */
@@ -136,6 +113,17 @@ function formatOfficialTime(iso: string | null | undefined): string | null {
   });
 }
 
+/** Redondeo honesto para lectura: como máximo un decimal, sin perder el dato en el enlace. */
+function formatAccuracyMeters(value: number | null | undefined): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return `±${Number(value.toFixed(1))} m`;
+}
+
+/** Coordenadas legibles; el enlace a Maps conserva los valores completos del registro. */
+function formatEvidenceCoordinate(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(5) : "—";
+}
+
 function EvidenceFigure({
   side,
   label,
@@ -147,7 +135,7 @@ function EvidenceFigure({
   loading,
 }: {
   side: "check_in" | "check_out";
-  label: string;
+  label: "Entrada" | "Salida";
   originalSrc: string | null;
   stampedSrc: string | null;
   stampedAdvertised: boolean;
@@ -156,94 +144,145 @@ function EvidenceFigure({
   loading: boolean;
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
-  const showingStamped = Boolean(stampedSrc) && !showOriginal;
+  const hasStamped = Boolean(stampedSrc);
+  const canSwitchVersion = Boolean(stampedSrc && originalSrc);
+  const showingStamped = hasStamped && !showOriginal;
   const displaySrc = showingStamped ? stampedSrc : originalSrc;
   const location = meta?.location ?? null;
   const officialTime = formatOfficialTime(meta?.marked_at);
+  const accuracy = location ? formatAccuracyMeters(location.accuracy_m) : null;
   const stampUnavailable = stampedAdvertised && !stampedSrc && stampedFailed;
+  const photoName = label.toLowerCase();
 
   return (
-    <figure className="evidence-image" data-testid={`evidence-figure-${side}`}>
-      <figcaption className="label">{label}</figcaption>
-      <p className="muted" style={{ fontSize: "0.75rem", margin: "0.1rem 0 0.3rem" }} data-testid={`evidence-version-${side}`}>
-        {showingStamped ? "Versión con sello" : "Versión original (sin sello)"}
-      </p>
+    <figure className="evidence-figure" data-testid={`evidence-figure-${side}`}>
+      <figcaption className="evidence-figure__caption">
+        <h3 className="evidence-figure__title">{label}</h3>
+        {displaySrc && (
+          <span
+            className={`badge ${showingStamped ? "badge-blue" : "badge-neutral"} evidence-version`}
+            data-testid={`evidence-version-${side}`}
+            data-version={showingStamped ? "stamped" : "original"}
+          >
+            {showingStamped ? "Con sello" : "Original"}
+          </span>
+        )}
+      </figcaption>
+
+      <div className="evidence-stage">
+        {loading ? (
+          <div className="skeleton evidence-stage__skeleton" role="status">
+            <span className="sr-only">Cargando foto de {photoName}</span>
+          </div>
+        ) : displaySrc ? (
+          <img
+            src={displaySrc}
+            alt={`${label} ${showingStamped ? "con sello" : "original sin sello"}`}
+            data-testid={`evidence-image-${side}`}
+          />
+        ) : (
+          <p className="evidence-stage__empty" data-testid={`evidence-empty-${side}`}>
+            Sin foto de {photoName}.
+          </p>
+        )}
+      </div>
+
       {stampUnavailable && (
-        <p className="alert alert-notice" role="status" data-testid={`evidence-stamp-warning-${side}`}>
+        <p className="evidence-notice" role="status" data-testid={`evidence-stamp-warning-${side}`}>
           No se pudo cargar la versión con sello de esta foto. La imagen mostrada y descargable es la original, sin sello.
         </p>
       )}
-      {loading ? (
-        <div className="skeleton evidence-skeleton" aria-label={`Cargando ${label.toLowerCase()}`} />
-      ) : displaySrc ? (
-        <img
-          src={displaySrc}
-          alt={showingStamped ? `${label} con sello` : `${label} original sin sello`}
-          data-testid={`evidence-image-${side}`}
-        />
-      ) : (
-        <p className="muted">Sin {label.toLowerCase()}.</p>
+
+      {canSwitchVersion && (
+        <div className="evidence-view-row">
+          <span className="evidence-view-row__label" aria-hidden="true">
+            <Eye size={14} /> Vista
+          </span>
+          <div
+            className="evidence-view"
+            role="group"
+            aria-label={`Vista de la foto de ${photoName}`}
+            data-testid={`evidence-toggle-${side}`}
+          >
+            <button
+              type="button"
+              className="evidence-view__option"
+              aria-pressed={!showOriginal}
+              onClick={() => setShowOriginal(false)}
+            >
+              Con sello
+            </button>
+            <button
+              type="button"
+              className="evidence-view__option"
+              aria-pressed={showOriginal}
+              onClick={() => setShowOriginal(true)}
+            >
+              Original
+            </button>
+          </div>
+        </div>
       )}
+
       {(originalSrc || stampedSrc) && (
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
+        <div className="evidence-downloads">
           {stampedSrc && (
             <a
-              className="btn btn-ghost btn-sm"
+              className="btn btn-primary evidence-action"
               href={stampedSrc}
               download={`evidencia-${side}-sello.jpg`}
               data-testid={`evidence-stamped-download-${side}`}
             >
+              <Download size={16} />
               Descargar con sello
             </a>
           )}
           {originalSrc && (
             <a
-              className="btn btn-ghost btn-sm"
+              className={`btn ${stampedSrc ? "btn-outline" : "btn-primary"} evidence-action`}
               href={originalSrc}
               download={`evidencia-${side}.jpg`}
               data-testid={`evidence-original-${side}`}
             >
+              {!stampedSrc && <Download size={16} />}
               Descargar original
             </a>
           )}
-          {stampedSrc && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowOriginal((value) => !value)}
-              data-testid={`evidence-toggle-${side}`}
-            >
-              {showOriginal ? "Ver con sello" : "Ver original"}
-            </button>
-          )}
         </div>
       )}
+
       {meta && (
-        <dl className="muted" style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
-          <div>
-            <dt>Hora oficial</dt>
-            <dd data-testid={`evidence-official-time-${side}`}>{officialTime ?? "Hora oficial no disponible"}</dd>
+        <dl className="evidence-meta">
+          <div className="evidence-meta__row">
+            <dt>Hora oficial (Lima)</dt>
+            <dd data-testid={`evidence-official-time-${side}`}>
+              {officialTime ? <time dateTime={meta.marked_at ?? undefined}>{officialTime}</time> : "No registrada"}
+            </dd>
           </div>
-          <div>
+          <div className="evidence-meta__row">
             <dt>Ubicación</dt>
             {location ? (
               <dd data-testid={`evidence-location-${side}`}>
-                <span>{location.latitude}, {location.longitude}</span>
-                <span> · precisión ±{location.accuracy_m} m</span>
-                {location.address ? <span> · {location.address}</span> : null}
+                <span className={location.address ? "evidence-meta__address" : "evidence-meta__muted"}>
+                  {location.address ?? "Dirección no registrada"}
+                </span>
+                <span className="evidence-meta__coords">
+                  {formatEvidenceCoordinate(location.latitude)}, {formatEvidenceCoordinate(location.longitude)}
+                </span>
+                {accuracy && <span className="evidence-meta__accuracy">Precisión {accuracy}</span>}
                 <a
-                  className="btn btn-ghost btn-sm"
+                  className="evidence-meta__maps"
                   href={googleMapsCoordinateUrl(location.latitude, location.longitude)}
                   target="_blank"
                   rel="noopener noreferrer"
                   data-testid={`evidence-maps-${side}`}
-                  style={{ marginLeft: "0.4rem" }}
                 >
                   Ver en Google Maps
+                  <span className="sr-only"> (se abre en una pestaña nueva)</span>
                 </a>
               </dd>
             ) : (
-              <dd className="muted" data-testid={`evidence-location-missing-${side}`}>
+              <dd className="evidence-meta__muted" data-testid={`evidence-location-missing-${side}`}>
                 Ubicación no disponible para este registro.
               </dd>
             )}
@@ -264,10 +303,12 @@ export default function AdminAttendancePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [employeeFilter, setEmployeeFilter] = useState("");
-  const [dateFrom, setDateFrom] = useState(initialRange.from);
-  const [dateTo, setDateTo] = useState(initialRange.to);
-  const [statusFilter, setStatusFilter] = useState("");
+  // Filtros de consulta: se restauran al volver y la carga inicial usa el
+  // rango recuperado, no el mes actual por defecto.
+  const [employeeFilter, setEmployeeFilter] = useAdminViewState("attendance.employeeFilter", "");
+  const [dateFrom, setDateFrom] = useAdminViewState("attendance.dateFrom", initialRange.from);
+  const [dateTo, setDateTo] = useAdminViewState("attendance.dateTo", initialRange.to);
+  const [statusFilter, setStatusFilter] = useAdminViewState("attendance.statusFilter", "");
 
   const [correcting, setCorrecting] = useState<AttendanceListItem | null>(null);
   const [corrCheckInDate, setCorrCheckInDate] = useState("");
@@ -286,6 +327,7 @@ export default function AdminAttendancePage() {
     reason?: boolean;
   }>({});
   const [photosFor, setPhotosFor] = useState<string | null>(null);
+  const [photoLoading, setPhotoLoading] = useState(false);
   const [photoUrls, setPhotoUrls] = useState<{ check_in: string | null; check_out: string | null; missing: string | null }>({
     check_in: null,
     check_out: null,
@@ -317,6 +359,7 @@ export default function AdminAttendancePage() {
   const { success } = useNotifications();
 
   const canManage = user ? MANAGE_ROLES.includes(user.role) : false;
+  const evidenceRecord = photosFor ? records.find((item) => item.id === photosFor) ?? null : null;
   const dailyPagination = useTablePagination(daily, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${daily.length}`);
   const recordsPagination = useTablePagination(records, `${employeeFilter}:${dateFrom}:${dateTo}:${statusFilter}:${records.length}`);
 
@@ -401,6 +444,7 @@ export default function AdminAttendancePage() {
 
   async function loadPhotos(recordId: string) {
     setPhotosFor(recordId);
+    setPhotoLoading(true);
     setPhotoUrls({ check_in: null, check_out: null, missing: null });
     setPhotoMeta({ check_in: null, check_out: null });
     setStampedUrls({ check_in: null, check_out: null });
@@ -441,6 +485,8 @@ export default function AdminAttendancePage() {
       setStampFailed({ check_in: false, check_out: false });
       setPhotoUrls({ check_in: null, check_out: null, missing: message });
       setError(message);
+    } finally {
+      setPhotoLoading(false);
     }
   }
 
@@ -634,160 +680,95 @@ export default function AdminAttendancePage() {
         </p>
       )}
 
-      <details className="term-help">
-        <summary>
-          <span><strong>¿Qué significa cada columna?</strong><small>Tiempo presente, efectivo, jornada esperada y saldo del día</small></span>
-        </summary>
-        <dl className="term-help-grid">
-          <div><dt>Tiempo presente</dt><dd>Desde la primera entrada hasta la última salida, sin descontar el refrigerio.</dd></div>
-          <div><dt>Tiempo efectivo</dt><dd>Tiempo presente menos el refrigerio. Es el tiempo que cuenta para el pago.</dd></div>
-          <div><dt>Jornada esperada</dt><dd>Lo que la persona debía trabajar ese día según su horario.</dd></div>
-          <div><dt>Saldo del día</dt><dd>Tiempo efectivo menos jornada esperada. En ámbar faltó tiempo; en verde trabajó de más.</dd></div>
-          <div><dt>Incidencias</dt><dd>Situaciones a revisar, como entrada tardía, salida faltante u horas extra.</dd></div>
-        </dl>
-      </details>
-
-      <div className="toolbar attendance-toolbar">
-        {canManage && (
-          <Link className="btn btn-outline btn-sm attendance-toolbar-action" to="/admin/attendance/history" title="Registra horas de días anteriores al inicio del sistema">
-            <Clock size={15} /> Cargar horas anteriores
-          </Link>
-        )}
-        <div className="attendance-toolbar-filter attendance-toolbar-filter--employee" style={{ minWidth: "11rem", flex: "1 1 13rem" }}>
-          <Select value={employeeFilter || "__all"} onValueChange={(v) => setEmployeeFilter(v === "__all" ? "" : v)}>
-            <SelectTrigger aria-label="Empleado" className="attendance-employee-select" style={{ width: "100%" }}>
-              <SelectValue placeholder="Todos los empleados" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all">Todos los empleados</SelectItem>
-              {employees.map((e) => (
-                <SelectItem key={e.id} value={e.id}>
-                  {e.first_name} {e.last_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="attendance-toolbar-filter attendance-toolbar-filter--dates" style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem", flex: "0 0 auto" }}>
-          <DateField value={dateFrom} onChange={setDateFrom} aria-label="Fecha desde" placeholder="Desde" />
-          <span className="muted attendance-toolbar-range-separator" style={{ fontSize: "0.8rem", padding: "0 0.15rem", flexShrink: 0 }}>a</span>
-          <DateField value={dateTo} onChange={setDateTo} aria-label="Fecha hasta" placeholder="Hasta" />
-        </div>
-        <div className="attendance-toolbar-filter attendance-toolbar-filter--status" style={{ minWidth: "9.5rem", flex: "0 1 10.5rem" }}>
-          <Select value={statusFilter || "__all"} onValueChange={(v) => setStatusFilter(v === "__all" ? "" : v)}>
-            <SelectTrigger aria-label="Estado" className="attendance-status-select" style={{ width: "100%" }}>
-              <SelectValue placeholder="Todos los estados" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all">Todos los estados</SelectItem>
-              <SelectItem value="OPEN">Sin salida registrada</SelectItem>
-              <SelectItem value="COMPLETE">Jornada completada</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        {(employeeFilter || dateFrom || dateTo || statusFilter) && (
-          <button className="btn btn-ghost btn-sm attendance-toolbar-clear" type="button" onClick={() => { setEmployeeFilter(""); setDateFrom(""); setDateTo(""); setStatusFilter(""); }}>
-            <X size={14} /> Limpiar filtros
-          </button>
-        )}
-        {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
-        <span className="spacer" />
-        <button className="btn btn-outline btn-sm attendance-toolbar-export" onClick={exportCsv} title="Descarga un archivo CSV para abrirlo en Excel">
-          <Download size={15} />
-          Descargar para Excel
-        </button>
-      </div>
-
-      {canManage && (
-        <details className="recovery-panel surface-material">
-          <summary>
-            <span>
-              <strong>Recuperar un intento de la tablet</strong>
-              <small>Solo si la tablet muestra una referencia de recuperación.</small>
-            </span>
-            <span className="recovery-panel-action">Abrir revisión</span>
-          </summary>
-          <form className="card card-pad recovery-panel-form" onSubmit={reviewKioskAttempt}>
-            <p className="muted recovery-panel-copy">
-              Escribe el código que aparece en la pantalla de la tablet. Conserva el evento original; no corrige horas ni borra fotos.
-            </p>
-            <div style={{ display: "grid", gap: "0.7rem", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
-              <div>
-                <label className="label" htmlFor="kiosk-attempt-nonce">
-                  Código de incidente de la tablet
-                </label>
-                <input
-                  id="kiosk-attempt-nonce"
-                  className="input"
-                  value={attemptNonce}
-                  onChange={(e) => setAttemptNonce(e.target.value)}
-                  placeholder="Ej. A1B2C3"
-                  data-testid="admin-attempt-nonce"
-                />
-              </div>
-              <div>
-                <label className="label" htmlFor="kiosk-attempt-reason">
-                  Motivo
-                </label>
-                <input
-                  id="kiosk-attempt-reason"
-                  className="input"
-                  value={attemptReason}
-                  onChange={(e) => setAttemptReason(e.target.value)}
-                  minLength={3}
-                  maxLength={500}
-                  placeholder="Revisión autorizada"
-                  data-testid="admin-attempt-reason"
-                />
-                <p className="muted" style={{ fontSize: "0.75rem", margin: "0.25rem 0 0" }}>
-                  Máximo 500 caracteres. El servidor rechaza textos más largos o solo espacios.
-                </p>
-              </div>
-            </div>
-            {attemptLookup && (
-              <p className="muted" style={{ marginTop: "0.6rem" }} data-testid="admin-attempt-lookup">
-                {attemptLookup}
-              </p>
-            )}
-            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
-              <button type="button" className="btn btn-outline btn-sm" disabled={reviewingAttempt || !attemptNonce.trim()} onClick={() => void lookupKioskAttempt()}>
-                Consultar intento
-              </button>
-              <button type="submit" className="btn btn-amber btn-sm" disabled={reviewingAttempt || attemptNonce.trim().length < 1 || attemptReason.trim().length < 3}>
-                {reviewingAttempt && <Spinner />}
-                {reviewingAttempt ? "Guardando revisión…" : "Revisar y habilitar tablet"}
-              </button>
-            </div>
-          </form>
-        </details>
-      )}
+      <AttendanceToolbar
+        canManage={canManage}
+        employees={employees}
+        employeeFilter={employeeFilter}
+        onEmployeeChange={setEmployeeFilter}
+        dateFrom={dateFrom}
+        dateTo={dateTo}
+        onDateFromChange={setDateFrom}
+        onDateToChange={setDateTo}
+        statusFilter={statusFilter}
+        onStatusChange={setStatusFilter}
+        onClear={() => {
+          setEmployeeFilter("");
+          setDateFrom("");
+          setDateTo("");
+          setStatusFilter("");
+        }}
+        onExport={exportCsv}
+        refreshing={refreshing && !loading}
+        recovery={{
+          nonce: attemptNonce,
+          reason: attemptReason,
+          lookup: attemptLookup,
+          reviewing: reviewingAttempt,
+          onNonceChange: setAttemptNonce,
+          onReasonChange: setAttemptReason,
+          onLookup: () => void lookupKioskAttempt(),
+          onSubmit: reviewKioskAttempt,
+        }}
+      />
 
       {photosFor && (
-        <AppDialog labelledBy="evidence-dialog-title" onClose={() => setPhotosFor(null)} className="evidence-dialog">
-          <div className="app-dialog-heading"><div><h2 id="evidence-dialog-title">Evidencia fotográfica</h2><p className="muted">Entrada y salida del registro seleccionado.</p></div><AppDialogCloseButton className="btn btn-ghost btn-sm" aria-label="Cerrar evidencia"><X size={15} /></AppDialogCloseButton></div>
-          <div className="evidence-grid">
-            <EvidenceFigure
-              side="check_in"
-              label="Foto de entrada"
-              originalSrc={photoUrls.check_in}
-              stampedSrc={stampedUrls.check_in}
-              stampedAdvertised={Boolean(photoMeta.check_in?.stamped_available)}
-              stampedFailed={stampFailed.check_in}
-              meta={photoMeta.check_in}
-              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
-            />
-            <EvidenceFigure
-              side="check_out"
-              label="Foto de salida"
-              originalSrc={photoUrls.check_out}
-              stampedSrc={stampedUrls.check_out}
-              stampedAdvertised={Boolean(photoMeta.check_out?.stamped_available)}
-              stampedFailed={stampFailed.check_out}
-              meta={photoMeta.check_out}
-              loading={!photoUrls.missing && !photoUrls.check_in && !photoUrls.check_out}
-            />
+        <AppDialog
+          labelledBy="evidence-dialog-title"
+          describedBy="evidence-dialog-description"
+          onClose={() => setPhotosFor(null)}
+          className="evidence-dialog"
+        >
+          <header className="evidence-dialog__header">
+            <div className="evidence-dialog__heading">
+              <h2 id="evidence-dialog-title">Evidencia fotográfica</h2>
+              <p className="evidence-dialog__subject" data-testid="evidence-subject">
+                <strong>{evidenceRecord?.employee_name ?? "Nombre no disponible"}</strong>
+                {evidenceRecord?.work_date && (
+                  <>
+                    <span className="evidence-dialog__separator" aria-hidden="true"> · </span>
+                    <time dateTime={evidenceRecord.work_date}>{formatOperationalDate(evidenceRecord.work_date)}</time>
+                  </>
+                )}
+              </p>
+            </div>
+            <AppDialogCloseButton className="btn btn-ghost evidence-dialog__close" aria-label="Cerrar evidencia">
+              <X size={18} />
+            </AppDialogCloseButton>
+          </header>
+          <div className="evidence-dialog__body">
+            <p className="evidence-dialog__intro" id="evidence-dialog-description">
+              La versión <strong>con sello</strong> integra los datos del registro (hora y ubicación); la{" "}
+              <strong>original</strong> es la captura de la cámara, sin ese sello.
+            </p>
+            {photoUrls.missing ? (
+              <p className="evidence-dialog__empty" role="status">
+                {photoUrls.missing}
+              </p>
+            ) : (
+              <div className="evidence-grid">
+                <EvidenceFigure
+                  side="check_in"
+                  label="Entrada"
+                  originalSrc={photoUrls.check_in}
+                  stampedSrc={stampedUrls.check_in}
+                  stampedAdvertised={Boolean(photoMeta.check_in?.stamped_available)}
+                  stampedFailed={stampFailed.check_in}
+                  meta={photoMeta.check_in}
+                  loading={photoLoading}
+                />
+                <EvidenceFigure
+                  side="check_out"
+                  label="Salida"
+                  originalSrc={photoUrls.check_out}
+                  stampedSrc={stampedUrls.check_out}
+                  stampedAdvertised={Boolean(photoMeta.check_out?.stamped_available)}
+                  stampedFailed={stampFailed.check_out}
+                  meta={photoMeta.check_out}
+                  loading={photoLoading}
+                />
+              </div>
+            )}
           </div>
-          {photoUrls.missing && <p className="muted">{photoUrls.missing}</p>}
         </AppDialog>
       )}
 
@@ -949,57 +930,18 @@ export default function AdminAttendancePage() {
         <p className="empty">Sin jornadas en el rango.</p>
       ) : (
         <>
-          <div className="table-wrap attendance-responsive-wrap" style={{ marginBottom: "1rem" }}>
-            <table className={`table attendance-daily-table${canManage ? " has-actions" : ""}`}>
-              <colgroup>
-                <col className="col-employee" /><col className="col-date" /><col className="col-sessions" />
-                <col className="col-duration" /><col className="col-duration" /><col className="col-duration" />
-                <col className="col-duration" /><col className="col-difference" /><col className="col-incidents" />
-                {canManage && <col className="col-action" />}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Empleado</th><th>Fecha</th><th>Sesiones</th><th>Tiempo presente</th>
-                  <th>Refrigerio (descanso)</th><th>Tiempo efectivo</th><th>Jornada esperada</th><th>Saldo del día</th><th>Incidencias</th>{canManage && <th className="table-cell-action">Acción</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {loading && <TableSkeleton rows={3} cols={canManage ? 10 : 9} />}
-                {dailyPagination.pageItems.map((day) => (
-                  <tr key={`${day.employee_id}-${day.work_date}`}>
-                    <td className="table-cell-name" style={{ fontWeight: 600 }} title={day.employee_name ?? "—"}>{day.employee_name ?? "—"}</td>
-                    <td className="num table-cell-nowrap">{formatOperationalDate(day.work_date)}</td>
-                    <td className="num table-cell-nowrap">{day.session_count}</td>
-                    <td className="num table-cell-nowrap">{formatMinutes(day.gross_minutes)}</td>
-                    <td className="num table-cell-nowrap" title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</td>
-                    <td className="num table-cell-nowrap">{formatMinutes(day.worked_minutes)}</td>
-                    <td className="num table-cell-nowrap">{formatMinutes(day.expected_minutes)}</td>
-                    <td className="num table-cell-nowrap">{formatDifference(day.difference_minutes)}</td>
-                    <td>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</td>
-                    {canManage && <td className="table-cell-action"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></td>}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="responsive-table-cards" aria-label="Resumen diario del equipo">
-            {loading && <ResponsiveCardsSkeleton label="Cargando resumen diario" />}
-            {dailyPagination.pageItems.map((day) => (
-              <article className="responsive-table-card" key={`card-${day.employee_id}-${day.work_date}`}>
-                <div className="responsive-table-card__heading"><span className="responsive-table-card__name">{day.employee_name ?? "—"}</span><time className="responsive-table-card__date" dateTime={day.work_date}>{formatOperationalDate(day.work_date)}</time></div>
-                <dl className="responsive-table-card__grid">
-                  <div className="responsive-table-card__item"><dt>Sesiones</dt><dd>{day.session_count}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Tiempo presente</dt><dd>{formatMinutes(day.gross_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Refrigerio (descanso)</dt><dd title={day.break_source === "OVERRIDE" ? `Real: ${day.override_requested_minutes} min` : "Según jornada"}>{formatMinutes(day.break_minutes)}{day.override_limited ? " (limitado)" : ""}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Tiempo efectivo</dt><dd>{formatMinutes(day.worked_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(day.expected_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(day.difference_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Incidencias</dt><dd>{day.incident_codes.length ? <span className="badge badge-amber">{day.incident_codes.map(formatIncidentCode).join(", ")}</span> : <span className="badge badge-green">Sin incidencias</span>}</dd></div>
-                </dl>
-                {canManage && <div className="responsive-table-card__footer"><button className="btn btn-ghost btn-sm" type="button" disabled={day.has_open_entry} title={day.has_open_entry ? "Cierre todas las marcaciones antes de ajustar el refrigerio" : undefined} onClick={(event) => openBreakDialog(day, event.currentTarget)}>Editar refrigerio del día</button></div>}
-              </article>
-            ))}
-          </div>
+          <AttendanceDailyTable
+            days={dailyPagination.pageItems}
+            loading={loading}
+            canManage={canManage}
+            onEditBreak={openBreakDialog}
+          />
+          <AttendanceDailyCards
+            days={dailyPagination.pageItems}
+            loading={loading}
+            canManage={canManage}
+            onEditBreak={openBreakDialog}
+          />
           <TablePagination {...dailyPagination} />
         </>
       )}
@@ -1032,116 +974,23 @@ export default function AdminAttendancePage() {
         <p className="empty">Sin registros con los filtros actuales.</p>
       ) : (
         <>
-          <div className="table-wrap attendance-responsive-wrap">
-            <table className={`table attendance-records-table${canManage ? " has-actions" : ""}`}>
-              <colgroup>
-                <col className="col-employee" /><col className="col-date" /><col className="col-time" /><col className="col-time" />
-                <col className="col-duration" /><col className="col-duration" /><col className="col-duration" /><col className="col-status" />
-                {canManage && <col className="col-action" />}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Empleado</th>
-                  <th>Fecha</th>
-                  <th>Entrada</th>
-                  <th>Salida</th>
-                  <th>Trabajado</th>
-                  <th>Jornada esperada</th>
-                  <th>Saldo del día</th>
-                  <th>Estado</th>
-                  {canManage && <th className="table-cell-action">Acciones</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {loading && <TableSkeleton rows={5} cols={canManage ? 9 : 8} />}
-                {recordsPagination.pageItems.map((record) => (
-                  <tr key={record.id}>
-                    <td className="table-cell-name" title={`${record.employee_name ?? "—"}${record.job_role_name ? ` · ${record.job_role_name}` : ""}`}>
-                      <Link to={`/admin/employees/${record.employee_id}`} style={{ fontWeight: 600 }}>
-                        {record.employee_name ?? "—"}
-                      </Link>
-                      <span className="muted" style={{ marginLeft: "0.4rem", fontSize: "0.75rem" }}>
-                        {record.job_role_name ?? ""}
-                      </span>
-                    </td>
-                    <td className="num table-cell-nowrap">{formatOperationalDate(record.work_date)}</td>
-                    <td className="num table-cell-nowrap">{formatClock(record.check_in_at)}</td>
-                    <td className="num table-cell-nowrap">{formatClock(record.check_out_at)}</td>
-                    <td className="num table-cell-nowrap">{formatMinutes(record.worked_minutes)}</td>
-                    <td className="num table-cell-nowrap">{formatMinutes(record.expected_minutes)}</td>
-                    <td
-                      className="num table-cell-nowrap"
-                      style={{
-                        color:
-                          record.difference_minutes === null
-                            ? "var(--muted)"
-                            : record.difference_minutes < 0
-                              ? "#9a5b00"
-                              : record.difference_minutes > 0
-                                ? "var(--dark-green)"
-                                : "var(--muted)",
-                      }}
-                    >
-                      {formatDifference(record.difference_minutes)}
-                    </td>
-                    <td>
-                      {record.status === "OPEN" ? (
-                        <span className="badge badge-amber">Sin salida</span>
-                      ) : (
-                        <span className="badge badge-green">Completada</span>
-                      )}
-                    </td>
-                    {canManage && (
-                      <td className="table-cell-action">
-                        <div className="attendance-record-actions">
-                        <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos">
-                          <Camera size={18} />
-                        </button>
-                        <button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro">
-                          <Pencil size={18} />
-                        </button>
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="responsive-table-cards" aria-label="Detalle de marcaciones">
-            {loading && <ResponsiveCardsSkeleton label="Cargando detalle de marcaciones" />}
-            {recordsPagination.pageItems.map((record) => (
-              <article className="responsive-table-card" key={`card-${record.id}`}>
-                <div className="responsive-table-card__heading"><span className="responsive-table-card__name"><Link to={`/admin/employees/${record.employee_id}`}>{record.employee_name ?? "—"}</Link>{record.job_role_name && <span className="muted" style={{ display: "block", fontSize: "0.78rem", fontWeight: 400 }}>{record.job_role_name}</span>}</span><time className="responsive-table-card__date" dateTime={record.work_date}>{formatOperationalDate(record.work_date)}</time></div>
-                <dl className="responsive-table-card__grid">
-                  <div className="responsive-table-card__item"><dt>Entrada</dt><dd>{formatClock(record.check_in_at)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Salida</dt><dd>{formatClock(record.check_out_at)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Trabajado</dt><dd>{formatMinutes(record.worked_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Jornada esperada</dt><dd>{formatMinutes(record.expected_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Saldo del día</dt><dd>{formatDifference(record.difference_minutes)}</dd></div>
-                  <div className="responsive-table-card__item"><dt>Estado</dt><dd>{record.status === "OPEN" ? <span className="badge badge-amber">Sin salida</span> : <span className="badge badge-green">Completada</span>}</dd></div>
-                </dl>
-                {canManage && <div className="responsive-table-card__footer attendance-record-actions"><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => void loadPhotos(record.id)} aria-label={`Ver fotos de ${record.employee_name ?? "este empleado"}`} title="Ver fotos"><Camera size={18} /></button><button className="btn btn-ghost attendance-record-action" type="button" onClick={() => startCorrection(record)} aria-label={`Corregir registro de ${record.employee_name ?? "este empleado"}`} title="Corregir registro"><Pencil size={18} /></button></div>}
-              </article>
-            ))}
-          </div>
+          <AttendanceRecordsTable
+            records={recordsPagination.pageItems}
+            loading={loading}
+            canManage={canManage}
+            onPhotos={loadPhotos}
+            onCorrect={startCorrection}
+          />
+          <AttendanceRecordsCards
+            records={recordsPagination.pageItems}
+            loading={loading}
+            canManage={canManage}
+            onPhotos={loadPhotos}
+            onCorrect={startCorrection}
+          />
           <TablePagination {...recordsPagination} />
         </>
       )}
     </AdminShell>
-  );
-}
-
-function ResponsiveCardsSkeleton({ label }: { label: string }) {
-  return (
-    <div className="responsive-table-card" aria-busy="true" aria-label={label}>
-      <div className="skeleton" style={{ width: "62%", height: 17 }} />
-      <div className="responsive-table-card__grid">
-        <div className="skeleton" style={{ height: 34 }} />
-        <div className="skeleton" style={{ height: 34 }} />
-        <div className="skeleton" style={{ height: 34 }} />
-        <div className="skeleton" style={{ height: 34 }} />
-      </div>
-    </div>
   );
 }

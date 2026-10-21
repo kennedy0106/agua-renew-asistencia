@@ -2,8 +2,18 @@
 // La sesión la provee app/admin/layout.tsx (AdminSessionContext); este shell
 // solo la consume, así el rol está disponible desde el primer render.
 
-import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
+import { useAdminScrollContinuity } from "@/lib/adminScrollContinuity";
 import { clearAdminSessionHint, useAdminSession } from "./AdminSession";
 import AppDialog, { AppDialogCloseButton } from "./AppDialog";
 import IntentLink from "./IntentLink";
@@ -85,6 +95,93 @@ function limaTodayLabel(): string {
   }).format(new Date());
 }
 
+type ShellMetadata = {
+  pathname: string;
+  title?: string;
+  subtitle?: string;
+};
+
+type ShellRegistration = ShellMetadata & { token: object };
+
+type AdminShellHostValue = {
+  register: (registration: ShellRegistration) => void;
+  unregister: (token: object) => void;
+};
+
+const AdminShellHostContext = createContext<AdminShellHostValue | null>(null);
+
+function sameRegistration(a: ShellRegistration, b: ShellRegistration): boolean {
+  return (
+    a.token === b.token &&
+    a.pathname === b.pathname &&
+    a.title === b.title &&
+    a.subtitle === b.subtitle
+  );
+}
+
+/**
+ * Host persistente del shell. Se monta una sola vez en la rama privada de
+ * AdminLayout y envuelve al Outlet: sidebar, topbar y main conservan la misma
+ * identidad DOM entre páginas. Las páginas siguen usando <AdminShell> como
+ * adaptador, así que ninguna necesita cambiar para integrarse.
+ */
+export function AdminShellLayout({ children }: { children: React.ReactNode }) {
+  const { pathname, key: locationKey } = useLocation();
+  const navigationType = useNavigationType();
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const registrationRef = useRef<ShellRegistration | null>(null);
+  const [registration, setRegistration] = useState<ShellRegistration | null>(null);
+
+  const register = useCallback((next: ShellRegistration) => {
+    registrationRef.current = next;
+    setRegistration((previous) =>
+      previous && sameRegistration(previous, next) ? previous : next,
+    );
+  }, []);
+  const unregister = useCallback((token: object) => {
+    if (registrationRef.current?.token !== token) return;
+    registrationRef.current = null;
+    setRegistration(null);
+  }, []);
+  const host = useMemo(() => ({ register, unregister }), [register, unregister]);
+
+  useAdminScrollContinuity({ locationKey, navigationType });
+
+  // Al confirmar una nueva entrada, el foco pasa al encabezado de la sección
+  // sin desplazar la página. La carga inicial no roba el foco.
+  const lastFocusedKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (lastFocusedKeyRef.current === null) {
+      lastFocusedKeyRef.current = locationKey;
+      return;
+    }
+    if (lastFocusedKeyRef.current === locationKey) return;
+    lastFocusedKeyRef.current = locationKey;
+    titleRef.current?.focus({ preventScroll: true });
+  }, [locationKey]);
+
+  // Un registro solo vale para la ruta que lo emitió. Mientras se confirma la
+  // página nueva no se conserva el título de la anterior.
+  const activeMetadata = registration?.pathname === pathname ? registration : null;
+
+  return (
+    <AdminShellHostContext.Provider value={host}>
+      <AdminShellChrome
+        title={activeMetadata?.title}
+        subtitle={activeMetadata?.subtitle}
+        titleRef={titleRef}
+      >
+        {children}
+      </AdminShellChrome>
+    </AdminShellHostContext.Provider>
+  );
+}
+
+/**
+ * Adaptador que siguen usando las páginas. Dentro del host solo registra los
+ * metadatos de la sección y devuelve el contenido; sin host conserva el shell
+ * autónomo de siempre (pruebas y montajes aislados).
+ */
 export default function AdminShell({
   children,
   title,
@@ -93,6 +190,35 @@ export default function AdminShell({
   children: React.ReactNode;
   title?: string;
   subtitle?: string;
+}) {
+  const host = useContext(AdminShellHostContext);
+  const { pathname } = useLocation();
+
+  useLayoutEffect(() => {
+    if (!host) return;
+    const token = {};
+    host.register({ token, pathname, title, subtitle });
+    return () => host.unregister(token);
+  }, [host, pathname, subtitle, title]);
+
+  if (host) return <>{children}</>;
+  return (
+    <AdminShellChrome title={title} subtitle={subtitle}>
+      {children}
+    </AdminShellChrome>
+  );
+}
+
+function AdminShellChrome({
+  children,
+  title,
+  subtitle,
+  titleRef,
+}: {
+  children: React.ReactNode;
+  title?: string;
+  subtitle?: string;
+  titleRef?: React.RefObject<HTMLHeadingElement | null>;
 }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -115,7 +241,9 @@ export default function AdminShell({
   function closeMenu({ returnFocus = true }: { returnFocus?: boolean } = {}) {
     const wasOpen = menuOpen;
     setMenuOpen(false);
-    if (returnFocus && wasOpen) window.requestAnimationFrame(() => menuButtonRef.current?.focus());
+    if (returnFocus && wasOpen) {
+      window.requestAnimationFrame(() => menuButtonRef.current?.focus({ preventScroll: true }));
+    }
   }
 
   useEffect(() => {
@@ -136,13 +264,14 @@ export default function AdminShell({
       const focusable = sidebarRef.current?.querySelectorAll<HTMLElement>(
         'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
       );
-      focusable?.[0]?.focus();
+      // Evita que abrir el drawer desplace la página o el propio menú al inicio.
+      focusable?.[0]?.focus({ preventScroll: true });
     });
     const keepFocusInDrawer = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         setMenuOpen(false);
-        window.requestAnimationFrame(() => menuButtonRef.current?.focus());
+        window.requestAnimationFrame(() => menuButtonRef.current?.focus({ preventScroll: true }));
         return;
       }
       if (event.key !== "Tab") return;
@@ -154,10 +283,10 @@ export default function AdminShell({
       const last = focusable[focusable.length - 1];
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
-        last.focus();
+        last.focus({ preventScroll: true });
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault();
-        first.focus();
+        first.focus({ preventScroll: true });
       }
     };
     window.addEventListener("keydown", keepFocusInDrawer);
@@ -252,14 +381,14 @@ export default function AdminShell({
               <p className="nav-label">{group.label}</p>
               {group.hint && <p className="nav-hint">{group.hint}</p>}
               {group.items.map((item) => (
-                <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu(); }} />
+                <NavLink key={item.href} item={item} active={item.href === "/admin/dashboard" ? pathname === item.href : pathname.startsWith(item.href)} onNavigate={(isCurrent) => { beginNavigation(isCurrent); closeMenu({ returnFocus: isCurrent }); }} />
               ))}
             </div>
           ))}
         </nav>
         {user && (
           <div className="sidebar-user">
-            <IntentLink href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta" onNavigate={() => { beginNavigation(pathname === "/admin/account"); closeMenu(); }}>
+            <IntentLink href="/admin/account" className="sidebar-account" aria-label="Abrir mi cuenta" onNavigate={() => { const isCurrent = pathname === "/admin/account"; beginNavigation(isCurrent); closeMenu({ returnFocus: isCurrent }); }}>
               <div className="avatar">{user.username.charAt(0).toUpperCase()}</div>
               <div className="meta">
                 <div className="name">{user.username}</div>
@@ -314,8 +443,10 @@ export default function AdminShell({
       <div className={`main${navigating ? " is-navigating" : ""}`} aria-busy={navigating}>
         <header className="topbar">
           <div className="topbar-copy">
-            <div>
-              <h1 className="topbar-title">{sectionTitle}</h1>
+            <div className="topbar-heading">
+              <h1 ref={titleRef} id="admin-page-title" className="topbar-title" tabIndex={-1}>
+                {sectionTitle}
+              </h1>
               {sectionSub && <div className="topbar-sub">{sectionSub}</div>}
             </div>
           </div>
@@ -338,10 +469,10 @@ export default function AdminShell({
                 href="/asistencia"
                 target="_blank"
                 rel="noreferrer"
-                className="btn btn-outline btn-sm topbar-action topbar-action--secondary"
+                className="btn btn-outline btn-sm topbar-action topbar-action--secondary topbar-public-link"
                 title="Abre el marcador público para la tablet de entrada"
               >
-                <Chart size={15} /> <span>Marcación pública</span>
+                <Chart size={15} /> <span className="topbar-public-label">Marcación pública</span>
               </IntentLink>
             )}
             {user && (

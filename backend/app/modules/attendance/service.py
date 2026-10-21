@@ -1275,14 +1275,6 @@ class AttendanceService:
         except ObjectStoreError as exc:
             self._raise_store_http(exc)
         bucket = evidence.storage_bucket or store.bucket
-        key = f"attendance/{evidence.employee_id}/{evidence.nonce}.stamped.jpg"
-        try:
-            return store.get_bytes(key, bucket=bucket), "image/jpeg"
-        except ObjectNotFoundError:
-            pass
-        except ObjectStoreError as exc:
-            self._raise_store_http(exc)
-        original, _content_type = self.get_evidence_payload(evidence_id)
         from importlib import import_module
 
         try:
@@ -1292,6 +1284,16 @@ class AttendanceService:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="El sello de evidencia no está disponible; la marcación permanece confirmada",
             ) from exc
+        # Una revisión visual no sobrescribe derivados anteriores ni el original.
+        # Las fotos históricas generan el sello vigente al consultarlas.
+        key = f"attendance/{evidence.employee_id}/{evidence.nonce}.stamped-{media.STAMP_VERSION}.jpg"
+        try:
+            return store.get_bytes(key, bucket=bucket), "image/jpeg"
+        except ObjectNotFoundError:
+            pass
+        except ObjectStoreError as exc:
+            self._raise_store_http(exc)
+        original, _content_type = self.get_evidence_payload(evidence_id)
         try:
             rendered = media.render_stamp(
                 original,

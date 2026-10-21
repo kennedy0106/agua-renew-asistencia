@@ -162,6 +162,42 @@ function storedAttemptToken(): string | null {
   }
 }
 
+function installQrMediaDouble() {
+  const streams: Array<{ stream: MediaStream; trackStop: ReturnType<typeof vi.fn> }> = [];
+  const constraints: Array<MediaStreamConstraints | undefined> = [];
+  const getUserMedia = vi.fn(async (requested?: MediaStreamConstraints) => {
+    constraints.push(requested);
+    const trackStop = vi.fn();
+    const stream = { getTracks: () => [{ stop: trackStop }] } as unknown as MediaStream;
+    streams.push({ stream, trackStop });
+    return stream;
+  });
+  Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+  return { getUserMedia, streams, constraints };
+}
+
+/** Lector QR falso: los cuadros los decide la prueba, no el tiempo real. */
+function installBarcodeDetector() {
+  let payload: string[] = [];
+  const detectorMock = vi.fn(async () => payload.map((rawValue) => ({ rawValue })));
+  class Detector {
+    static formats: string[] = [];
+    constructor(options: { formats: string[] }) {
+      Detector.formats = options.formats;
+    }
+    detect = detectorMock;
+  }
+  Object.defineProperty(window, "BarcodeDetector", { configurable: true, value: Detector });
+  return {
+    detect: detectorMock,
+    formats: () => Detector.formats,
+    setPayload: (values: string[]) => {
+      payload = values;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Unexpected network request")));
   monotonicOffset = 0;
@@ -174,6 +210,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetMediaDouble();
+  delete (window as unknown as { BarcodeDetector?: unknown }).BarcodeDetector;
 });
 
 describe("kiosk identifier keyboard", () => {
@@ -214,6 +251,19 @@ describe("kiosk identifier keyboard", () => {
     await user.keyboard("87654321");
     expect(input).toHaveValue("87654321");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("cambia de DNI a Código por teclado sin retener el teclado numérico", async () => {
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    const codeTab = screen.getByRole("tab", { name: /código/i });
+    codeTab.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByTestId("kiosk-identifier")).toHaveAttribute("inputmode", "text");
+    expect(document.querySelector(".kiosk-keypad")).toBeNull();
+    expect(screen.getByTestId("kiosk-identify")).not.toBeDisabled();
   });
 
   it("keeps the native text keyboard for worker codes and restores DNI mode", async () => {
@@ -289,8 +339,74 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
     expect(paths[0]).toContain("/api/v1/attendance/identify");
   });
 
-  it("una ubicación denegada bloquea sin llamar al API, sin cámara y con reintento real", async () => {
+  it("una ubicación denegada abre una alerta accesible, no llama al API y preserva el DNI", async () => {
     const geolocation = installGeolocation((_success, error) => error({ code: 1, message: "denied" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    const input = screen.getByTestId("kiosk-identifier");
+    await user.type(input, "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+    expect(dialog).toHaveAttribute("aria-describedby", "kiosk-location-dialog-description");
+    expect(dialog).toHaveTextContent(/permiso de ubicación/i);
+    expect(dialog).toHaveTextContent(/supervisor/i);
+    expect(screen.getByTestId("kiosk-location-dialog-description")).toHaveTextContent(/dirección/i);
+    // No se duplica el anuncio: la alerta vive sólo en el alertdialog.
+    expect(screen.queryByTestId("kiosk-location-error")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input).toHaveValue("71112233");
+    await waitFor(() => expect(screen.getByTestId("kiosk-location-back")).toHaveFocus());
+    expect(screen.getByTestId("kiosk-location-dialog-title")).not.toHaveFocus();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("kiosk-capture-now")).toBeNull();
+    expect(screen.queryByTestId("kiosk-employee-name")).toBeNull();
+    expect(document.querySelector("[data-phase='incidencia']")).toBeNull();
+
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+    await waitFor(() => expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alertdialog", { name: "Activa la ubicación para continuar" })).toBeInTheDocument();
+    expect(input).toHaveValue("71112233");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("un reintento con ubicación válida continúa una sola vez y cierra la alerta", async () => {
+    installMediaDouble();
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else success(successPosition());
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+
+    expect(await screen.findByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("/identify"))).toHaveLength(1);
+  });
+
+  it("conserva el foco dentro de la alerta durante la lectura y Volver cancela", async () => {
+    const media = installMediaDouble();
+    const gate: { success?: GeoSuccess } = {};
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else gate.success = success;
+    });
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
@@ -298,17 +414,165 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
 
     await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
     await user.click(screen.getByTestId("kiosk-identify"));
+    const dialog = await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
 
-    const alert = await screen.findByTestId("kiosk-location-error");
-    expect(alert).toHaveTextContent(/permiso de ubicación/i);
+    // Esperar el foco inicial programado por AppDialog antes de interactuar.
+    await waitFor(() => expect(screen.getByTestId("kiosk-location-back")).toHaveFocus());
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+    const retry = screen.getByTestId("kiosk-location-retry");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+    expect(retry).toHaveTextContent(/comprobando/i);
+    expect(retry).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    fireEvent.click(retry);
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+
+    await user.click(screen.getByTestId("kiosk-location-back"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("kiosk-capture-now")).toBeNull();
-    expect(screen.queryByTestId("kiosk-employee-name")).toBeNull();
-    expect(document.querySelector("[data-phase='incidencia']")).toBeNull();
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      gate.success?.(successPosition());
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+  });
+
+  it("Volver cierra la alerta, conserva el DNI y restaura el foco", async () => {
+    installGeolocation((_success, error) => error({ code: 1, message: "denied" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+
+    await user.click(screen.getByTestId("kiosk-location-back"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByTestId("kiosk-identifier")).toHaveValue("71112233");
+    expect(screen.getByTestId("kiosk-identify")).toHaveFocus();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Escape cierra la alerta y restaura el foco sin identificar", async () => {
+    installGeolocation((_success, error) => error({ code: 1, message: "denied" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByTestId("kiosk-identifier")).toHaveValue("71112233");
+    expect(screen.getByTestId("kiosk-identify")).toHaveFocus();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("un callback tardío después de cerrar no identifica ni deja bloqueos", async () => {
+    const gate: { success?: GeoSuccess } = {};
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else gate.success = success;
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+    await waitFor(() =>
+      expect(screen.getByTestId("kiosk-location-retry")).toHaveAttribute("aria-disabled", "true"),
+    );
+    await user.keyboard("{Escape}");
+    await act(async () => {
+      gate.success?.(successPosition());
+    });
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("kiosk-identify")).not.toBeDisabled();
+    expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+  });
+
+  it("Escape durante la lectura bloquea Reintentar hasta terminar la salida", async () => {
+    const media = installMediaDouble();
+    const gate: { success?: GeoSuccess } = {};
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else gate.success = success;
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+    const retry = screen.getByTestId("kiosk-location-retry");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    // La ventana sigue montada durante 170 ms; el ref de cierre ya está activo.
+    expect(document.querySelector(".dialog-backdrop.dialog-portal")).toHaveAttribute("data-motion-state", "exiting");
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(retry).toHaveAttribute("aria-disabled", "false");
+    expect(retry).toHaveTextContent("Reintentar");
+    fireEvent.click(retry);
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await act(async () => {
+      gate.success?.(successPosition());
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+  });
+
+  it("un nuevo montaje después de Volver puede reintentar normalmente", async () => {
+    installMediaDouble();
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else success(successPosition());
+    });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" });
+    await user.click(screen.getByTestId("kiosk-location-back"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
 
     await user.click(screen.getByTestId("kiosk-identify"));
+    expect(await screen.findByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
     expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.filter((call) => String(call[0]).includes("/identify"))).toHaveLength(1);
   });
 
   it("aplica su propio plazo de 20 segundos cuando la geolocalización nunca responde", async () => {
@@ -325,12 +589,29 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
         await vi.advanceTimersByTimeAsync(20000);
       });
 
-      expect(screen.getByTestId("kiosk-location-error")).toHaveTextContent(/20 segundos/i);
+      expect(screen.getByRole("alertdialog", { name: "La ubicación está tardando demasiado" })).toBeInTheDocument();
+      expect(screen.getByTestId("kiosk-location-dialog-description")).toHaveTextContent(/20 segundos/i);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(screen.queryByTestId("kiosk-capture-now")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("un fallo no disponible explica el estado sin asegurar la causa", async () => {
+    installGeolocation((_success, error) => error({ code: 2, message: "unavailable" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "No pudimos obtener tu ubicación" });
+    expect(dialog).toHaveTextContent(/no entregó una ubicación/i);
+    expect(dialog).not.toHaveTextContent(/GPS apagado/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("bloquea lecturas imprecisas o inválidas y acepta el límite de 50 m", async () => {
@@ -344,17 +625,26 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
 
     await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
     await user.click(screen.getByTestId("kiosk-identify"));
-    expect(await screen.findByTestId("kiosk-location-error")).toHaveTextContent(/50 metros/i);
+    expect(await screen.findByRole("alertdialog", { name: "Necesitamos una ubicación más precisa" })).toBeInTheDocument();
+    expect(screen.getByTestId("kiosk-location-dialog-description")).toHaveTextContent(/50 metros/i);
+    expect(screen.getByTestId("kiosk-location-dialog-description")).toHaveTextContent(/Reintentar/i);
     expect(fetchMock).not.toHaveBeenCalled();
 
     accuracy = 0;
-    await user.click(screen.getByTestId("kiosk-identify"));
-    await waitFor(() => expect(screen.getByTestId("kiosk-location-error")).not.toHaveTextContent(/50 metros/i));
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+    await waitFor(() =>
+      expect(screen.getByTestId("kiosk-location-dialog-title")).toHaveTextContent("La ubicación recibida no es válida"),
+    );
+    expect(screen.getByTestId("kiosk-location-dialog-description")).toHaveTextContent(/lectura incompleta/i);
+    await waitFor(() =>
+      expect(screen.getByTestId("kiosk-location-retry")).toHaveAttribute("aria-disabled", "false"),
+    );
     expect(fetchMock).not.toHaveBeenCalled();
 
     accuracy = 50;
-    await user.click(screen.getByTestId("kiosk-identify"));
+    await user.click(screen.getByTestId("kiosk-location-retry"));
     expect(await screen.findByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -739,5 +1029,167 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
     expect(paths.filter((path) => path.includes("/attempt/status"))).toHaveLength(1);
     expect(storedAttemptToken()).toBe("legacy-plain");
     expect(storedAttemptToken()).not.toBe("legacy-other");
+  });
+});
+
+describe("kiosco alerta de ubicación al escanear QR", () => {
+  it("conserva el valor leído para Reintentar sin reabrir el escáner", async () => {
+    const media = installQrMediaDouble();
+    const detector = installBarcodeDetector();
+    let attempt = 0;
+    const geolocation = installGeolocation((success, error) => {
+      attempt += 1;
+      if (attempt === 1) error({ code: 1, message: "denied" });
+      else success(successPosition());
+    });
+    const identifyBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/identify")) {
+        identifyBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+        return jsonResponse(identifyResponse("tok-ana"));
+      }
+      return jsonResponse({ detail: "inesperado" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.click(screen.getByTestId("kiosk-scan-qr"));
+    await waitFor(() => expect(media.getUserMedia).toHaveBeenCalledTimes(1));
+    detector.setPayload(["EMP-777"]);
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" }, { timeout: 3000 });
+    expect(dialog).toBeInTheDocument();
+    expect(media.streams[0].trackStop).toHaveBeenCalled();
+    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("kiosk-identifier")).toHaveValue("");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("kiosk-location-retry"));
+
+    expect(await screen.findByTestId("kiosk-employee-name", {}, { timeout: 3000 })).toHaveTextContent("Ana Prueba");
+    expect(identifyBodies).toEqual([{ identifier: "AR:EMP-777" }]);
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+    // La primera cámara fue el escáner QR; la segunda, la cámara frontal normal.
+    expect(media.constraints[0]).toMatchObject({ video: { facingMode: { ideal: "environment" } } });
+    expect(media.constraints[1]).toMatchObject({ video: { facingMode: "user" } });
+    expect(media.constraints).toHaveLength(2);
+  });
+
+  it("Volver limpia el valor temporal del QR y no identifica ni reabre la cámara", async () => {
+    const media = installQrMediaDouble();
+    const detector = installBarcodeDetector();
+    const geolocation = installGeolocation((_success, error) => error({ code: 1, message: "denied" }));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+
+    await user.click(screen.getByTestId("kiosk-scan-qr"));
+    await waitFor(() => expect(media.getUserMedia).toHaveBeenCalledTimes(1));
+    detector.setPayload(["EMP-777"]);
+    await screen.findByRole("alertdialog", { name: "Activa la ubicación para continuar" }, { timeout: 3000 });
+
+    await user.click(screen.getByTestId("kiosk-location-back"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByTestId("kiosk-identifier")).toHaveValue("");
+
+    await user.click(screen.getByTestId("kiosk-identify"));
+    expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+  });
+});
+
+describe("kiosco escaneo QR con el reloj en marcha", () => {
+  it("mantiene una sola cámara abierta entre rerenders del reloj e identifica el QR una sola vez", async () => {
+    vi.useFakeTimers();
+    try {
+      const media = installQrMediaDouble();
+      const detector = installBarcodeDetector();
+      const geolocation = installGeolocation((success) => success(successPosition()));
+      const identifyBodies: unknown[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/identify")) {
+          identifyBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+          return jsonResponse(identifyResponse("tok-ana"));
+        }
+        return jsonResponse({ detail: "inesperado" }, 404);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      render(<AsistenciaPage />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-scan-qr"));
+      });
+      expect(document.querySelector("[data-phase='escaneando_qr']")).not.toBeNull();
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(media.constraints[0]).toMatchObject({ video: { facingMode: { ideal: "environment" } } });
+      expect(detector.formats()).toEqual(["qr_code"]);
+
+      // Tres lecturas del reloj (un rerender por segundo) sin reabrir la cámara.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(detector.detect.mock.calls.length).toBeGreaterThan(1);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // El siguiente cuadro sí trae el QR: se identifica exactamente una vez.
+      detector.setPayload(["EMP-777"]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      const identifyCalls = fetchMock.mock.calls.filter((call) => String(call[0]).includes("/identify"));
+      expect(identifyCalls).toHaveLength(1);
+      expect(identifyBodies).toEqual([{ identifier: "AR:EMP-777" }]);
+      // La ubicación sigue siendo requisito previo: se leyó antes de identificar.
+      expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
+      // Al entregar el valor se cierra la cámara del QR y sigue el flujo normal.
+      expect(media.streams[0].trackStop).toHaveBeenCalled();
+      expect(screen.getByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancelar el escaneo detiene la cámara del QR sin identificar ni reabrirla", async () => {
+    vi.useFakeTimers();
+    try {
+      const media = installQrMediaDouble();
+      const detector = installBarcodeDetector();
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const view = render(<AsistenciaPage />);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-scan-qr"));
+      });
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+
+      detector.setPayload(["EMP-777"]);
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("kiosk-cancel-qr"));
+      });
+      expect(media.streams[0].trackStop).toHaveBeenCalled();
+      expect(document.querySelector("[data-phase='identificando']")).not.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // Un cuadro pendiente ya no identifica ni vuelve a abrir la cámara.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+
+      view.unmount();
+      expect(media.streams[0].trackStop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

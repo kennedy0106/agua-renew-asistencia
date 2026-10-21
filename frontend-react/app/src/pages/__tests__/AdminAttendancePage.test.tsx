@@ -146,20 +146,31 @@ describe("Admin — visor privado de evidencia", () => {
     const dialog = await openViewer();
 
     await waitFor(() => expect(stampedSpy).toHaveBeenCalledWith("ev-in"));
+    expect(within(dialog).getByTestId("evidence-subject")).toHaveTextContent(/Ana Prueba/);
+    expect(within(dialog).getByTestId("evidence-subject")).toHaveTextContent(/16\/10\/2026/);
+    expect(within(dialog).getByText(/integra los datos del registro/i)).toBeInTheDocument();
+
     const stamped = await within(dialog).findByTestId("evidence-image-check_in");
     expect(stamped).toHaveAttribute("src", "blob:stamped-in");
     expect(stamped).toHaveAttribute("alt", expect.stringMatching(/sello/i));
-    expect(within(dialog).getByTestId("evidence-version-check_in")).toHaveTextContent(/sello/i);
+    expect(within(dialog).getByTestId("evidence-version-check_in")).toHaveTextContent(/con sello/i);
     const stampedDownload = within(dialog).getByTestId("evidence-stamped-download-check_in");
     expect(stampedDownload).toHaveAttribute("href", "blob:stamped-in");
     expect(stampedDownload).toHaveAttribute("download");
+    expect(stampedDownload).toHaveClass("btn-primary");
+    expect(stampedDownload.querySelector("svg")).not.toBeNull();
+    expect(within(dialog).getByTestId("evidence-original-check_in")).toHaveClass("btn-outline");
     expect(within(dialog).queryByTestId("evidence-stamp-warning-check_in")).toBeNull();
+
+    const view = within(dialog).getByRole("group", { name: /vista de la foto de entrada/i });
+    expect(within(view).getByRole("button", { name: /^con sello$/i })).toHaveAttribute("aria-pressed", "true");
+    expect(within(view).getByRole("button", { name: /^original$/i })).toHaveAttribute("aria-pressed", "false");
 
     expect(within(dialog).getByTestId("evidence-official-time-check_in")).toHaveTextContent(/\d{2}:\d{2}/);
     const location = within(dialog).getByTestId("evidence-location-check_in");
     expect(location).toHaveTextContent("-12.0464");
     expect(location).toHaveTextContent("-77.0428");
-    expect(location).toHaveTextContent("12.5 m");
+    expect(location).toHaveTextContent("Precisión ±12.5 m");
     expect(location).toHaveTextContent("Av. Siempre Viva 742");
 
     const link = within(dialog).getByTestId("evidence-maps-check_in");
@@ -197,9 +208,15 @@ describe("Admin — visor privado de evidencia", () => {
     expect(download).toHaveAttribute("href", "blob:original-in");
     expect(download).toHaveAttribute("download");
 
+    const view = within(dialog).getByRole("group", { name: /vista de la foto de entrada/i });
+    const originalView = within(view).getByRole("button", { name: /^original$/i });
     const user = userEvent.setup();
-    await user.click(within(dialog).getByRole("button", { name: /ver original/i }));
+    await user.click(originalView);
+    expect(originalView).toHaveAttribute("aria-pressed", "true");
+    expect(within(view).getByRole("button", { name: /^con sello$/i })).toHaveAttribute("aria-pressed", "false");
     expect(within(dialog).getByTestId("evidence-image-check_in")).toHaveAttribute("src", "blob:original-in");
+    expect(within(dialog).getByTestId("evidence-version-check_in")).toHaveTextContent(/^original$/i);
+    expect(within(dialog).getByTestId("evidence-original-check_in")).toHaveAttribute("href", "blob:original-in");
   });
 
   it("muestra la evidencia histórica como original sin ubicación ni enlace inventado", async () => {
@@ -228,6 +245,8 @@ describe("Admin — visor privado de evidencia", () => {
     expect(within(dialog).getByTestId("evidence-original-check_in")).toHaveAttribute("href", "blob:original-old");
     expect(within(dialog).queryByTestId("evidence-stamp-warning-check_in")).toBeNull();
     expect(within(dialog).queryByTestId("evidence-stamped-download-check_in")).toBeNull();
+    expect(within(dialog).queryByTestId("evidence-toggle-check_in")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /^original$/i })).toBeNull();
     expect(stampedSpy).not.toHaveBeenCalled();
   });
 
@@ -260,6 +279,82 @@ describe("Admin — visor privado de evidencia", () => {
     expect(within(dialog).getByTestId("evidence-version-check_in")).toHaveTextContent(/original/i);
     expect(within(dialog).getByTestId("evidence-original-check_in")).toHaveAttribute("href", "blob:original-in");
     expect(within(dialog).queryByTestId("evidence-stamped-download-check_in")).toBeNull();
+    expect(within(dialog).queryByTestId("evidence-toggle-check_in")).toBeNull();
+  });
+
+  it("redondea la precisión a un decimal y conserva las coordenadas completas en el enlace", async () => {
+    vi.spyOn(attendanceAdminApi, "evidenceMeta").mockResolvedValue({
+      record_id: "rec-1",
+      check_in: {
+        id: "ev-in",
+        captured_at: MARKED_AT,
+        content_type: "image/jpeg",
+        available: true,
+        marked_at: MARKED_AT,
+        location: { ...LOCATION, latitude: -12.04644, longitude: -77.04283, accuracy_m: 12.46 },
+      },
+      check_out: null,
+    });
+    vi.spyOn(attendanceAdminApi, "evidenceImage").mockResolvedValue("blob:original-in");
+
+    renderPage();
+    const dialog = await openViewer();
+    await within(dialog).findByTestId("evidence-image-check_in");
+
+    const location = within(dialog).getByTestId("evidence-location-check_in");
+    expect(location.querySelector(".evidence-meta__accuracy")).toHaveTextContent("Precisión ±12.5 m");
+    expect(location.querySelector(".evidence-meta__coords")).toHaveTextContent("-12.04644, -77.04283");
+    expect(within(dialog).getByTestId("evidence-maps-check_in")).toHaveAttribute(
+      "href",
+      "https://www.google.com/maps/search/?api=1&query=-12.04644%2C-77.04283",
+    );
+  });
+
+  it("no ofrece cambiar a original si esa versión no está disponible", async () => {
+    vi.spyOn(attendanceAdminApi, "evidenceMeta").mockResolvedValue({
+      record_id: "rec-1",
+      check_in: {
+        id: "ev-in",
+        captured_at: MARKED_AT,
+        content_type: "image/jpeg",
+        available: true,
+        marked_at: MARKED_AT,
+        location: LOCATION,
+        stamped_available: true,
+      },
+      check_out: null,
+    });
+    vi.spyOn(attendanceAdminApi, "evidenceImage").mockResolvedValue(null as unknown as string);
+    vi.spyOn(attendanceAdminApi, "evidenceStampedImage").mockResolvedValue("blob:stamped-in");
+
+    renderPage();
+    const dialog = await openViewer();
+    const image = await within(dialog).findByTestId("evidence-image-check_in");
+
+    expect(image).toHaveAttribute("src", "blob:stamped-in");
+    expect(within(dialog).getByTestId("evidence-version-check_in")).toHaveTextContent(/con sello/i);
+    expect(within(dialog).queryByTestId("evidence-toggle-check_in")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /^original$/i })).toBeNull();
+    expect(within(dialog).queryByTestId("evidence-original-check_in")).toBeNull();
+    expect(within(dialog).getByTestId("evidence-stamped-download-check_in")).toBeInTheDocument();
+  });
+
+  it("muestra un solo vacío honesto cuando el registro no tiene fotos", async () => {
+    vi.spyOn(attendanceAdminApi, "evidenceMeta").mockResolvedValue({
+      record_id: "rec-1",
+      check_in: null,
+      check_out: null,
+    });
+    const imageSpy = vi.spyOn(attendanceAdminApi, "evidenceImage");
+
+    renderPage();
+    const dialog = await openViewer();
+
+    expect(await within(dialog).findByText(/anterior a la evidencia/i)).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("evidence-figure-check_in")).toBeNull();
+    expect(within(dialog).queryByTestId("evidence-version-check_in")).toBeNull();
+    expect(within(dialog).queryByText(/descargar/i)).toBeNull();
+    expect(imageSpy).not.toHaveBeenCalled();
   });
 
   it("un jefe (BOSS) conserva el mismo visor privado", async () => {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import AdminShell from "@/components/AdminShell";
 import AppDialog, { AppDialogCloseButton } from "@/components/AppDialog";
 import { useAdminUser } from "@/components/AdminSession";
+import { useAdminViewState } from "@/components/AdminViewState";
 import { useNotifications } from "@/components/Notifications";
 import { Alert, Check, Eye, EyeOff, Key, Plus, Refresh, Search, Shield, User as UserIcon, X } from "@/components/Icons";
 import { InlineLoading, Spinner, TableSkeleton } from "@/components/Loading";
@@ -44,14 +45,17 @@ export default function AdminUsersPage() {
   const [busy, setBusy] = useState(false);
   const { markSaved, isHighlighted } = useRowHighlight();
 
-  // Search & in-memory filters
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "active" | "inactive" | "pending_password">("");
+  // Search & in-memory filters (contexto de vista de la sesión)
+  const [search, setSearch] = useAdminViewState("users.search", "");
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
+  const [roleFilter, setRoleFilter] = useAdminViewState("users.roleFilter", "");
+  const [statusFilter, setStatusFilter] = useAdminViewState<
+    "" | "active" | "inactive" | "pending_password"
+  >("users.statusFilter", "");
 
   // Creation form
   const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [form, setForm] = useState({ username: "", system_role_id: "", employee_id: "" });
   const [createdCredential, setCreatedCredential] = useState<{ username: string; password: string } | null>(null);
   const [credentialNotice, setCredentialNotice] = useState<string | null>(null);
@@ -99,10 +103,12 @@ export default function AdminUsersPage() {
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  // Load data
+  // Carga de listados independiente del rol elegido en el formulario. Al
+  // depender antes de `form.system_role_id`, inicializar ese campo y cada
+  // cambio del selector disparaban otra ronda de usuarios/roles/empleados.
   const load = useCallback(async () => {
     try {
-      if (user?.role !== "ADMIN") return;
+      if (!isAdmin) return;
       setError(null);
       const [list, roleList, empList] = await Promise.all([
         usersApi.list(),
@@ -112,15 +118,17 @@ export default function AdminUsersPage() {
       setUsers(list);
       setRoles(roleList);
       setEmployees(empList);
-      if (roleList.length > 0 && !form.system_role_id) {
-        setForm((current) => ({ ...current, system_role_id: roleList[0].id }));
+      if (roleList.length > 0) {
+        setForm((current) =>
+          current.system_role_id ? current : { ...current, system_role_id: roleList[0].id },
+        );
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Error de conexión con el servidor");
     } finally {
       setLoading(false);
     }
-  }, [user, form.system_role_id]);
+  }, [isAdmin]);
 
   useEffect(() => {
     load();
@@ -164,6 +172,18 @@ export default function AdminUsersPage() {
   const linkedUsers = useMemo(() => users.filter((item) => item.employee_id).length, [users]);
 
   const roleName = useCallback((id: string) => roles.find((role) => role.id === id)?.name ?? "—", [roles]);
+
+  function openCreateDialog() {
+    setFormError(null);
+    setShowForm(true);
+  }
+
+  function closeCreateDialog() {
+    if (busy) return;
+    setShowForm(false);
+    setFormError(null);
+    window.requestAnimationFrame(() => newUserButtonRef.current?.focus());
+  }
 
   function closeCredential() {
     setCreatedCredential(null);
@@ -216,7 +236,7 @@ export default function AdminUsersPage() {
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
-    setError(null);
+    setFormError(null);
     try {
       const created = await usersApi.create({
         username: form.username,
@@ -232,7 +252,7 @@ export default function AdminUsersPage() {
       markSaved(created.id);
       await reload();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo crear el usuario");
+      setFormError(err instanceof ApiError ? err.message : "No se pudo crear el usuario");
     } finally {
       setBusy(false);
     }
@@ -431,20 +451,13 @@ export default function AdminUsersPage() {
           <button
             ref={newUserButtonRef}
             type="button"
-            className={showForm ? "btn btn-outline" : "btn btn-primary"}
+            className="btn btn-primary"
+            aria-haspopup="dialog"
             aria-expanded={showForm}
             aria-controls="users-create-form"
-            onClick={() => setShowForm((value) => !value)}
+            onClick={openCreateDialog}
           >
-            {showForm ? (
-              <>
-                <X size={15} /> Cancelar
-              </>
-            ) : (
-              <>
-                <Plus size={15} /> Nuevo usuario
-              </>
-            )}
+            <Plus size={15} /> Nuevo usuario
           </button>
         </section>
       )}
@@ -520,91 +533,121 @@ export default function AdminUsersPage() {
       )}
 
       {isAdmin && showForm && (
-        <form id="users-create-form" onSubmit={handleCreate} className="users-create-form">
-          <div className="users-create-heading">
+        <AppDialog
+          className="admin-form-dialog users-create-dialog"
+          labelledBy="users-create-title"
+          describedBy="users-create-desc"
+          dismissible={!busy}
+          onClose={closeCreateDialog}
+        >
+          <div className="admin-form-heading">
             <div>
-              <h2>Crear acceso de sistema</h2>
-              <p>
+              <h2 id="users-create-title">Crear acceso de sistema</h2>
+              <p id="users-create-desc">
                 Asigna nombre de usuario, rol y opcionalmente el empleado asociado. La contraseña temporal se generará y
                 mostrará una sola vez.
               </p>
             </div>
+            <AppDialogCloseButton
+              className="btn btn-ghost btn-sm app-dialog-close"
+              aria-label="Cerrar creación de usuario"
+              disabled={busy}
+            >
+              <X size={16} />
+            </AppDialogCloseButton>
           </div>
-          <div className="users-create-fields">
-            <div className="users-field">
-              <label className="label" htmlFor={createUsernameId}>
-                Nombre de usuario
-              </label>
-              <input
-                id={createUsernameId}
-                type="text"
-                className="input"
-                value={form.username}
-                onChange={(event) => setForm({ ...form, username: event.target.value })}
-                required
-                minLength={3}
-                placeholder="Ej. c.rodriguez"
-                autoComplete="username"
-              />
-            </div>
 
-            <div className="users-field">
-              <span className="label" id="create-user-role-label">
-                Rol del sistema
-              </span>
-              <Select
-                value={form.system_role_id}
-                onValueChange={(value) => setForm({ ...form, system_role_id: value })}
-              >
-                <SelectTrigger id="create-user-role" aria-labelledby="create-user-role-label" aria-label="Rol del sistema">
-                  <SelectValue placeholder="Seleccionar rol" />
-                </SelectTrigger>
-                <SelectContent>
-                  {roles.map((role) => (
-                    <SelectItem key={role.id} value={role.id}>
-                      {role.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          <form id="users-create-form" onSubmit={handleCreate} className="admin-form">
+            <div className="admin-form-grid">
+              <div className="admin-field users-field">
+                <label className="label" htmlFor={createUsernameId}>
+                  Nombre de usuario
+                </label>
+                <input
+                  id={createUsernameId}
+                  type="text"
+                  className="input"
+                  value={form.username}
+                  onChange={(event) => setForm({ ...form, username: event.target.value })}
+                  required
+                  minLength={3}
+                  placeholder="Ej. c.rodriguez"
+                  autoComplete="username"
+                  disabled={busy}
+                  data-autofocus
+                />
+              </div>
 
-            <div className="users-field users-field-wide">
-              <span className="label" id="create-user-employee-label">
-                Empleado vinculado <em>(opcional)</em>
-              </span>
-              <Select
-                value={form.employee_id || "__none"}
-                onValueChange={(value) => setForm({ ...form, employee_id: value === "__none" ? "" : value })}
-              >
-                <SelectTrigger
-                  id="create-user-employee"
-                  aria-labelledby="create-user-employee-label"
-                  aria-label="Empleado vinculado"
+              <div className="admin-field users-field">
+                <span className="label" id="create-user-role-label">
+                  Rol del sistema
+                </span>
+                <Select
+                  value={form.system_role_id}
+                  onValueChange={(value) => setForm({ ...form, system_role_id: value })}
+                  disabled={busy}
                 >
-                  <SelectValue placeholder="— Sin vincular —" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none">— Sin vincular —</SelectItem>
-                  {employees.map((employee) => (
-                    <SelectItem key={employee.id} value={employee.id}>
-                      {employee.first_name} {employee.last_name} ({employee.dni})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="users-field-help">
-                Asocia esta cuenta de acceso con el expediente en nómina para auditoría y firmas.
-              </p>
+                  <SelectTrigger id="create-user-role" aria-labelledby="create-user-role-label" aria-label="Rol del sistema">
+                    <SelectValue placeholder="Seleccionar rol" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {roles.map((role) => (
+                      <SelectItem key={role.id} value={role.id}>
+                        {role.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="admin-field admin-field--full users-field users-field-wide">
+                <span className="label" id="create-user-employee-label">
+                  Empleado vinculado <em>(opcional)</em>
+                </span>
+                <Select
+                  value={form.employee_id || "__none"}
+                  onValueChange={(value) => setForm({ ...form, employee_id: value === "__none" ? "" : value })}
+                  disabled={busy}
+                >
+                  <SelectTrigger
+                    id="create-user-employee"
+                    aria-labelledby="create-user-employee-label"
+                    aria-label="Empleado vinculado"
+                  >
+                    <SelectValue placeholder="— Sin vincular —" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">— Sin vincular —</SelectItem>
+                    {employees.map((employee) => (
+                      <SelectItem key={employee.id} value={employee.id}>
+                        {employee.first_name} {employee.last_name} ({employee.dni})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="users-field-help">
+                  Asocia esta cuenta de acceso con el expediente en nómina para auditoría y firmas.
+                </p>
+              </div>
             </div>
 
-            <div className="users-create-actions">
+            {formError && (
+              <div className="alert alert-error admin-form-error" role="alert">
+                <Alert size={15} className="alert-icon" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            <div className="admin-form-actions">
+              <AppDialogCloseButton className="btn btn-outline" disabled={busy}>
+                Cancelar
+              </AppDialogCloseButton>
               <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy}>
                 {busy ? <Spinner /> : <Plus size={15} />} {busy ? "Creando usuario…" : "Crear usuario"}
               </button>
             </div>
-          </div>
-        </form>
+          </form>
+        </AppDialog>
       )}
 
       <div className="table-wrap users-table-wrap">
