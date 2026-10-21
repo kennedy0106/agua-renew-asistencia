@@ -39,11 +39,16 @@ function deferred<T>() {
 }
 
 function nameInput() {
-  return screen.getByLabelText(/nuevo cargo laboral/i);
+  return screen.getByRole("textbox", { name: /nuevo cargo laboral/i });
 }
 
 function descriptionInput() {
-  return screen.getByLabelText(/descripción del puesto/i);
+  return screen.getByRole("textbox", { name: /descripción del puesto/i });
+}
+
+async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Nuevo cargo" }));
+  return screen.findByRole("dialog", { name: /nuevo cargo laboral/i });
 }
 
 async function leaveAndReturn(view: ReturnType<typeof render>) {
@@ -95,9 +100,10 @@ describe("Admin · cargos: borrador del alta", () => {
     const user = userEvent.setup();
     const view = render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
-    await user.type(screen.getByLabelText(/nuevo cargo laboral/i), "Operario de envasado");
-    await user.type(screen.getByLabelText(/descripción del puesto/i), "Planta de llenado");
+    await user.type(nameInput(), "Operario de envasado");
+    await user.type(descriptionInput(), "Planta de llenado");
 
     // Simula abandonar la pantalla y regresar conservando el provider del shell.
     view.rerender(shell(<div>otra pantalla</div>));
@@ -105,37 +111,46 @@ describe("Admin · cargos: borrador del alta", () => {
 
     view.rerender(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(2));
+    expect(screen.queryByLabelText(/nuevo cargo laboral/i)).toBeNull();
 
-    expect(screen.getByLabelText(/nuevo cargo laboral/i)).toHaveValue("Operario de envasado");
-    expect(screen.getByLabelText(/descripción del puesto/i)).toHaveValue("Planta de llenado");
+    await openCreateDialog(user);
+    expect(nameInput()).toHaveValue("Operario de envasado");
+    expect(descriptionInput()).toHaveValue("Planta de llenado");
   });
 
   it("limpia el borrador solo después de un alta exitosa", async () => {
     const user = userEvent.setup();
     render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
-    await user.type(screen.getByLabelText(/nuevo cargo laboral/i), "Operario de envasado");
-    await user.type(screen.getByLabelText(/descripción del puesto/i), "Planta de llenado");
+    await user.type(nameInput(), "Operario de envasado");
+    await user.type(descriptionInput(), "Planta de llenado");
     await user.click(screen.getByRole("button", { name: "Crear cargo" }));
 
     await waitFor(() => expect(jobRolesApi.create).toHaveBeenCalledWith(
       "Operario de envasado",
       "Planta de llenado",
     ));
-    expect(screen.getByLabelText(/nuevo cargo laboral/i)).toHaveValue("");
-    expect(screen.getByLabelText(/descripción del puesto/i)).toHaveValue("");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /nuevo cargo laboral/i })).toBeNull(),
+    );
+    await openCreateDialog(user);
+    expect(nameInput()).toHaveValue("");
+    expect(descriptionInput()).toHaveValue("");
   });
 
   it("un éxito tardío no borra el borrador nuevo escrito tras salir y volver", async () => {
     const user = userEvent.setup();
     const view = render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
     await user.type(nameInput(), "Primer cargo");
     const pending = await startDelayedCreate();
     await leaveAndReturn(view);
 
+    await openCreateDialog(user);
     await user.clear(nameInput());
     await user.type(nameInput(), "Segundo cargo");
     await user.clear(descriptionInput());
@@ -151,12 +166,14 @@ describe("Admin · cargos: borrador del alta", () => {
     const user = userEvent.setup();
     const view = render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
     await user.type(nameInput(), "Primer cargo");
     await user.type(descriptionInput(), "Descripción original");
     const pending = await startDelayedCreate();
     await leaveAndReturn(view);
 
+    await openCreateDialog(user);
     await user.clear(descriptionInput());
     await user.type(descriptionInput(), "Descripción nueva");
 
@@ -170,11 +187,13 @@ describe("Admin · cargos: borrador del alta", () => {
     const user = userEvent.setup();
     const view = render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
     await user.type(nameInput(), "Primer cargo");
     await user.type(descriptionInput(), "Descripción original");
     const pending = await startDelayedCreate();
     await leaveAndReturn(view);
+    await openCreateDialog(user);
     expect(nameInput()).toHaveValue("Primer cargo");
 
     await act(async () => pending.resolve(createdRole));
@@ -189,6 +208,7 @@ describe("Admin · cargos: borrador del alta", () => {
     vi.mocked(jobRolesApi.create).mockReturnValue(pending.promise);
     render(page());
     await waitFor(() => expect(jobRolesApi.list).toHaveBeenCalledTimes(1));
+    await openCreateDialog(user);
 
     await user.type(nameInput(), "Primer cargo");
     await user.type(descriptionInput(), "Descripción original");
@@ -199,5 +219,7 @@ describe("Admin · cargos: borrador del alta", () => {
 
     await waitFor(() => expect(nameInput()).toHaveValue("Primer cargo"));
     expect(descriptionInput()).toHaveValue("Descripción original");
+    expect(screen.getByRole("dialog", { name: /nuevo cargo laboral/i })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("No se pudo crear el cargo");
   });
 });

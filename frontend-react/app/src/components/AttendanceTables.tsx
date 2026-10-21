@@ -146,66 +146,100 @@ function Balance({ minutes }: { minutes: number | null | undefined }) {
   );
 }
 
-function DailyDetail({ day }: { day: AttendanceDailyItem }) {
+/**
+ * Identidad del desglose: contexto para saber a quién pertenece el detalle,
+ * deliberadamente más ligera que las cifras. El nombre ya aparece en la fila;
+ * aquí solo confirma la asociación sin competir con los datos.
+ */
+function DetailPerson({ name }: { name: string | null | undefined }) {
   return (
-    <dl className="attendance-detail">
-      <div className="attendance-detail__person">
+    <dl className="attendance-detail__person">
+      <div>
         <dt>Empleado</dt>
-        <dd>{day.employee_name ?? "—"}</dd>
-      </div>
-      <div>
-        <dt>Sesiones</dt>
-        <dd className="attendance-num">{day.session_count}</dd>
-      </div>
-      <div>
-        <dt>Presencia</dt>
-        <dd className="attendance-num">{formatTableDuration(day.gross_minutes)}</dd>
-      </div>
-      <div>
-        <dt>Refrigerio aplicado</dt>
-        <dd className="attendance-num">{formatTableDuration(day.break_minutes)}</dd>
-      </div>
-      {day.break_source === "OVERRIDE" && day.override_requested_minutes !== null && (
-        <div>
-          <dt>Refrigerio solicitado</dt>
-          <dd className="attendance-num">{formatTableDuration(day.override_requested_minutes)}</dd>
-        </div>
-      )}
-      <div>
-        <dt>Origen del refrigerio</dt>
-        <dd>
-          {breakSourceLabel(day)}
-          {day.override_limited && (
-            <span className="badge badge-amber attendance-detail__flag">Refrigerio limitado</span>
-          )}
-        </dd>
+        <dd>{name ?? "—"}</dd>
       </div>
     </dl>
   );
 }
 
+function DailyDetail({ day }: { day: AttendanceDailyItem }) {
+  return (
+    <div className="attendance-detail">
+      <DetailPerson name={day.employee_name} />
+      <div className="attendance-detail__groups">
+        <section className="attendance-detail__group" aria-label="Jornada">
+          <p className="attendance-detail__group-label" aria-hidden>Jornada</p>
+          <dl className="attendance-detail__metrics">
+            <div className="attendance-detail__item">
+              <dt>Sesiones</dt>
+              <dd className="attendance-num">{day.session_count}</dd>
+            </div>
+            <div className="attendance-detail__item">
+              <dt>Presencia</dt>
+              <dd className="attendance-num">{formatTableDuration(day.gross_minutes)}</dd>
+            </div>
+            <div className="attendance-detail__item">
+              <dt>Refrigerio aplicado</dt>
+              <dd className="attendance-num">{formatTableDuration(day.break_minutes)}</dd>
+            </div>
+            {day.break_source === "OVERRIDE" && day.override_requested_minutes !== null && (
+              <div className="attendance-detail__item">
+                <dt>Refrigerio solicitado</dt>
+                <dd className="attendance-num">{formatTableDuration(day.override_requested_minutes)}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
+        <section className="attendance-detail__group" aria-label="Contexto">
+          <p className="attendance-detail__group-label" aria-hidden>Contexto</p>
+          <dl className="attendance-detail__metrics attendance-detail__metrics--context">
+            <div className="attendance-detail__item attendance-detail__item--wide">
+              <dt>Origen del refrigerio</dt>
+              <dd>
+                {breakSourceLabel(day)}
+                {day.override_limited && (
+                  <span className="badge badge-amber attendance-detail__flag">Refrigerio limitado</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function RecordDetail({ record }: { record: AttendanceListItem }) {
   return (
-    <dl className="attendance-detail">
-      <div className="attendance-detail__person">
-        <dt>Empleado</dt>
-        <dd>{record.employee_name ?? "—"}</dd>
+    <div className="attendance-detail">
+      <DetailPerson name={record.employee_name} />
+      <div className="attendance-detail__groups">
+        <section className="attendance-detail__group" aria-label="Resultado del día">
+          <p className="attendance-detail__group-label" aria-hidden>Resultado del día</p>
+          <dl className="attendance-detail__metrics">
+            <div className="attendance-detail__item">
+              <dt>Jornada esperada</dt>
+              <dd className="attendance-num">{formatTableDuration(record.expected_minutes)}</dd>
+            </div>
+            <div className="attendance-detail__item">
+              <dt>Saldo del día</dt>
+              <dd>
+                <Balance minutes={record.difference_minutes} />
+              </dd>
+            </div>
+          </dl>
+        </section>
+        <section className="attendance-detail__group" aria-label="Contexto">
+          <p className="attendance-detail__group-label" aria-hidden>Contexto</p>
+          <dl className="attendance-detail__metrics attendance-detail__metrics--context">
+            <div className="attendance-detail__item attendance-detail__item--wide">
+              <dt>Cargo</dt>
+              <dd>{record.job_role_name ?? "—"}</dd>
+            </div>
+          </dl>
+        </section>
       </div>
-      <div>
-        <dt>Jornada esperada</dt>
-        <dd className="attendance-num">{formatTableDuration(record.expected_minutes)}</dd>
-      </div>
-      <div>
-        <dt>Saldo del día</dt>
-        <dd>
-          <Balance minutes={record.difference_minutes} />
-        </dd>
-      </div>
-      <div>
-        <dt>Cargo</dt>
-        <dd>{record.job_role_name ?? "—"}</dd>
-      </div>
-    </dl>
+    </div>
   );
 }
 

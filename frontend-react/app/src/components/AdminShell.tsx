@@ -409,20 +409,24 @@ function AdminShellChrome({
 
       {confirmLogoutOpen && (
         <AppDialog
+          className="logout-dialog"
           labelledBy="logout-dialog-title"
           describedBy="logout-dialog-desc"
           onClose={() => setConfirmLogoutOpen(false)}
         >
-          <div className="app-dialog-heading">
-            <h2 id="logout-dialog-title" className="card-title">
-              ¿Cerrar sesión?
-            </h2>
-            <p id="logout-dialog-desc" className="card-sub">
-              Se cerrará la sesión de <strong>{user?.username}</strong>. Si tienes cambios sin guardar en pantalla, se descartarán.
-            </p>
+          <div className="logout-dialog__heading">
+            <span className="logout-dialog__icon" aria-hidden>
+              <Logout size={18} />
+            </span>
+            <div className="logout-dialog__copy">
+              <h2 id="logout-dialog-title">¿Cerrar sesión?</h2>
+              <p id="logout-dialog-desc">
+                Se cerrará la sesión de <strong>{user?.username}</strong>. Si tienes cambios sin guardar en pantalla, se descartarán.
+              </p>
+            </div>
           </div>
-          <div className="app-dialog-actions" style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-            <AppDialogCloseButton className="btn btn-outline" onClick={() => setConfirmLogoutOpen(false)}>
+          <div className="app-dialog-actions logout-dialog__actions">
+            <AppDialogCloseButton className="btn btn-outline" data-autofocus>
               Cancelar
             </AppDialogCloseButton>
             <button

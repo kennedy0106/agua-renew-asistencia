@@ -35,6 +35,8 @@ export default function AdminRolesPage() {
     EMPTY_CREATE_DRAFT,
   );
   const [creating, setCreating] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Inline editing state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -104,13 +106,19 @@ export default function AdminRolesPage() {
 
   const activeRolesCount = useMemo(() => roles.filter((r) => r.active).length, [roles]);
 
+  function openCreateDialog() {
+    setCreateError(null);
+    setShowCreate(true);
+  }
+
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
+    if (creating) return;
     const submittedDraft = createDraft;
     const name = submittedDraft.name.trim();
     if (!name) return;
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     try {
       const created = await jobRolesApi.create(name, submittedDraft.description.trim() || null);
       setRoles((prev) => [...prev, created]);
@@ -118,10 +126,11 @@ export default function AdminRolesPage() {
       // vuelo se editó el nombre o la descripción (incluso tras salir y
       // volver), el objeto actual es otro y el borrador nuevo se conserva.
       setCreateDraft((current) => (current === submittedDraft ? { ...EMPTY_CREATE_DRAFT } : current));
+      setShowCreate(false);
       markSaved(created.id);
       success(`Cargo "${created.name}" creado con éxito.`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo crear el cargo");
+      setCreateError(err instanceof ApiError ? err.message : "No se pudo crear el cargo");
     } finally {
       setCreating(false);
     }
@@ -231,58 +240,6 @@ export default function AdminRolesPage() {
         </div>
       )}
 
-      {canManage && (
-        <form onSubmit={handleCreate} className="card card-pad" style={{ marginBottom: "1.1rem" }}>
-          <div style={{ display: "grid", gap: "0.8rem", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))" }}>
-            <div>
-              <label className="label" htmlFor={newNameId}>
-                Nuevo cargo laboral
-              </label>
-              <input
-                id={newNameId}
-                type="text"
-                className="input"
-                value={createDraft.name}
-                onChange={(e) =>
-                  setCreateDraft((current) => ({ ...current, name: e.target.value }))
-                }
-                required
-                placeholder="Ej. Operario de envasado"
-                autoComplete="off"
-              />
-            </div>
-            <div>
-              <label className="label" htmlFor={newDescId}>
-                Descripción del puesto <em>(opcional)</em>
-              </label>
-              <input
-                id={newDescId}
-                type="text"
-                className="input"
-                value={createDraft.description}
-                onChange={(e) =>
-                  setCreateDraft((current) => ({ ...current, description: e.target.value }))
-                }
-                placeholder="Ej. Planta de tratamiento y llenado"
-                autoComplete="off"
-              />
-            </div>
-            <div style={{ display: "flex", alignItems: "flex-end" }}>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={creating || !createDraft.name.trim()}
-                aria-busy={creating}
-                style={{ minHeight: "2.75rem", whiteSpace: "nowrap" }}
-              >
-                {creating ? <Spinner /> : <Plus size={15} />}
-                {creating ? "Creando cargo…" : "Crear cargo"}
-              </button>
-            </div>
-          </div>
-        </form>
-      )}
-
       {/* Toolbar with Search, Status Filter and Summary */}
       <div className="toolbar roles-filters-toolbar" role="search" aria-label="Búsqueda y filtros de cargos laborales">
         <div className="roles-search-field">
@@ -327,6 +284,19 @@ export default function AdminRolesPage() {
         <span className="roles-count">
           {filteredRoles.length} de {roles.length} cargos · {activeRolesCount} activos
         </span>
+        {canManage && (
+          <button
+            type="button"
+            className="btn btn-primary roles-create"
+            onClick={openCreateDialog}
+            disabled={editingId !== null}
+            title={editingId !== null ? "Termina la edición en línea antes de crear un cargo" : undefined}
+            aria-haspopup="dialog"
+            aria-expanded={showCreate}
+          >
+            <Plus size={15} /> Nuevo cargo
+          </button>
+        )}
       </div>
 
       <div className="table-wrap roles-table-wrap employee-stack-wrap">
@@ -492,6 +462,93 @@ export default function AdminRolesPage() {
         </table>
       </div>
       <TablePagination {...pagination} />
+
+      {canManage && showCreate && (
+        <AppDialog
+          className="admin-form-dialog roles-create-dialog"
+          labelledBy="roles-create-title"
+          describedBy="roles-create-desc"
+          dismissible={!creating}
+          onClose={() => setShowCreate(false)}
+        >
+          <div className="admin-form-heading">
+            <div>
+              <h2 id="roles-create-title">Nuevo cargo laboral</h2>
+              <p id="roles-create-desc">
+                Define el puesto operativo que podrás asignar a los empleados. No es un rol de acceso al sistema.
+              </p>
+            </div>
+            <AppDialogCloseButton
+              className="btn btn-ghost btn-sm app-dialog-close"
+              aria-label="Cerrar creación de cargo"
+              disabled={creating}
+            >
+              <X size={16} />
+            </AppDialogCloseButton>
+          </div>
+
+          <form onSubmit={handleCreate} className="admin-form roles-create-form">
+            {createError && (
+              <p className="alert alert-error" role="alert">
+                <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                {createError}
+              </p>
+            )}
+            <div className="admin-form-grid roles-create-fields">
+              <div className="admin-field admin-field--full">
+                <label className="label" htmlFor={newNameId}>
+                  Nuevo cargo laboral
+                </label>
+                <input
+                  id={newNameId}
+                  type="text"
+                  className="input"
+                  value={createDraft.name}
+                  onChange={(e) =>
+                    setCreateDraft((current) => ({ ...current, name: e.target.value }))
+                  }
+                  required
+                  placeholder="Ej. Operario de envasado"
+                  autoComplete="off"
+                  disabled={creating}
+                  data-autofocus
+                />
+              </div>
+              <div className="admin-field admin-field--full">
+                <label className="label" htmlFor={newDescId}>
+                  Descripción del puesto <em>(opcional)</em>
+                </label>
+                <input
+                  id={newDescId}
+                  type="text"
+                  className="input"
+                  value={createDraft.description}
+                  onChange={(e) =>
+                    setCreateDraft((current) => ({ ...current, description: e.target.value }))
+                  }
+                  placeholder="Ej. Planta de tratamiento y llenado"
+                  autoComplete="off"
+                  disabled={creating}
+                />
+              </div>
+            </div>
+            <div className="admin-form-actions roles-create-actions">
+              <AppDialogCloseButton className="btn btn-outline" disabled={creating}>
+                Cancelar
+              </AppDialogCloseButton>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={creating || !createDraft.name.trim()}
+                aria-busy={creating}
+              >
+                {creating ? <Spinner /> : <Plus size={15} />}
+                {creating ? "Creando cargo…" : "Crear cargo"}
+              </button>
+            </div>
+          </form>
+        </AppDialog>
+      )}
 
       {/* Confirmation modal for deactivation/reactivation */}
       {confirmToggleRole && (

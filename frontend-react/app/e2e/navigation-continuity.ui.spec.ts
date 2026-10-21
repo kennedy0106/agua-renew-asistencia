@@ -209,27 +209,42 @@ test("Cargos conserva el borrador al navegar y en error; lo limpia tras guardar"
   const api = await mockApi(page);
   await page.goto("/admin/roles");
   await ready(page, "roles");
-  const name = page.getByPlaceholder("Ej. Operario de envasado", { exact: true });
-  const description = page.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true });
+  const openCargoDialog = async () => {
+    await page.getByRole("button", { name: "Nuevo cargo", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: /nuevo cargo laboral/i });
+    await expect(dialog).toBeVisible();
+    return dialog;
+  };
+  let dialog = await openCargoDialog();
+  const name = dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true });
+  const description = dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true });
   await name.fill("Cargo de prueba");
   await description.fill("Borrador recuperable");
+  await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   await navigate(page, "dashboard");
   await page.goBack();
   await ready(page, "roles");
-  await expect(name).toHaveValue("Cargo de prueba");
-  await expect(description).toHaveValue("Borrador recuperable");
+  dialog = await openCargoDialog();
+  await expect(dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("Cargo de prueba");
+  await expect(dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true })).toHaveValue("Borrador recuperable");
   api.rejectCargo(true);
-  await page.getByRole("button", { name: "Crear cargo", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("El ejemplo no pudo guardarse");
-  await expect(name).toHaveValue("Cargo de prueba");
+  await dialog.getByRole("button", { name: "Crear cargo", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("El ejemplo no pudo guardarse");
+  await expect(dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("Cargo de prueba");
   api.rejectCargo(false);
-  await page.getByRole("button", { name: "Crear cargo", exact: true }).click();
-  await expect(name).toHaveValue("");
-  await expect(description).toHaveValue("");
+  await dialog.getByRole("button", { name: "Crear cargo", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  dialog = await openCargoDialog();
+  await expect(dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("");
+  await expect(dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true })).toHaveValue("");
+  await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   await navigate(page, "dashboard");
   await page.goBack();
   await ready(page, "roles");
-  await expect(name).toHaveValue("");
+  dialog = await openCargoDialog();
+  await expect(dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("");
   expect(api.writes).toEqual([]);
 });
 
@@ -250,22 +265,30 @@ test("una creación de cargo que termina tarde no borra un borrador posterior", 
   const api = await mockApi(page);
   let finish!: () => void;
   api.holdCargo(new Promise<void>((resolve) => { finish = resolve; }));
-  await page.goto("/admin/roles");
-  await ready(page, "roles");
-  const name = page.getByPlaceholder("Ej. Operario de envasado", { exact: true });
-  const description = page.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true });
+  await page.goto("/admin/dashboard");
+  await ready(page, "dashboard");
+  await navigate(page, "roles");
+  await page.getByRole("button", { name: "Nuevo cargo", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: /nuevo cargo laboral/i });
+  const name = dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true });
+  const description = dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true });
   await name.fill("Primer cargo");
-  await page.getByRole("button", { name: "Crear cargo", exact: true }).click();
+  await dialog.getByRole("button", { name: "Crear cargo", exact: true }).click();
   await expect.poll(() => api.cargoPosts).toBe(1);
-  await navigate(page, "dashboard");
-  await page.goBack();
+  // El envío bloquea el cierre del diálogo, así que la salida durante el POST
+  // se simula con la navegación del historial (sin pulsar detrás del backdrop).
+  await page.evaluate(() => window.history.back());
+  await ready(page, "dashboard");
+  await page.evaluate(() => window.history.forward());
   await ready(page, "roles");
-  await name.fill("Segundo cargo");
-  await description.fill("Este borrador es posterior");
+  await page.getByRole("button", { name: "Nuevo cargo", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: /nuevo cargo laboral/i });
+  await dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true }).fill("Segundo cargo");
+  await dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true }).fill("Este borrador es posterior");
   finish();
   await expect(page.getByText('Cargo "Primer cargo" creado con éxito.', { exact: true })).toBeVisible();
-  await expect(name).toHaveValue("Segundo cargo");
-  await expect(description).toHaveValue("Este borrador es posterior");
+  await expect(dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("Segundo cargo");
+  await expect(dialog.getByPlaceholder("Ej. Planta de tratamiento y llenado", { exact: true })).toHaveValue("Este borrador es posterior");
   expect(api.writes).toEqual([]);
 });
 
@@ -292,7 +315,11 @@ test("cerrar sesión elimina el contexto antes de entrar con otra cuenta", async
   const api = await mockApi(page);
   await page.goto("/admin/roles");
   await ready(page, "roles");
-  await page.getByPlaceholder("Ej. Operario de envasado", { exact: true }).fill("Borrador privado de la sesión");
+  await page.getByRole("button", { name: "Nuevo cargo", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: /nuevo cargo laboral/i });
+  await dialog.getByPlaceholder("Ej. Operario de envasado", { exact: true }).fill("Borrador privado de la sesión");
+  await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   await navigate(page, "devices");
   await page.locator(".sidebar-logout").click();
   await page.getByRole("button", { name: "Sí, salir", exact: true }).click();
@@ -301,7 +328,11 @@ test("cerrar sesión elimina el contexto antes de entrar con otra cuenta", async
   await page.goBack();
   await ready(page, "roles");
   await expect(page.locator(".sidebar-user .name")).toHaveText("qa.second");
-  await expect(page.getByPlaceholder("Ej. Operario de envasado", { exact: true })).toHaveValue("");
+  await page.getByRole("button", { name: "Nuevo cargo", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: /nuevo cargo laboral/i })
+      .getByPlaceholder("Ej. Operario de envasado", { exact: true }),
+  ).toHaveValue("");
   expect(api.writes).toEqual([]);
   expect(api.errors).toEqual([]);
 });

@@ -45,8 +45,12 @@ export default function AdminEmployeesPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [lookingUpDni, setLookingUpDni] = useState(false);
   const [dniLookupFeedback, setDniLookupFeedback] = useState<string | null>(null);
+  // Generación de la consulta DNI: al cerrar, reabrir, lanzar otra consulta o
+  // completar el alta, cualquier respuesta anterior queda invalidada.
+  const dniLookupToken = useRef(0);
   const currentCreateDni = useRef(EMPTY_FORM.dni);
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -90,8 +94,9 @@ export default function AdminEmployeesPage() {
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
+    if (creating) return;
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     try {
       const created = await employeesApi.create({
         dni: form.dni,
@@ -100,12 +105,16 @@ export default function AdminEmployeesPage() {
         job_role_id: form.job_role_id,
         hire_date: form.hire_date || null,
       });
+      dniLookupToken.current += 1;
+      currentCreateDni.current = EMPTY_FORM.dni;
       setForm(EMPTY_FORM);
+      setLookingUpDni(false);
+      setDniLookupFeedback(null);
       setShowCreate(false);
       markSaved(created.id);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo crear el empleado");
+      setCreateError(err instanceof ApiError ? err.message : "No se pudo crear el empleado");
     } finally {
       setCreating(false);
     }
@@ -120,27 +129,29 @@ export default function AdminEmployeesPage() {
   async function handleDniLookup() {
     const dni = form.dni;
     if (!/^\d{8}$/.test(dni) || lookingUpDni) return;
+    const token = ++dniLookupToken.current;
     setLookingUpDni(true);
     setDniLookupFeedback(null);
-    setError(null);
+    setCreateError(null);
     try {
       const identity = await employeesApi.lookupDni(dni);
-      const stillCurrent = currentCreateDni.current === dni;
-      if (stillCurrent) setForm((current) => {
+      // El token invalida respuestas de un diálogo anterior; el DNI actual
+      // evita aplicar nombres de otra persona si se editó mientras respondía.
+      if (dniLookupToken.current !== token || currentCreateDni.current !== dni) return;
+      setForm((current) => {
         // Si el operador modificó el DNI mientras respondía la consulta, no
         // vinculamos visualmente datos de otra persona al formulario actual.
         if (current.dni !== dni) return current;
         const lastName = [identity.first_last_name, identity.second_last_name].filter(Boolean).join(" ");
         return { ...current, first_name: identity.first_name, last_name: lastName };
       });
-      if (stillCurrent) {
-        setDniLookupFeedback("Nombres y apellidos completados. Puedes corregirlos antes de crear.");
-        success("Datos del DNI completados");
-      }
+      setDniLookupFeedback("Nombres y apellidos completados. Puedes corregirlos antes de crear.");
+      success("Datos del DNI completados");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo consultar el DNI");
+      if (dniLookupToken.current !== token) return;
+      setCreateError(err instanceof ApiError ? err.message : "No se pudo consultar el DNI");
     } finally {
-      setLookingUpDni(false);
+      if (dniLookupToken.current === token) setLookingUpDni(false);
     }
   }
 
@@ -196,14 +207,34 @@ export default function AdminEmployeesPage() {
     form.dni || form.first_name || form.last_name || form.hire_date || form.job_role_id
   );
 
-  function handleCancelCreate() {
-    if (isCreateDirty) {
-      if (!window.confirm("Hay datos ingresados para el nuevo empleado. ¿Deseas cancelar y descartarlos?")) {
-        return;
-      }
-    }
+  function openCreateDialog() {
+    setCreateError(null);
+    setDniLookupFeedback(null);
+    setShowCreate(true);
+  }
+
+  function closeCreateDialog() {
     setForm(EMPTY_FORM);
+    setCreateError(null);
+    setDniLookupFeedback(null);
+    setLookingUpDni(false);
+    currentCreateDni.current = EMPTY_FORM.dni;
     setShowCreate(false);
+  }
+
+  /**
+   * El cierre implícito (Escape, backdrop) queda bloqueado mientras hay
+   * borrador o envío. El cierre explícito (X o Cancelar) solo descarta datos
+   * después de que la persona lo confirme; si rechaza, se anula el cierre.
+   */
+  function guardCreateClose(event: React.MouseEvent) {
+    if (creating) {
+      event.preventDefault();
+      return;
+    }
+    if (isCreateDirty && !window.confirm("Hay datos ingresados para el nuevo empleado. ¿Deseas cancelar y descartarlos?")) {
+      event.preventDefault();
+    }
   }
 
   return (
@@ -245,16 +276,14 @@ export default function AdminEmployeesPage() {
         {refreshing && !loading && <span className="toolbar-status" role="status"><Spinner /> Actualizando…</span>}
         <span className="spacer" />
         {canManage && (
-          <button className="btn btn-primary employees-create" onClick={() => (showCreate ? handleCancelCreate() : setShowCreate(true))}>
-            {showCreate ? (
-              <>
-                <X size={15} /> Cancelar
-              </>
-            ) : (
-              <>
-                <Plus size={15} /> Nuevo empleado
-              </>
-            )}
+          <button
+            className="btn btn-primary employees-create"
+            type="button"
+            onClick={openCreateDialog}
+            aria-haspopup="dialog"
+            aria-expanded={showCreate}
+          >
+            <Plus size={15} /> Nuevo empleado
           </button>
         )}
       </div>
@@ -267,84 +296,166 @@ export default function AdminEmployeesPage() {
       )}
 
       {canManage && showCreate && (
-        <form onSubmit={handleCreate} className="card card-pad employee-create-form">
-          <div className="employee-create-identity-row">
-            <div className="employee-dni-field">
-              <label className="label" htmlFor="create-employee-dni">DNI (8 dígitos)</label>
-              <div className="employee-dni-controls">
-                <input
-                  id="create-employee-dni"
-                  type="text"
-                  inputMode="numeric"
-                  className="input"
-                  value={form.dni}
-                  onChange={(event) => updateCreateDni(event.target.value.replace(/\D/g, "").slice(0, 8))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      handleDniLookup();
-                    }
-                  }}
-                  required
-                  pattern="\d{8}"
-                  title="8 dígitos"
-                  aria-describedby="dni-lookup-feedback"
-                />
-                <button type="button" className="btn btn-outline employee-dni-lookup" onClick={handleDniLookup} disabled={!/^\d{8}$/.test(form.dni) || lookingUpDni}>
-                  {lookingUpDni ? <Spinner /> : <Search size={15} />}
-                  {lookingUpDni ? "Consultando DNI…" : "Consultar DNI"}
-                </button>
-              </div>
-              <p id="dni-lookup-feedback" className="field-help" aria-live="polite">
-                {dniLookupFeedback ?? "Consulta solo este DNI para completar nombres y apellidos."}
+        <AppDialog
+          className="admin-form-dialog employee-create-dialog"
+          labelledBy="employee-create-title"
+          describedBy="employee-create-desc"
+          dismissible={!creating && !isCreateDirty}
+          onClose={closeCreateDialog}
+          onCloseRequest={() => {
+            // Invalida la consulta DNI en cuanto empieza el cierre, no solo al
+            // desmontar: el diálogo puede reabrirse con el mismo DNI y una
+            // respuesta vieja ya no debe rellenar el borrador nuevo.
+            dniLookupToken.current += 1;
+            setLookingUpDni(false);
+          }}
+        >
+          <div className="admin-form-heading">
+            <div>
+              <h2 id="employee-create-title">Nuevo empleado</h2>
+              <p id="employee-create-desc">
+                Registra a la persona y su puesto. El código interno se asigna automáticamente al crearla.
               </p>
             </div>
-            <div>
-              <label className="label" htmlFor="create-employee-code">Código interno</label>
-              <input id="create-employee-code" type="text" className="input" value="Se asignará automáticamente" readOnly aria-readonly="true" />
-            </div>
-            <div>
-              <label className="label" id="create-employee-job-role-label" htmlFor="create-employee-job-role">Cargo laboral</label>
-              <Select value={form.job_role_id} onValueChange={(v) => setForm({ ...form, job_role_id: v })}>
-                <SelectTrigger id="create-employee-job-role" aria-labelledby="create-employee-job-role-label" aria-label="Cargo laboral">
-                  <SelectValue placeholder="Seleccionar…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {jobRoles
-                    .filter((r) => r.active)
-                    .map((r) => (
-                      <SelectItem key={r.id} value={r.id}>
-                        {r.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="label" id="create-employee-hire-date-label">Fecha de ingreso</label>
-              <DateField aria-label="Fecha de ingreso" value={form.hire_date} onChange={(v) => setForm({ ...form, hire_date: v })} placeholder="Sin fecha" />
-            </div>
+            <AppDialogCloseButton
+              className="btn btn-ghost btn-sm app-dialog-close"
+              aria-label="Cerrar creación de empleado"
+              disabled={creating}
+              onClick={guardCreateClose}
+            >
+              <X size={16} />
+            </AppDialogCloseButton>
           </div>
-          <div className="employee-create-names-row">
-            <div>
-              <label className="label" htmlFor="create-employee-firstname">Nombres</label>
-              <input id="create-employee-firstname" type="text" className="input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
+
+          <form onSubmit={handleCreate} className="admin-form employee-create-form">
+            {createError && (
+              <p className="alert alert-error" role="alert">
+                <Alert size={15} style={{ marginTop: 2, flexShrink: 0 }} />
+                {createError}
+              </p>
+            )}
+
+            <div className="admin-form-grid employee-create-fields">
+              <div className="admin-field admin-field--full employee-dni-field">
+                <label className="label" htmlFor="create-employee-dni">DNI (8 dígitos)</label>
+                <div className="employee-dni-controls">
+                  <input
+                    id="create-employee-dni"
+                    type="text"
+                    inputMode="numeric"
+                    className="input"
+                    value={form.dni}
+                    onChange={(event) => updateCreateDni(event.target.value.replace(/\D/g, "").slice(0, 8))}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        handleDniLookup();
+                      }
+                    }}
+                    required
+                    pattern="\d{8}"
+                    title="8 dígitos"
+                    aria-describedby="dni-lookup-feedback"
+                    disabled={creating}
+                    data-autofocus
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-outline employee-dni-lookup"
+                    onClick={handleDniLookup}
+                    disabled={creating || !/^\d{8}$/.test(form.dni) || lookingUpDni}
+                  >
+                    {lookingUpDni ? <Spinner /> : <Search size={15} />}
+                    {lookingUpDni ? "Consultando DNI…" : "Consultar DNI"}
+                  </button>
+                </div>
+                <p id="dni-lookup-feedback" className="field-help" aria-live="polite">
+                  {dniLookupFeedback ?? "Consulta solo este DNI para completar nombres y apellidos."}
+                </p>
+              </div>
+
+              <div className="admin-field">
+                <label className="label" htmlFor="create-employee-firstname">Nombres</label>
+                <input
+                  id="create-employee-firstname"
+                  type="text"
+                  className="input"
+                  value={form.first_name}
+                  onChange={(e) => setForm({ ...form, first_name: e.target.value })}
+                  required
+                  disabled={creating}
+                />
+              </div>
+              <div className="admin-field">
+                <label className="label" htmlFor="create-employee-lastname">Apellidos</label>
+                <input
+                  id="create-employee-lastname"
+                  type="text"
+                  className="input"
+                  value={form.last_name}
+                  onChange={(e) => setForm({ ...form, last_name: e.target.value })}
+                  required
+                  disabled={creating}
+                />
+              </div>
+
+              <div className="admin-field">
+                <label className="label" id="create-employee-job-role-label" htmlFor="create-employee-job-role">Cargo laboral</label>
+                <Select
+                  value={form.job_role_id}
+                  onValueChange={(v) => setForm({ ...form, job_role_id: v })}
+                  disabled={creating}
+                >
+                  <SelectTrigger id="create-employee-job-role" aria-labelledby="create-employee-job-role-label" aria-label="Cargo laboral">
+                    <SelectValue placeholder="Seleccionar…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {jobRoles
+                      .filter((r) => r.active)
+                      .map((r) => (
+                        <SelectItem key={r.id} value={r.id}>
+                          {r.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="admin-field">
+                <label className="label" id="create-employee-hire-date-label">Fecha de ingreso</label>
+                <DateField
+                  aria-label="Fecha de ingreso"
+                  value={form.hire_date}
+                  onChange={(v) => setForm({ ...form, hire_date: v })}
+                  placeholder="Sin fecha"
+                  disabled={creating}
+                />
+              </div>
+
+              <div className="admin-field admin-field--full employee-create-code">
+                <label className="label" htmlFor="create-employee-code">Código interno</label>
+                <input
+                  id="create-employee-code"
+                  type="text"
+                  className="input employee-create-code-input"
+                  value="Se asignará automáticamente"
+                  readOnly
+                  aria-readonly="true"
+                  tabIndex={-1}
+                />
+              </div>
             </div>
-            <div>
-              <label className="label" htmlFor="create-employee-lastname">Apellidos</label>
-              <input id="create-employee-lastname" type="text" className="input" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
+
+            <div className="admin-form-actions employee-create-actions">
+              <AppDialogCloseButton className="btn btn-outline" disabled={creating} onClick={guardCreateClose}>
+                Cancelar
+              </AppDialogCloseButton>
+              <button type="submit" className="btn btn-primary" disabled={creating} aria-busy={creating}>
+                {creating ? <Spinner /> : <Plus size={15} />}
+                {creating ? "Creando empleado…" : "Crear empleado"}
+              </button>
             </div>
-          </div>
-          <div className="employee-create-actions">
-            <button type="submit" className="btn btn-primary" disabled={creating}>
-              {creating ? <Spinner /> : <Plus size={15} />}
-              {creating ? "Creando empleado…" : "Crear empleado"}
-            </button>
-            <button type="button" className="btn btn-ghost" onClick={handleCancelCreate} disabled={creating}>
-              Cancelar
-            </button>
-          </div>
-        </form>
+          </form>
+        </AppDialog>
       )}
 
       <div className="table-wrap employee-stack-wrap employees-table-wrap">
@@ -371,7 +482,7 @@ export default function AdminEmployeesPage() {
                       <X size={14} /> Limpiar filtros
                     </button>
                   ) : canManage ? (
-                    <button className="btn btn-primary btn-sm" type="button" onClick={() => setShowCreate(true)}>
+                    <button className="btn btn-primary btn-sm" type="button" onClick={openCreateDialog}>
                       <Plus size={14} /> Crear empleado
                     </button>
                   ) : null}
