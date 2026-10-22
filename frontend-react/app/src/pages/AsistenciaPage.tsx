@@ -1,6 +1,13 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { ApiError, attendanceApi, AttendanceRecordOut, IdentifyResponse, PreparationSnapshot } from "@/lib/api";
+import {
+  ApiError,
+  ApiTimeoutError,
+  attendanceApi,
+  AttendanceRecordOut,
+  IdentifyResponse,
+  PreparationSnapshot,
+} from "@/lib/api";
 import {
   LOCATION_MAX_AGE_MS,
   locationAgeMs,
@@ -9,6 +16,14 @@ import {
   type ClientPosition,
   type LocationFailure,
 } from "@/lib/attendance-location";
+import {
+  PENDING_PHOTO_TTL_MS,
+  clearPendingPhoto,
+  loadPendingPhoto,
+  purgeExpiredPendingPhotos,
+  savePendingPhoto,
+  type PendingPhotoExpectation,
+} from "@/lib/attendance-photo-store";
 import AttendanceLocationDialog from "@/components/AttendanceLocationDialog";
 import { Collapse } from "@/components/Collapse";
 import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "@/components/Icons";
@@ -53,7 +68,7 @@ type RecoverOutcome =
   | { kind: "reviewed"; reason: string | null }
   | { kind: "unauthorized" }
   | { kind: "gone" }
-  | { kind: "error" }
+  | { kind: "error"; timeout: boolean }
   | { kind: "unknown" }
   | { kind: "stale" };
 
@@ -76,6 +91,65 @@ type PrepareOutcome =
 /** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
 const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
 const CAMERA_COUNTDOWN_SECONDS = 10;
+const CAMERA_OPEN_TIMEOUT_MS = 10_000;
+const CAMERA_PLAY_TIMEOUT_MS = 5_000;
+const CAMERA_FRAME_TIMEOUT_MS = 8_000;
+const PHOTO_STORE_BUDGET_MS = 2_200;
+
+type DeadlineResult<T> =
+  | { status: "fulfilled"; value: T }
+  | { status: "rejected"; error: unknown }
+  | { status: "timeout" };
+
+/** Plazo para una promesa que no se puede cancelar (p. ej. `video.play()`). */
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<DeadlineResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ status: "timeout" });
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve({ status: "fulfilled", value });
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve({ status: "rejected", error });
+      },
+    );
+  });
+}
+
+/**
+ * Distingue lo que el navegador sí demuestra (permiso, equipo ausente, acceso
+ * ocupado) del fallo genérico; nunca afirma una causa que no puede comprobar.
+ */
+function cameraFailureMessage(error: unknown): string {
+  const name =
+    error && typeof error === "object" && "name" in error
+      ? String((error as { name?: unknown }).name ?? "")
+      : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "El navegador no permitió usar la cámara. Habilite el permiso de cámara para este sitio y vuelva a intentar.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "No se encontró una cámara disponible en este equipo. Revise que el equipo tenga cámara y vuelva a intentar.";
+  }
+  if (name === "NotReadableError" || name === "AbortError") {
+    return "El navegador no pudo acceder a la cámara; puede estar siendo usada por otra aplicación o bloqueada por el sistema. Cierre otras aplicaciones y vuelva a intentar.";
+  }
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    return "Este navegador no puede usar la cámara. Use un equipo compatible o identifique con el código de trabajador.";
+  }
+  return "No se pudo abrir la cámara. Revise el permiso de cámara y vuelva a intentar.";
+}
 
 type DeliveryStage = "EVIDENCE_REQUESTED" | "PREPARED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
 
@@ -109,6 +183,14 @@ function hasSameNonce(candidate: string, currentToken: string): boolean {
   const candidateNonce = nonceFromMarkingToken(candidate);
   const currentNonce = nonceFromMarkingToken(currentToken);
   return Boolean(candidateNonce) && Boolean(currentNonce) && candidateNonce === currentNonce;
+}
+
+/** Identidad exacta de la copia local; sin nonce no hay vínculo verificable. */
+function photoExpectationFor(info: IdentifyResponse | null): PendingPhotoExpectation | null {
+  if (!info) return null;
+  const nonce = nonceFromMarkingToken(info.marking_token);
+  if (!nonce) return null;
+  return { nonce, employeeId: info.employee.id, action: info.marking_action };
 }
 
 /**
@@ -177,7 +259,10 @@ export default function AsistenciaPage() {
   const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(CAMERA_COUNTDOWN_SECONDS);
+  const [countdownPaused, setCountdownPaused] = useState(false);
   const [lastPhoto, setLastPhoto] = useState<string | null>(null);
+  const [photoNotice, setPhotoNotice] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState("");
   const [identifying, setIdentifying] = useState(false);
   const [consulting, setConsulting] = useState(false);
   const [sending, setSending] = useState(false);
@@ -199,7 +284,10 @@ export default function AsistenciaPage() {
   const streamRef = useRef<MediaStream | null>(null);
   const qrStreamRef = useRef<MediaStream | null>(null);
   const idInputRef = useRef<HTMLInputElement>(null);
+  const identifyButtonRef = useRef<HTMLButtonElement>(null);
   const incidentAlertRef = useRef<HTMLParagraphElement>(null);
+  const sendingStatusRef = useRef<HTMLParagraphElement>(null);
+  const confirmedTitleRef = useRef<HTMLHeadingElement>(null);
   const captureLock = useRef(false);
   const identifyingRef = useRef(false);
   const sendingRef = useRef(false);
@@ -209,6 +297,11 @@ export default function AsistenciaPage() {
   const submittedRef = useRef(false);
   const positionRef = useRef<ClientPosition | null>(null);
   const locationErrorMessage = useRef<string | null>(null);
+  // Causa del último envío para no ocultarla si la consulta secundaria falla.
+  const lastSendCauseRef = useRef<string | null>(null);
+  // Una sola consulta automática por intento cuando el navegador recupera red.
+  const autoConsultedNonceRef = useRef<string | null>(null);
+  const photoExpiresAtRef = useRef<number | null>(null);
   // Valor leído del QR que no pudo identificarse por falta de ubicación. Vive
   // sólo en memoria para Reintentar y se limpia al cancelar o editar el campo.
   const pendingIdentifierRef = useRef<string | null>(null);
@@ -226,6 +319,12 @@ export default function AsistenciaPage() {
     setLocationDialogOpen(false);
   }
 
+  /** Borra sólo la copia del intento indicado, nunca la de otra pestaña. */
+  function clearPhotoForAttempt(info: IdentifyResponse | null = infoRef.current) {
+    const expected = photoExpectationFor(info);
+    if (expected) void clearPendingPhoto(expected);
+  }
+
   /**
    * Cierra la alerta sin reintentar. Conserva el DNI o código escrito, pero
    * descarta el valor temporal del QR y cualquier lectura en vuelo.
@@ -236,6 +335,9 @@ export default function AsistenciaPage() {
     locationErrorMessage.current = null;
     pendingIdentifierRef.current = null;
     setPhase("identificando");
+    // El botón que abrió la alerta quedó deshabilitado durante la lectura; al
+    // cerrar, el foco vuelve explícitamente a la acción de identificar.
+    window.setTimeout(() => identifyButtonRef.current?.focus(), 0);
   }
 
   /**
@@ -277,7 +379,11 @@ export default function AsistenciaPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    void purgeExpiredPendingPhotos();
     const stored = readStoredAttempt();
+    // Sin referencia durable no se toca ninguna copia: otra pestaña puede
+    // tener su propio intento pendiente en el mismo navegador.
     if (!stored) return;
     const restored: IdentifyResponse = {
       employee: stored.employee,
@@ -300,6 +406,66 @@ export default function AsistenciaPage() {
       "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. No se afirma que no se haya marcado.",
     );
     setPhase("incidencia");
+
+    // La referencia es la autoridad; la foto sólo se restaura si coincide con
+    // su nonce, empleado, acción y sigue dentro del TTL local.
+    const nonce = nonceFromMarkingToken(stored.marking_token);
+    if (!nonce) return;
+    void loadPendingPhoto(
+      { nonce, employeeId: stored.employee.id, action: stored.marking_action },
+      Date.now(),
+    ).then((photo) => {
+      if (!active || !photo) return;
+      setLastPhoto(photo.imageBase64);
+      photoExpiresAtRef.current = photo.expiresAt;
+      setPhotoNotice("Se recuperó la foto de este intento. No se envió nada automáticamente.");
+      setAnnouncement("Se recuperó la foto de este intento. No se envió nada automáticamente.");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (phase === "enviando") {
+      const timer = window.setTimeout(() => sendingStatusRef.current?.focus(), 30);
+      return () => window.clearTimeout(timer);
+    }
+    if (phase === "confirmado") {
+      setAnnouncement("Marcación confirmada.");
+      const timer = window.setTimeout(() => confirmedTitleRef.current?.focus(), 30);
+      return () => window.clearTimeout(timer);
+    }
+    if (phase === "incidencia" || phase === "identificando") {
+      setAnnouncement("");
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    if (!lastPhoto) return;
+    const expiresAt = photoExpiresAtRef.current;
+    if (expiresAt == null) return;
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      setLastPhoto(null);
+      setPhotoNotice("La copia local de la foto venció. La referencia del intento se conserva.");
+      clearPhotoForAttempt();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setLastPhoto(null);
+      setPhotoNotice("La copia local de la foto venció. La referencia del intento se conserva.");
+      clearPhotoForAttempt();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [lastPhoto]);
+
+  useEffect(() => {
+    const pauseWhenHidden = () => {
+      if (document.visibilityState === "hidden") setCountdownPaused(true);
+    };
+    document.addEventListener("visibilitychange", pauseWhenHidden);
+    return () => document.removeEventListener("visibilitychange", pauseWhenHidden);
   }, []);
 
   useEffect(() => {
@@ -321,29 +487,72 @@ export default function AsistenciaPage() {
     const gen = generationRef.current;
     let cancelled = false;
     (async () => {
-      try {
-        stopStream(qrStreamRef.current);
-        qrStreamRef.current = null;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 720 } },
-        });
-        if (cancelled || gen !== generationRef.current) {
+      const mediaDevices = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+      if (!mediaDevices?.getUserMedia) {
+        setError("Este navegador no puede usar la cámara. Use un equipo compatible o identifique con el código de trabajador.");
+        setPhase("incidencia");
+        return;
+      }
+      stopStream(qrStreamRef.current);
+      qrStreamRef.current = null;
+      const streamPromise = mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: "user", width: { ideal: 720 }, height: { ideal: 720 } },
+      });
+      const opened = await withDeadline(streamPromise, CAMERA_OPEN_TIMEOUT_MS);
+      if (opened.status === "timeout") {
+        // El navegador no responde a tiempo: no se puede afirmar qué ocurrió,
+        // pero un stream tardío se detiene para no dejar la cámara encendida.
+        void streamPromise.then(stopStream).catch(() => undefined);
+        if (!cancelled && gen === generationRef.current) {
+          setError("La cámara no respondió en 10 segundos. No se tomó foto; puede cancelar y volver a intentar.");
+          setPhase("incidencia");
+        }
+        return;
+      }
+      if (opened.status === "rejected") {
+        if (!cancelled && gen === generationRef.current) {
+          setError(cameraFailureMessage(opened.error));
+          setPhase("incidencia");
+        }
+        return;
+      }
+      const stream = opened.value;
+      if (cancelled || gen !== generationRef.current) {
+        stopStream(stream);
+        return;
+      }
+      if (videoRef.current) {
+        streamRef.current = stream;
+        videoRef.current.srcObject = stream;
+        const played = await withDeadline(
+          Promise.resolve().then(() => videoRef.current!.play()),
+          CAMERA_PLAY_TIMEOUT_MS,
+        );
+        if (played.status !== "fulfilled") {
           stopStream(stream);
+          streamRef.current = null;
+          if (videoRef.current) videoRef.current.srcObject = null;
+          if (!cancelled && gen === generationRef.current) {
+            setError(
+              played.status === "timeout"
+                ? "La cámara abrió pero no pudo iniciar la imagen en 5 segundos. No se tomó foto."
+                : cameraFailureMessage(played.error),
+            );
+            setPhase("incidencia");
+          }
           return;
         }
+      } else {
         streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
-        if (!cancelled && gen === generationRef.current) setPhase("video_listo");
-      } catch {
-        if (gen !== generationRef.current) return;
-        setError("No se pudo abrir la cámara frontal. Permita el acceso e intente de nuevo.");
+      }
+      if (!cancelled && gen === generationRef.current) setPhase("video_listo");
+    })().catch((error: unknown) => {
+      if (!cancelled && gen === generationRef.current) {
+        setError(cameraFailureMessage(error));
         setPhase("incidencia");
       }
-    })();
+    });
     return () => {
       cancelled = true;
     };
@@ -354,52 +563,88 @@ export default function AsistenciaPage() {
     const gen = generationRef.current;
     const video = videoRef.current;
     let cancelled = false;
+    let settled = false;
+    const timers: { poll?: number; deadline?: number } = {};
 
-    const proceed = () => {
-      if (cancelled || gen !== generationRef.current) return;
+    const isFrameReady = () => {
       const current = videoRef.current;
-      if (current && current.videoWidth >= 320 && current.videoHeight >= 240) {
-        setPhase("cuenta_regresiva");
-        setCountdown(CAMERA_COUNTDOWN_SECONDS);
-        return;
-      }
-      setError("La cámara no entregó un cuadro válido. No se tomó foto.");
+      return Boolean(current && current.videoWidth >= 320 && current.videoHeight >= 240);
+    };
+    const stopWaiting = () => {
+      if (timers.poll !== undefined) window.clearInterval(timers.poll);
+      if (timers.deadline !== undefined) window.clearTimeout(timers.deadline);
+    };
+    const proceed = () => {
+      if (cancelled || settled || gen !== generationRef.current) return;
+      if (!isFrameReady()) return;
+      settled = true;
+      stopWaiting();
+      setCountdownPaused(false);
+      setCountdown(CAMERA_COUNTDOWN_SECONDS);
+      setPhase("cuenta_regresiva");
+    };
+    const fail = () => {
+      if (cancelled || settled || gen !== generationRef.current) return;
+      settled = true;
+      stopWaiting();
+      setError("La cámara abrió pero no entregó una imagen útil en 8 segundos. No se tomó foto.");
       setPhase("incidencia");
     };
 
-    if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
+    if (isFrameReady()) {
       proceed();
       return;
     }
-    const wait = window.setTimeout(proceed, 800);
+    // Un cuadro puede tardar en llegar en móviles lentos: se sondea un plazo
+    // razonable en vez de un único timeout corto.
+    timers.poll = window.setInterval(proceed, 200);
+    timers.deadline = window.setTimeout(fail, CAMERA_FRAME_TIMEOUT_MS);
     const onMeta = () => {
-      if (video && video.videoWidth >= 320 && video.videoHeight >= 240) {
-        window.clearTimeout(wait);
-        proceed();
-      }
+      if (isFrameReady()) proceed();
     };
     video?.addEventListener("loadedmetadata", onMeta);
     return () => {
       cancelled = true;
-      window.clearTimeout(wait);
+      stopWaiting();
       video?.removeEventListener("loadedmetadata", onMeta);
     };
   }, [phase]);
 
   useEffect(() => {
     if (phase !== "cuenta_regresiva") return;
+    // La visibilidad debe comprobarse también en cero: el evento del navegador
+    // puede seguir en cola cuando vence el último temporizador.
+    if (document.visibilityState === "hidden") {
+      setCountdownPaused(true);
+      return;
+    }
+    if (countdownPaused) return;
     if (countdown <= 0) {
       setPhase("capturando");
       return;
     }
+    // Pausa explícita y pestaña oculta detienen el avance: el tiempo restante
+    // se conserva y no se dispara una captura que el usuario no vio.
     const timer = window.setTimeout(() => setCountdown((value) => value - 1), 1000);
     return () => window.clearTimeout(timer);
-  }, [phase, countdown]);
+  }, [phase, countdown, countdownPaused]);
 
   // El callback que consume el QR vive en un effect event: el escaneo usa
   // siempre la última versión confirmada de `identifyValue` sin que los
   // rerenders del reloj del kiosco reinicien `getUserMedia`.
   const identifyFromScan = useEffectEvent((value: string, gen: number) => identifyValue(value, gen));
+
+  // Al volver la conexión sólo se consulta el intento pendiente; no se crea ni
+  // se reenvía ninguna escritura. El lock del intento evita duplicados.
+  const consultOnReconnect = useEffectEvent(() => {
+    void consultAttempt(true);
+  });
+
+  useEffect(() => {
+    const onOnline = () => consultOnReconnect();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
 
   useEffect(() => {
     if (phase !== "escaneando_qr") {
@@ -420,10 +665,27 @@ export default function AsistenciaPage() {
     const detector = new Detector({ formats: ["qr_code"] });
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const mediaDevices = navigator.mediaDevices;
+        if (!mediaDevices?.getUserMedia) {
+          setError("Este navegador no puede abrir la cámara del QR. Use el recuadro AR:…");
+          setPhase("identificando");
+          return;
+        }
+        const streamPromise = mediaDevices.getUserMedia({
           audio: false,
           video: { facingMode: { ideal: "environment" } },
         });
+        const opened = await withDeadline(streamPromise, CAMERA_OPEN_TIMEOUT_MS);
+        if (opened.status === "timeout") {
+          void streamPromise.then(stopStream).catch(() => undefined);
+          if (!cancelled && gen === generationRef.current) {
+            setError("La cámara del QR no respondió en 10 segundos. Use el recuadro AR:… o vuelva a intentar.");
+            setPhase("identificando");
+          }
+          return;
+        }
+        if (opened.status === "rejected") throw opened.error;
+        const stream = opened.value;
         if (cancelled || gen !== generationRef.current) {
           stopStream(stream);
           return;
@@ -431,7 +693,20 @@ export default function AsistenciaPage() {
         qrStreamRef.current = stream;
         if (qrVideoRef.current) {
           qrVideoRef.current.srcObject = stream;
-          await qrVideoRef.current.play();
+          const played = await withDeadline(
+            Promise.resolve().then(() => qrVideoRef.current!.play()),
+            CAMERA_PLAY_TIMEOUT_MS,
+          );
+          if (played.status !== "fulfilled") {
+            stopStream(stream);
+            qrStreamRef.current = null;
+            if (qrVideoRef.current) qrVideoRef.current.srcObject = null;
+            if (!cancelled && gen === generationRef.current) {
+              setError("La cámara del QR no pudo iniciar la imagen. Use el recuadro AR:… o vuelva a intentar.");
+              setPhase("identificando");
+            }
+            return;
+          }
         }
         const tick = async () => {
           if (cancelled || gen !== generationRef.current || !qrVideoRef.current) return;
@@ -453,9 +728,9 @@ export default function AsistenciaPage() {
           window.setTimeout(() => void tick(), 250);
         };
         void tick();
-      } catch {
+      } catch (error) {
         if (gen !== generationRef.current) return;
-        setError("No se pudo abrir la cámara trasera para el QR.");
+        setError(cameraFailureMessage(error));
         setPhase("identificando");
       }
     })();
@@ -470,6 +745,13 @@ export default function AsistenciaPage() {
 
   async function identifyValue(value: string, gen: number) {
     if (!value || identifyingRef.current) return;
+    // Un intento ya enviado no se reemplaza por otra identidad: primero debe
+    // resolverse o consultarse, igual que ocurre en la recuperación.
+    if (submittedRef.current && infoRef.current) {
+      setError("Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. No se afirma que no se haya marcado.");
+      setPhase("incidencia");
+      return;
+    }
     identifyingRef.current = true;
     setIdentifying(true);
     setError(null);
@@ -488,6 +770,7 @@ export default function AsistenciaPage() {
       }
       const result = await attendanceApi.identify(value);
       if (gen !== generationRef.current) return;
+      const previousInfo = infoRef.current;
       infoRef.current = result;
       setInfo(result);
       setServerOffset(new Date(result.server_time).getTime() - Date.now());
@@ -495,8 +778,15 @@ export default function AsistenciaPage() {
       setLocationDialogOpen(false);
       pendingIdentifierRef.current = null;
       setIdentifier("");
+      // Un intento nuevo nunca hereda la foto del anterior.
       setLastPhoto(null);
+      setPhotoNotice(null);
+      photoExpiresAtRef.current = null;
+      lastSendCauseRef.current = null;
+      autoConsultedNonceRef.current = null;
+      clearPhotoForAttempt(previousInfo);
       setLastAttemptStatus(null);
+      setCountdownPaused(false);
       captureLock.current = false;
       setPhase("abriendo_camara");
     } catch (err) {
@@ -504,7 +794,17 @@ export default function AsistenciaPage() {
       setLocationFailure(null);
       setLocationDialogOpen(false);
       pendingIdentifierRef.current = null;
-      setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
+      if (err instanceof ApiError && err.status === 401) {
+        setError(
+          "No se pudo verificar este intento desde este equipo. Vuelva a identificar o pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        );
+      } else if (err instanceof ApiTimeoutError) {
+        setError(
+          "La verificación tardó más de 15 segundos y no se completó. No se inició ninguna marcación; puede reintentar la identificación.",
+        );
+      } else {
+        setError(err instanceof ApiError ? err.message : "No se pudo conectar con el servidor");
+      }
       setPhase("incidencia");
     } finally {
       if (gen === generationRef.current) {
@@ -658,7 +958,7 @@ export default function AsistenciaPage() {
       if (gen !== generationRef.current) return { kind: "stale" };
       if (err instanceof ApiError && err.status === 401) return { kind: "unauthorized" };
       if (err instanceof ApiError && err.status === 410) return { kind: "gone" };
-      return { kind: "error" };
+      return { kind: "error", timeout: err instanceof ApiTimeoutError };
     }
   }
 
@@ -668,6 +968,18 @@ export default function AsistenciaPage() {
     setAttemptSubmitted(false);
     setLastAttemptStatus({ kind: "confirmed", record: result });
     clearStoredAttempt();
+    const expected = photoExpectationFor(infoRef.current);
+    setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    lastSendCauseRef.current = null;
+    autoConsultedNonceRef.current = null;
+    if (expected) {
+      void clearPendingPhoto(expected);
+      // Si la escritura local terminó justo después de confirmar, una segunda
+      // limpieza de ESTA clave evita dejar una copia huérfana sin referencia.
+      window.setTimeout(() => void clearPendingPhoto(expected), PHOTO_STORE_BUDGET_MS + 300);
+    }
     setRecord(result);
     setPhase("confirmado");
   }
@@ -679,10 +991,34 @@ export default function AsistenciaPage() {
     setAttemptSubmitted(true);
   }
 
-  function showUncertain(message: string) {
-    setError(message);
+  /**
+   * Conserva la causa original del envío cuando la consulta secundaria también
+   * falla: la UI no debe sustituir el hecho por un mensaje genérico.
+   */
+  function showUncertain(message: string, cause: string | null = lastSendCauseRef.current) {
+    setError(cause ? `${message} Causa original del envío: ${cause}.` : message);
     setPhase("incidencia");
     captureLock.current = false;
+  }
+
+  function describeSendFailure(error: unknown): string {
+    if (error instanceof ApiTimeoutError) return "la solicitud superó el tiempo de espera";
+    if (error instanceof ApiError) {
+      if (error.status === 401) return "el servidor no verificó la identificación de este intento";
+      if (error.status === 409) return "el servidor indicó que el intento ya estaba resuelto";
+      if (error.status === 410) return "el servidor indicó que el plazo del intento venció";
+      if (error.status === 422) return "el servidor rechazó los datos de la marcación";
+      if (error.status >= 500) return "el servidor no pudo completar la solicitud";
+    }
+    return "no hubo una respuesta completa del servidor";
+  }
+
+  function clearAuthoritativeAttempt() {
+    const expected = photoExpectationFor(infoRef.current);
+    setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    if (expected) void clearPendingPhoto(expected);
   }
 
   function applyReadOnlyAttemptOutcome(outcome: RecoverOutcome) {
@@ -696,7 +1032,7 @@ export default function AsistenciaPage() {
       if (outcome.markingToken) adoptRefreshedToken(outcome.markingToken);
       showUncertain(
         outcome.evidenceReady
-          ? "El intento sigue pendiente. Si la foto ya está guardada, complete la marcación sin tomar otra."
+          ? "El intento sigue pendiente. La foto ya está guardada; complete este mismo intento sin tomar otra."
           : outcome.preparation?.marked_at
             ? "El intento sigue pendiente sin foto guardada. La ubicación y la hora oficial ya quedaron reservadas, pero la marcación aún no se registró."
             : "El intento sigue pendiente. Conserve esta referencia; no se inició una marcación nueva.",
@@ -705,27 +1041,35 @@ export default function AsistenciaPage() {
     }
     if (outcome.kind === "expired_unconfirmed") {
       showUncertain(
-        "El permiso de este intento ya venció. Resuélvalo aquí para identificarse de nuevo. No se afirma que no se haya marcado.",
+        "El permiso de este intento ya venció. Ciérrelo aquí para identificarse de nuevo. No se afirma que no se haya marcado.",
       );
       return;
     }
     if (outcome.kind === "cancelled") {
-      showUncertain("Este intento quedó cerrado. Pulse volver al inicio para identificarse de nuevo.");
+      clearAuthoritativeAttempt();
+      showUncertain("Este intento quedó cerrado sin confirmación. Vuelva al inicio para identificarse de nuevo.");
       return;
     }
     if (outcome.kind === "reviewed") {
-      showUncertain("Un jefe revisó este intento. Pulse volver al inicio. No se registró una marcación nueva.");
+      clearAuthoritativeAttempt();
+      showUncertain("Un jefe revisó este intento. Vuelva al inicio; no se registró una marcación nueva.");
       return;
     }
     if (outcome.kind === "unauthorized") {
       showUncertain(
-        "Este equipo no está autorizado para consultar el intento. Conserve esta referencia y pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+        "No se pudo verificar este intento desde este equipo. Conserve esta referencia y pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
       );
       return;
     }
     if (outcome.kind === "gone") {
       showUncertain(
         "El plazo para recuperar este intento ya venció. Pida a un jefe que revise la marcación en el panel. No se afirma que no se haya marcado.",
+      );
+      return;
+    }
+    if (outcome.kind === "error" && outcome.timeout) {
+      showUncertain(
+        "La consulta de este intento superó el tiempo de espera; no se pudo confirmar si quedó registrada. Consulte de nuevo este mismo intento.",
       );
       return;
     }
@@ -740,6 +1084,7 @@ export default function AsistenciaPage() {
     sendingRef.current = true;
     setSending(true);
     rememberSubmittedAttempt();
+    lastSendCauseRef.current = null;
     if (!persistAttempt(current, "EVIDENCE_REQUESTED")) {
       showUncertain(
         "No se pudo guardar la referencia de este intento. No se envió la fotografía ni la marcación.",
@@ -789,8 +1134,11 @@ export default function AsistenciaPage() {
           : await attendanceApi.checkIn(activeToken);
       if (gen !== generationRef.current) return;
       showConfirmed(result);
-    } catch {
+    } catch (error) {
       if (gen !== generationRef.current) return;
+      // Un timeout de escritura no prueba que no se registró: se consulta el
+      // mismo intento y nunca se reintenta la escritura a ciegas.
+      lastSendCauseRef.current = describeSendFailure(error);
       const recovered = await recoverAttempt(activeToken, gen);
       if (recovered.kind === "stale") return;
       applyReadOnlyAttemptOutcome(recovered);
@@ -802,9 +1150,50 @@ export default function AsistenciaPage() {
     }
   }
 
+  /**
+   * Guarda la copia temporal antes de enviar. Si el almacenamiento falla o
+   * tarda demasiado, la foto sigue en memoria y el envío actual no se bloquea:
+   * la referencia de sessionStorage ya es durable.
+   */
+  async function persistPhotoForAttempt(current: IdentifyResponse, imageBase64: string) {
+    const now = Date.now();
+    const expiresAt = now + PENDING_PHOTO_TTL_MS;
+    photoExpiresAtRef.current = expiresAt;
+    const nonce = nonceFromMarkingToken(current.marking_token);
+    if (!nonce) {
+      setPhotoNotice("La foto se conserva sólo en esta pantalla: no se pudo vincular a una referencia verificable.");
+      return;
+    }
+    const stored = await withDeadline(
+      savePendingPhoto({
+        v: 1,
+        nonce,
+        employeeId: current.employee.id,
+        action: current.marking_action,
+        imageBase64,
+        storedAt: now,
+        expiresAt,
+      }),
+      PHOTO_STORE_BUDGET_MS,
+    );
+    const ok = stored.status === "fulfilled" && stored.value.ok;
+    setPhotoNotice(
+      ok
+        ? null
+        : "La foto se conserva sólo en esta pantalla: este equipo no permitió guardarla para una recarga. La referencia del intento sí quedó guardada.",
+    );
+  }
+
   async function captureAndMark() {
     const current = infoRef.current;
     if (!current || captureLock.current) return;
+    // Cubre además el cambio de visibilidad entre la transición de fase y
+    // este efecto. Reanudar o capturar sigue requiriendo una acción visible.
+    if (document.visibilityState === "hidden") {
+      setCountdownPaused(true);
+      setPhase("cuenta_regresiva");
+      return;
+    }
     const gen = generationRef.current;
     captureLock.current = true;
     setPhase("capturando");
@@ -816,12 +1205,25 @@ export default function AsistenciaPage() {
       return;
     }
     setLastPhoto(imageBase64);
+    await persistPhotoForAttempt(current, imageBase64);
+    if (gen !== generationRef.current) return;
     await sendPhoto(imageBase64, current.marking_token, current.marking_action, gen);
   }
 
   function captureNow() {
     if ((phase !== "video_listo" && phase !== "cuenta_regresiva") || !infoRef.current || captureLock.current) return;
+    setCountdownPaused(false);
     setPhase("capturando");
+  }
+
+  function toggleCountdownPause() {
+    const next = !countdownPaused;
+    setCountdownPaused(next);
+    setAnnouncement(
+      next
+        ? `Cuenta regresiva en pausa. Quedan ${countdown} segundos.`
+        : "Cuenta regresiva reanudada.",
+    );
   }
 
   useEffect(() => {
@@ -837,9 +1239,16 @@ export default function AsistenciaPage() {
     return hasSameNonce(activeToken, token);
   }
 
-  async function consultAttempt() {
+  async function consultAttempt(automatic = false) {
     const current = infoRef.current;
     if (!current || sendingRef.current || recoverLockRef.current) return;
+    const nonce = nonceFromMarkingToken(current.marking_token);
+    if (automatic) {
+      // Al recuperar red se consulta UNA vez con los mismos locks; nunca se
+      // reenvía una escritura automáticamente.
+      if (!submittedRef.current || !nonce || autoConsultedNonceRef.current === nonce) return;
+      autoConsultedNonceRef.current = nonce;
+    }
     const gen = generationRef.current;
     const token = current.marking_token;
     recoverLockRef.current = true;
@@ -872,6 +1281,22 @@ export default function AsistenciaPage() {
         applyReadOnlyAttemptOutcome(recovered);
         return;
       }
+      // Status puede devolver un token renovado del MISMO nonce con el
+      // vencimiento exacto de la preparación. Se adopta antes de preparar o
+      // subir; un token ausente o de otra identidad no se usa.
+      if (recovered.markingToken) {
+        const activeToken = infoRef.current?.marking_token;
+        const adopted = activeToken
+          ? trustRefreshedToken(recovered.markingToken, activeToken)
+          : null;
+        if (!adopted) {
+          showUncertain(
+            "El servidor no confirmó un token renovado verificable para este intento. No se reenvió la foto ni se registró la marcación. Consulte de nuevo este mismo intento.",
+          );
+          return;
+        }
+        adoptRefreshedToken(adopted);
+      }
       const active = infoRef.current;
       if (!active || !lastPhoto) {
         applyReadOnlyAttemptOutcome(recovered);
@@ -892,6 +1317,7 @@ export default function AsistenciaPage() {
     sendingRef.current = true;
     setSending(true);
     rememberSubmittedAttempt();
+    lastSendCauseRef.current = null;
     const isCurrent = () => gen === generationRef.current && infoRef.current?.marking_token === token;
     if (!persistAttempt(current, "MARKING_REQUESTED")) {
       showUncertain("No se pudo guardar la referencia. No se envió la marcación.");
@@ -907,8 +1333,9 @@ export default function AsistenciaPage() {
           : await attendanceApi.checkIn(token);
       if (!isCurrent()) return;
       showConfirmed(result);
-    } catch {
+    } catch (error) {
       if (!isCurrent()) return;
+      lastSendCauseRef.current = describeSendFailure(error);
       const recovered = await recoverAttempt(token, gen);
       if (recovered.kind === "stale" || !isCurrent()) return;
       applyReadOnlyAttemptOutcome(recovered);
@@ -956,7 +1383,7 @@ export default function AsistenciaPage() {
         applyReadOnlyAttemptOutcome({ kind: "gone" });
         return;
       }
-      applyReadOnlyAttemptOutcome({ kind: "error" });
+      applyReadOnlyAttemptOutcome({ kind: "error", timeout: err instanceof ApiTimeoutError });
     } finally {
       if (isCurrent()) {
         recoverLockRef.current = false;
@@ -984,11 +1411,16 @@ export default function AsistenciaPage() {
     submittedRef.current = false;
     setAttemptSubmitted(false);
     clearStoredAttempt();
+    clearPhotoForAttempt();
     infoRef.current = null;
     setInfo(null);
     setRecord(null);
     setError(null);
     setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    lastSendCauseRef.current = null;
+    autoConsultedNonceRef.current = null;
     setLastAttemptStatus(null);
     setServerOffset(0);
     setPhase("identificando");
@@ -1010,19 +1442,46 @@ export default function AsistenciaPage() {
     releaseInFlightLocks();
     clearLocationState();
     setError(null);
-    setLastPhoto(null);
+    // La foto NO se borra antes de resolver: si la cancelación autoritativa
+    // falla (401/red/timeout), la copia y la referencia deben seguir ahí.
     if (needsResolve && current) {
       infoRef.current = current;
       setInfo(current);
       await resolveKioskAttempt(reason);
       return;
     }
+    setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    clearPhotoForAttempt(current);
     if (current) {
       infoRef.current = current;
       setPhase("abriendo_camara");
       return;
     }
     setPhase("identificando");
+  }
+
+  /** Vuelve al formulario sin foto ni intento: sólo se usa si no hay `info`. */
+  function backToIdentify() {
+    bumpGeneration();
+    releaseAllCameras();
+    releaseInFlightLocks();
+    clearLocationState();
+    setError(null);
+    setLastAttemptStatus(null);
+    setPhase("identificando");
+    window.setTimeout(() => idInputRef.current?.focus(), 0);
+  }
+
+  function retryIdentify() {
+    const value = pendingIdentifierRef.current ?? identifier.trim();
+    if (!value) {
+      backToIdentify();
+      return;
+    }
+    identifyingRef.current = false;
+    void identifyValue(value, generationRef.current);
   }
 
   function reset() {
@@ -1044,11 +1503,16 @@ export default function AsistenciaPage() {
       clearStoredAttempt();
     }
     setPhase("identificando");
+    clearPhotoForAttempt();
     infoRef.current = null;
     setInfo(null);
     setRecord(null);
     setError(null);
     setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    lastSendCauseRef.current = null;
+    autoConsultedNonceRef.current = null;
     setServerOffset(0);
     setCopiedNonce(false);
   }
@@ -1089,26 +1553,29 @@ export default function AsistenciaPage() {
 
   // Teclado táctil del modo DNI: sólo dígitos, máximo 8 posiciones. El input
   // real sigue siendo el control autoritativo (tests y lectores de pantalla).
-  function appendDigit(digit: string) {
+  function appendDigit(digit: string, focusInput = false) {
     pendingIdentifierRef.current = null;
     setIdentifier((value) => {
       const digits = value.replace(/\D/g, "");
       if (digits.length >= 8) return value;
       return digits + digit;
     });
-    idInputRef.current?.focus();
+    // En táctil/ratón el foco vuelve al input para conservar la entrada física
+    // y evitar el teclado nativo; al activar con teclado el foco se queda en la
+    // tecla para poder seguir navegando por el teclado numérico.
+    if (focusInput) idInputRef.current?.focus();
   }
 
-  function backspaceDigit() {
+  function backspaceDigit(focusInput = false) {
     pendingIdentifierRef.current = null;
     setIdentifier((value) => value.slice(0, -1));
-    idInputRef.current?.focus();
+    if (focusInput) idInputRef.current?.focus();
   }
 
-  function clearIdentifier() {
+  function clearIdentifier(focusInput = false) {
     pendingIdentifierRef.current = null;
     setIdentifier("");
-    idInputRef.current?.focus();
+    if (focusInput) idInputRef.current?.focus();
   }
 
   const limaClock: Intl.DateTimeFormatOptions = {
@@ -1135,9 +1602,14 @@ export default function AsistenciaPage() {
     lastAttemptStatus?.kind === "pending" && lastAttemptStatus.evidenceReady && lastAttemptStatus.writeTokenValid;
   const canResolveExpired = lastAttemptStatus?.kind === "expired_unconfirmed";
   const canRestartResolved = lastAttemptStatus?.kind === "cancelled" || lastAttemptStatus?.kind === "reviewed";
+  const canRetryIdentify = Boolean(pendingIdentifierRef.current ?? identifier.trim());
 
   return (
     <div className="kiosk">
+      {/* El reloj no es una región viva: sólo se anuncian los cambios de tarea. */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
       <div className="kiosk-brand">
         <img src="/brand/logo_color.svg" alt="Agua ReNew" width={700} height={190} />
       </div>
@@ -1154,29 +1626,27 @@ export default function AsistenciaPage() {
               {dateLabel}
             </div>
             <form onSubmit={handleIdentify} className="kiosk-form" data-testid="kiosk-identify-form">
-              <div className="kiosk-id-mode-group" role="tablist" aria-label="Modo de ingreso">
+              <div className="kiosk-id-mode-group" role="group" aria-label="Modo de ingreso">
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={idMode === "dni"}
+                  aria-pressed={idMode === "dni"}
                   className={`kiosk-mode-tab${idMode === "dni" ? " is-active" : ""}`}
                   onClick={(event) => {
                     setIdModeInstant(event.detail <= 0);
                     setIdMode("dni");
-                    idInputRef.current?.focus();
+                    if (event.detail > 0) idInputRef.current?.focus();
                   }}
                 >
                   DNI (números)
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={idMode === "code"}
+                  aria-pressed={idMode === "code"}
                   className={`kiosk-mode-tab${idMode === "code" ? " is-active" : ""}`}
                   onClick={(event) => {
                     setIdModeInstant(event.detail <= 0);
                     setIdMode("code");
-                    idInputRef.current?.focus();
+                    if (event.detail > 0) idInputRef.current?.focus();
                   }}
                 >
                   Código / AR: (texto)
@@ -1241,17 +1711,17 @@ export default function AsistenciaPage() {
                 >
                   <div className="kiosk-keypad" role="group" aria-label="Teclado numérico">
                     {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((digit) => (
-                      <button key={digit} type="button" className="kiosk-key" onClick={() => appendDigit(digit)}>
+                      <button key={digit} type="button" className="kiosk-key" onClick={(event) => appendDigit(digit, event.detail > 0)}>
                         {digit}
                       </button>
                     ))}
-                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={clearIdentifier} aria-label="Limpiar DNI">
+                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={(event) => clearIdentifier(event.detail > 0)} aria-label="Limpiar DNI">
                       C
                     </button>
-                    <button type="button" className="kiosk-key" onClick={() => appendDigit("0")}>
+                    <button type="button" className="kiosk-key" onClick={(event) => appendDigit("0", event.detail > 0)}>
                       0
                     </button>
-                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={backspaceDigit} aria-label="Borrar último dígito">
+                    <button type="button" className="kiosk-key kiosk-key--muted" onClick={(event) => backspaceDigit(event.detail > 0)} aria-label="Borrar último dígito">
                       <ArrowLeft size={18} />
                     </button>
                   </div>
@@ -1272,7 +1742,7 @@ export default function AsistenciaPage() {
                 </p>
               )}
 
-              <button type="submit" className="btn kiosk-cta kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
+              <button ref={identifyButtonRef} type="submit" className="btn kiosk-cta kiosk-btn" disabled={identifying} data-testid="kiosk-identify">
                 {identifying ? <Spinner size={18} /> : <ClipboardCheck size={18} />}
                 {requestingLocation ? "Solicitando ubicación…" : identifying ? "Verificando…" : "Identificar asistencia"}
               </button>
@@ -1326,11 +1796,28 @@ export default function AsistenciaPage() {
             </div>
             <video ref={videoRef} className="kiosk-video" playsInline muted autoPlay />
             {phase === "cuenta_regresiva" && (
-              <p className="kiosk-countdown" role="status" aria-live="polite" aria-label="Cuenta regresiva activa. Puede tomar la foto ahora.">
-                Acomódate frente a la cámara… <span aria-hidden>{countdown}</span> segundos
-              </p>
+              <div className="kiosk-countdown-row">
+                <p className="kiosk-countdown" aria-live="off">
+                  {countdownPaused ? "Cuenta en pausa. " : "Acomódate frente a la cámara… "}
+                  <span aria-hidden>{countdown}</span> segundos
+                </p>
+                <button
+                  className="btn btn-outline kiosk-countdown-toggle"
+                  type="button"
+                  onClick={toggleCountdownPause}
+                  aria-pressed={countdownPaused}
+                  data-testid="kiosk-countdown-toggle"
+                >
+                  {countdownPaused ? "Reanudar" : "Pausar"}
+                </button>
+              </div>
             )}
             {phase === "abriendo_camara" && <p className="muted">Abriendo cámara…</p>}
+            {phase === "capturando" && (
+              <p className="muted" role="status" data-testid="kiosk-capturing-status">
+                Preparando el envío…
+              </p>
+            )}
             <div className="kiosk-camera-actions">
               {(phase === "video_listo" || phase === "cuenta_regresiva") && (
                 <button className="btn btn-primary kiosk-btn" type="button" onClick={captureNow} disabled={captureLock.current} data-testid="kiosk-capture-now">
@@ -1345,8 +1832,8 @@ export default function AsistenciaPage() {
         )}
 
         {phase === "enviando" && (
-          <p className="kiosk-date">
-            <Spinner size={18} /> Enviando marcación…
+          <p ref={sendingStatusRef} tabIndex={-1} className="kiosk-date kiosk-sending-status" data-testid="kiosk-sending-status">
+            <Spinner size={18} /> Enviando marcación… No cierre esta pantalla.
           </p>
         )}
 
@@ -1369,6 +1856,12 @@ export default function AsistenciaPage() {
                 Conserve este intento. Un fallo de consulta no demuestra que la marcación no se haya registrado.
               </p>
             )}
+            {photoNotice && (
+              <p className="alert alert-notice" role="status" data-testid="kiosk-photo-notice">
+                <Info size={15} />
+                <span>{photoNotice}</span>
+              </p>
+            )}
             {attemptNonce && (
               <div className="kiosk-nonce-row">
                 <p className="muted kiosk-nonce-text" data-testid="kiosk-attempt-nonce">
@@ -1387,69 +1880,108 @@ export default function AsistenciaPage() {
               </div>
             )}
             <div className="kiosk-incident-actions">
+              {!info && (
+                <>
+                  {canRetryIdentify && (
+                    <button
+                      className="btn btn-primary kiosk-btn"
+                      type="button"
+                      onClick={retryIdentify}
+                      disabled={identifying}
+                      data-testid="kiosk-retry-identify"
+                    >
+                      Reintentar identificación
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-outline kiosk-btn"
+                    type="button"
+                    onClick={backToIdentify}
+                    disabled={identifying}
+                    data-testid="kiosk-back-identify"
+                  >
+                    Volver a identificar
+                  </button>
+                </>
+              )}
               {info && (
-                <button
-                  className="btn btn-primary kiosk-btn"
-                  type="button"
-                  onClick={() => void consultAttempt()}
-                  disabled={consulting || sending}
-                  data-testid="kiosk-consult-attempt"
-                >
-                  {consulting ? "Consultando…" : "Consultar este intento"}
-                </button>
-              )}
-              {canComplete && info && (
-                <button
-                  className="btn btn-primary kiosk-btn"
-                  type="button"
-                  onClick={() => void completeAttempt()}
-                  disabled={consulting || sending}
-                  data-testid="kiosk-complete-attempt"
-                >
-                  Completar este intento
-                </button>
-              )}
-              {lastPhoto && info && (
-                <button
-                  className="btn btn-primary kiosk-btn"
-                  type="button"
-                  onClick={() => void resendSamePhoto()}
-                  disabled={consulting || sending}
-                  data-testid="kiosk-resend"
-                >
-                  Reenviar la misma foto
-                </button>
-              )}
-              {canResolveExpired && (
-                <button
-                  className="btn btn-outline kiosk-btn"
-                  type="button"
-                  onClick={() => void resolveKioskAttempt("TOKEN_EXPIRED")}
-                  disabled={consulting || sending}
-                  data-testid="kiosk-resolve-attempt"
-                >
-                  Cerrar intento vencido
-                </button>
-              )}
-              {attemptSubmitted && !canRestartResolved && (
-                <button
-                  className="btn btn-outline kiosk-btn"
-                  type="button"
-                  onClick={() => void resolveKioskAttempt("USER_CANCELLED")}
-                  disabled={consulting || sending}
-                  data-testid="kiosk-cancel-attempt"
-                >
-                  Cerrar este intento
-                </button>
-              )}
-              {canRestartResolved ? (
-                <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
-                  Volver al inicio
-                </button>
-              ) : (
-                <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
-                  Tomar otra foto
-                </button>
+                <>
+                  {canComplete ? (
+                    <button
+                      className="btn btn-primary kiosk-btn"
+                      type="button"
+                      onClick={() => void completeAttempt()}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-complete-attempt"
+                    >
+                      Completar este intento
+                    </button>
+                  ) : lastPhoto ? (
+                    <button
+                      className="btn btn-primary kiosk-btn"
+                      type="button"
+                      onClick={() => void resendSamePhoto()}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-resend"
+                    >
+                      Reenviar la misma foto
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn-primary kiosk-btn"
+                      type="button"
+                      onClick={() => void consultAttempt()}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-consult-attempt"
+                    >
+                      {consulting ? "Consultando…" : "Consultar este intento"}
+                    </button>
+                  )}
+                  {(canComplete || lastPhoto) && (
+                    <button
+                      className="btn btn-outline kiosk-btn"
+                      type="button"
+                      onClick={() => void consultAttempt()}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-consult-attempt"
+                    >
+                      {consulting ? "Consultando…" : "Consultar este intento"}
+                    </button>
+                  )}
+                  {canResolveExpired && (
+                    <button
+                      className="btn btn-outline kiosk-btn"
+                      type="button"
+                      onClick={() => void resolveKioskAttempt("TOKEN_EXPIRED")}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-resolve-attempt"
+                    >
+                      Cerrar intento vencido
+                    </button>
+                  )}
+                  {attemptSubmitted && !canRestartResolved && (
+                    <button
+                      className="btn btn-outline kiosk-btn"
+                      type="button"
+                      onClick={() => void resolveKioskAttempt("USER_CANCELLED")}
+                      disabled={consulting || sending}
+                      data-testid="kiosk-cancel-attempt"
+                    >
+                      Cerrar este intento
+                    </button>
+                  )}
+                  {canRestartResolved ? (
+                    <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
+                      Volver al inicio
+                    </button>
+                  ) : (
+                    <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
+                      {lastPhoto || attemptSubmitted
+                        ? "Resolver y tomar otra foto"
+                        : "Tomar otra foto"}
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -1460,7 +1992,7 @@ export default function AsistenciaPage() {
             <div className={`big-icon ${(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? "ok" : "blue"}`}>
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? <Droplet size={26} /> : <Check size={26} />}
             </div>
-            <h2 data-testid="kiosk-confirmed-title">
+            <h2 ref={confirmedTitleRef} tabIndex={-1} data-testid="kiosk-confirmed-title">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? "Entrada registrada"
                 : "Salida registrada"}

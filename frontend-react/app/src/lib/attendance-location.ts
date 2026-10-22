@@ -1,5 +1,12 @@
 /** Lectura puntual de ubicación y presentación de fallas; sin estado de React. */
-const LOCATION_TIMEOUT_MS = 20_000;
+export const LOCATION_TOTAL_BUDGET_MS = 20_000;
+const LOCATION_ATTEMPT_TIMEOUT_MS = 7_000;
+const LOCATION_MAX_ATTEMPTS = 3;
+const RETRYABLE_LOCATION_FAILURES: ReadonlySet<LocationFailure> = new Set([
+  "accuracy",
+  "timeout",
+  "unavailable",
+]);
 export const LOCATION_MAX_ACCURACY_M = 50;
 export const LOCATION_MAX_AGE_MS = 60_000;
 
@@ -21,50 +28,107 @@ export function locationAgeMs(position: ClientPosition, nowMonotonicMs: number):
 
 /**
  * Lectura puntual (nunca `watchPosition`): alta precisión, sin caché y con un
- * plazo propio de 20 s porque algunos navegadores no respetan `timeout`.
+ * presupuesto total de 20 s porque algunos navegadores no respetan `timeout`.
+ * Sólo se reintenta una lectura imprecisa o transitoriamente fallida; permiso
+ * denegado o geolocalización no soportada terminan de inmediato. Cada intento
+ * usa el tiempo que queda, nunca un plazo nuevo que estire el total.
  */
-export function requestBrowserPosition(now: () => number = () => performance.now()): Promise<LocationResult> {
+export function requestBrowserPosition(
+  now: () => number = () => performance.now(),
+): Promise<LocationResult> {
   if (typeof navigator === "undefined" || !navigator.geolocation?.getCurrentPosition) {
     return Promise.resolve({ ok: false, reason: "unsupported" });
   }
   const geolocation = navigator.geolocation;
   return new Promise<LocationResult>((resolve) => {
     let settled = false;
+    let attemptTimer: number | undefined;
+    let attempts = 0;
+    const budgetDeadline = now() + LOCATION_TOTAL_BUDGET_MS;
+
     const finish = (result: LocationResult) => {
       if (settled) return;
       settled = true;
-      window.clearTimeout(deadline);
+      if (attemptTimer !== undefined) window.clearTimeout(attemptTimer);
+      window.clearTimeout(budgetTimer);
       resolve(result);
     };
-    const deadline = window.setTimeout(() => finish({ ok: false, reason: "timeout" }), LOCATION_TIMEOUT_MS);
-    try {
-      geolocation.getCurrentPosition(
-        (position) => {
-          const observedMonotonicMs = now();
-          const { latitude, longitude, accuracy } = position.coords;
-          const validCoordinates =
-            Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
-            Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
-          if (!validCoordinates || !Number.isFinite(accuracy) || accuracy <= 0) {
-            finish({ ok: false, reason: "invalid" });
-            return;
-          }
-          if (accuracy > LOCATION_MAX_ACCURACY_M) {
-            finish({ ok: false, reason: "accuracy" });
-            return;
-          }
-          finish({ ok: true, position: { latitude, longitude, accuracyM: accuracy, observedMonotonicMs } });
-        },
-        (error) => {
-          if (error?.code === 1) finish({ ok: false, reason: "denied" });
-          else if (error?.code === 3) finish({ ok: false, reason: "timeout" });
-          else finish({ ok: false, reason: "unavailable" });
-        },
-        { enableHighAccuracy: true, maximumAge: 0, timeout: LOCATION_TIMEOUT_MS },
+    const budgetTimer = window.setTimeout(
+      () => finish({ ok: false, reason: "timeout" }),
+      LOCATION_TOTAL_BUDGET_MS,
+    );
+
+    const retryOrFinish = (reason: LocationFailure) => {
+      const remaining = budgetDeadline - now();
+      const canRetry =
+        RETRYABLE_LOCATION_FAILURES.has(reason) &&
+        attempts < LOCATION_MAX_ATTEMPTS &&
+        remaining > 250;
+      if (canRetry) {
+        startAttempt();
+        return;
+      }
+      finish({ ok: false, reason });
+    };
+
+    const startAttempt = () => {
+      if (settled) return;
+      const remaining = Math.max(0, budgetDeadline - now());
+      if (remaining <= 0) {
+        finish({ ok: false, reason: "timeout" });
+        return;
+      }
+      attempts += 1;
+      const attemptTimeout = Math.min(remaining, LOCATION_ATTEMPT_TIMEOUT_MS);
+      let attemptSettled = false;
+      const settleAttempt = (result: LocationResult) => {
+        if (attemptSettled || settled) return;
+        attemptSettled = true;
+        window.clearTimeout(attemptTimer);
+        if (result.ok) {
+          finish(result);
+          return;
+        }
+        retryOrFinish(result.reason);
+      };
+      attemptTimer = window.setTimeout(
+        () => settleAttempt({ ok: false, reason: "timeout" }),
+        attemptTimeout,
       );
-    } catch {
-      finish({ ok: false, reason: "unavailable" });
-    }
+      try {
+        geolocation.getCurrentPosition(
+          (position) => {
+            const observedMonotonicMs = now();
+            const { latitude, longitude, accuracy } = position.coords;
+            const validCoordinates =
+              Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+              Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+            if (!validCoordinates || !Number.isFinite(accuracy) || accuracy <= 0) {
+              settleAttempt({ ok: false, reason: "invalid" });
+              return;
+            }
+            if (accuracy > LOCATION_MAX_ACCURACY_M) {
+              settleAttempt({ ok: false, reason: "accuracy" });
+              return;
+            }
+            settleAttempt({
+              ok: true,
+              position: { latitude, longitude, accuracyM: accuracy, observedMonotonicMs },
+            });
+          },
+          (error) => {
+            if (error?.code === 1) settleAttempt({ ok: false, reason: "denied" });
+            else if (error?.code === 3) settleAttempt({ ok: false, reason: "timeout" });
+            else settleAttempt({ ok: false, reason: "unavailable" });
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: attemptTimeout },
+        );
+      } catch {
+        settleAttempt({ ok: false, reason: "unavailable" });
+      }
+    };
+
+    startAttempt();
   });
 }
 

@@ -17,6 +17,7 @@ from app.core.request_timing import SummaryTimingMiddleware
 from app.db.session import engine
 from app.modules.adjustments.router import router as adjustments_router
 from app.modules.attendance.router import router as attendance_router
+from app.modules.attendance.recovery_router import router as attendance_recovery_router
 from app.modules.attendance.manual_router import router as manual_attendance_router
 from app.modules.attendance.agenda_router import router as attendance_agenda_router
 from app.modules.audit.router import router as audit_router
@@ -98,6 +99,7 @@ app.include_router(employees_router)
 app.include_router(schedules_router)
 app.include_router(salary_router)
 app.include_router(attendance_router)
+app.include_router(attendance_recovery_router)
 app.include_router(manual_attendance_router)
 app.include_router(attendance_agenda_router)
 app.include_router(devices_router)

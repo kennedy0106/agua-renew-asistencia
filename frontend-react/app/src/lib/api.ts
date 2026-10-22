@@ -90,6 +90,23 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Una operación pública superó su plazo. El plazo incluye la lectura del
+ * cuerpo: un servidor que responde cabeceras y deja el cuerpo abierto sigue
+ * contando como operación en curso.
+ */
+export class ApiTimeoutError extends Error {
+  constructor(message = "La operación tardó demasiado y se canceló.") {
+    super(message);
+    this.name = "ApiTimeoutError";
+  }
+}
+
+export type ApiFetchOptions = RequestInit & {
+  /** Plazo total (fetch + lectura del cuerpo). Sin valor, no se impone plazo. */
+  timeoutMs?: number;
+};
+
 type ValidationIssue = { loc: unknown[]; msg: string; type: string };
 
 const isBusinessCode = (value: unknown): value is string =>
@@ -113,57 +130,95 @@ const validationMessage = (issues: ValidationIssue[]) => {
 
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit = {},
+  options: ApiFetchOptions = {},
 ): Promise<T> {
-  const headers = new Headers(options.headers);
-  if (options.body != null && !headers.has("Content-Type")) {
+  const { timeoutMs, signal: callerSignal, ...requestInit } = options;
+  const headers = new Headers(requestInit.headers);
+  if (requestInit.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const res = await fetch(`${API_URL}${path}`, {
-    ...options,
-    credentials: "include", // la cookie de sesión viaja en cada request
-    headers,
-  });
 
-  if (!res.ok) {
-    let detail = `Error ${res.status}`;
-    let code: string | undefined;
-    let responseKind: ApiErrorResponseKind = "UNREADABLE";
-    try {
-      const body: unknown = await res.json();
-      const response = body as { detail?: unknown } | null;
-      const domainDetail = response?.detail;
-      if (
-        domainDetail &&
-        typeof domainDetail === "object" &&
-        isBusinessCode((domainDetail as { code?: unknown }).code)
-      ) {
-        responseKind = "DOMAIN_ERROR";
-        code = (domainDetail as { code: string }).code;
-        const message = (domainDetail as { message?: unknown }).message;
-        if (typeof message === "string" && message.trim()) detail = message;
-      } else if (
-        res.status === 422 &&
-        Array.isArray(domainDetail) &&
-        domainDetail.length > 0 &&
-        domainDetail.every(isValidationIssue)
-      ) {
-        responseKind = "REQUEST_VALIDATION";
-        detail = validationMessage(domainDetail);
-      } else {
-        responseKind = "OTHER_JSON";
+  // El plazo cubre la petición y la lectura del cuerpo. Abortar el fetch no
+  // basta: un cuerpo que nunca termina dejaría la UI esperando para siempre.
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  const operation = (async () => {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...requestInit,
+      credentials: "include", // la cookie de sesión viaja en cada request
+      headers,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      let detail = `Error ${res.status}`;
+      let code: string | undefined;
+      let responseKind: ApiErrorResponseKind = "UNREADABLE";
+      try {
+        const body: unknown = await res.json();
+        const response = body as { detail?: unknown } | null;
+        const domainDetail = response?.detail;
+        if (
+          domainDetail &&
+          typeof domainDetail === "object" &&
+          isBusinessCode((domainDetail as { code?: unknown }).code)
+        ) {
+          responseKind = "DOMAIN_ERROR";
+          code = (domainDetail as { code: string }).code;
+          const message = (domainDetail as { message?: unknown }).message;
+          if (typeof message === "string" && message.trim()) detail = message;
+        } else if (
+          res.status === 422 &&
+          Array.isArray(domainDetail) &&
+          domainDetail.length > 0 &&
+          domainDetail.every(isValidationIssue)
+        ) {
+          responseKind = "REQUEST_VALIDATION";
+          detail = validationMessage(domainDetail);
+        } else {
+          responseKind = "OTHER_JSON";
+        }
+      } catch {
+        // The body may have been interrupted after headers.  Keep this distinct
+        // from a recognized validation response so mutations remain recoverable.
       }
-    } catch {
-      // The body may have been interrupted after headers.  Keep this distinct
-      // from a recognized validation response so mutations remain recoverable.
+      throw new ApiError(res.status, detail, code, responseKind);
     }
-    throw new ApiError(res.status, detail, code, responseKind);
+    // 204 No Content (p. ej. change-password): no hay cuerpo que parsear.
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    return (await res.json()) as T;
+  })();
+
+  try {
+    if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      // La carrera garantiza el plazo aunque la implementación de fetch no
+      // rechace el cuerpo al abortar; el abort sigue liberando la conexión.
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new ApiTimeoutError());
+        }, timeoutMs);
+      });
+      return await Promise.race([operation, deadline]);
+    }
+    return await operation;
+  } catch (error) {
+    if (timedOut) throw new ApiTimeoutError();
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
-  // 204 No Content (p. ej. change-password): no hay cuerpo que parsear.
-  if (res.status === 204) {
-    return undefined as T;
-  }
-  return res.json() as Promise<T>;
 }
 
 export type UserOut = {
@@ -470,9 +525,34 @@ export type AttemptStatusResponse = {
   preparation?: PreparationSnapshot | null;
 };
 
+/**
+ * Plazos explícitos del flujo público. Son deliberadamente mayores que una
+ * respuesta normal pero acotados: un timeout nunca prueba que la escritura no
+ * se aplicó, así que la recuperación posterior es sólo de lectura.
+ */
+export const ATTENDANCE_TIMEOUT_MS = {
+  identify: 15_000,
+  prepare: 15_000,
+  evidence: 30_000,
+  marking: 20_000,
+  status: 10_000,
+  resolve: 10_000,
+} as const;
+
+export type AttendanceRequestOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+const publicAttendanceRequest = (timeoutMs: number, options?: AttendanceRequestOptions) => ({
+  signal: options?.signal,
+  timeoutMs: options?.timeoutMs ?? timeoutMs,
+});
+
 export const attendanceApi = {
-  identify: (identifier: string) =>
+  identify: (identifier: string, options?: AttendanceRequestOptions) =>
     apiFetch<IdentifyResponse>("/api/v1/attendance/identify", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.identify, options),
       method: "POST",
       body: JSON.stringify({ identifier }),
     }),
@@ -480,10 +560,12 @@ export const attendanceApi = {
     markingToken: string,
     imageBase64: string,
     contentType = "image/jpeg",
+    options?: AttendanceRequestOptions,
   ) =>
     apiFetch<{ id: string; content_type: string }>(
       "/api/v1/attendance/evidence",
       {
+        ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.evidence, options),
         method: "POST",
         body: JSON.stringify({
           marking_token: markingToken,
@@ -492,13 +574,15 @@ export const attendanceApi = {
         }),
       },
     ),
-  checkIn: (markingToken: string) =>
+  checkIn: (markingToken: string, options?: AttendanceRequestOptions) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-in", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.marking, options),
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),
-  checkOut: (markingToken: string) =>
+  checkOut: (markingToken: string, options?: AttendanceRequestOptions) =>
     apiFetch<AttendanceRecordOut>("/api/v1/attendance/check-out", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.marking, options),
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),
@@ -506,21 +590,29 @@ export const attendanceApi = {
    * Fija en el servidor la hora oficial y la ubicación de un intento. Repetirlo
    * devuelve el mismo snapshot; nunca crea por sí solo una asistencia.
    */
-  prepareAttempt: (markingToken: string, location: PrepareLocationInput) =>
+  prepareAttempt: (
+    markingToken: string,
+    location: PrepareLocationInput,
+    options?: AttendanceRequestOptions,
+  ) =>
     apiFetch<PrepareAttemptResponse>("/api/v1/attendance/attempt/prepare", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.prepare, options),
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken, location }),
     }),
-  attemptStatus: (markingToken: string) =>
+  attemptStatus: (markingToken: string, options?: AttendanceRequestOptions) =>
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/status", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.status, options),
       method: "POST",
       body: JSON.stringify({ marking_token: markingToken }),
     }),
   resolveAttempt: (
     markingToken: string,
     reasonCode: "TOKEN_EXPIRED" | "PHOTO_RETAKE" | "USER_CANCELLED",
+    options?: AttendanceRequestOptions,
   ) =>
     apiFetch<AttemptStatusResponse>("/api/v1/attendance/attempt/resolve", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.resolve, options),
       method: "POST",
       body: JSON.stringify({
         marking_token: markingToken,

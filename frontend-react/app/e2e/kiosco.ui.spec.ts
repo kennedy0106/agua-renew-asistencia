@@ -411,7 +411,8 @@ test.describe("kiosco UI con API simulada", () => {
     await identifyUntilIncident(page);
     await page.reload();
     await expect(page.getByTestId("kiosk-consult-attempt")).toBeVisible();
-    await expect(page.getByTestId("kiosk-resend")).toHaveCount(0);
+    // La copia temporal sobrevive a la recarga, pero no se reenvía sola.
+    await expect(page.getByTestId("kiosk-resend")).toBeVisible();
     const evidenceBefore = evidenceCalls;
     const writesBefore = checkInCalls;
     const statusBefore = statusCalls;

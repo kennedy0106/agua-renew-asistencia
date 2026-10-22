@@ -257,10 +257,14 @@ describe("kiosk identifier keyboard", () => {
     const user = userEvent.setup();
     render(<AsistenciaPage />);
 
-    const codeTab = screen.getByRole("tab", { name: /código/i });
-    codeTab.focus();
+    // Grupo de botones con aria-pressed: no simula un tablist incompleto.
+    const codeButton = screen.getByRole("button", { name: /código/i });
+    expect(screen.getByRole("group", { name: "Modo de ingreso" })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    codeButton.focus();
     await user.keyboard("{Enter}");
 
+    expect(codeButton).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("kiosk-identifier")).toHaveAttribute("inputmode", "text");
     expect(document.querySelector(".kiosk-keypad")).toBeNull();
     expect(screen.getByTestId("kiosk-identify")).not.toBeDisabled();
@@ -271,12 +275,12 @@ describe("kiosk identifier keyboard", () => {
     render(<AsistenciaPage />);
     const input = screen.getByTestId("kiosk-identifier");
 
-    await user.click(screen.getByRole("tab", { name: "Código / AR: (texto)" }));
+    await user.click(screen.getByRole("button", { name: "Código / AR: (texto)" }));
     expect(input).toHaveAttribute("inputmode", "text");
     expect(screen.queryByRole("group", { name: "Teclado numérico" })).not.toBeInTheDocument();
     await user.type(input, "EMP-002");
     expect(input).toHaveValue("EMP-002");
-    await user.click(screen.getByRole("tab", { name: "DNI (números)" }));
+    await user.click(screen.getByRole("button", { name: "DNI (números)" }));
     expect(input).toHaveAttribute("inputmode", "none");
     expect(screen.getByRole("group", { name: "Teclado numérico" })).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
@@ -333,7 +337,10 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
 
     expect(await screen.findByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
     expect(geolocation.getCurrentPosition).toHaveBeenCalledTimes(1);
-    expect(geolocationCalls[0].options).toMatchObject({ enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    // El presupuesto total es 20 s; cada intento usa un plazo acotado menor.
+    expect(geolocationCalls[0].options).toMatchObject({ enableHighAccuracy: true, maximumAge: 0 });
+    expect(geolocationCalls[0].options?.timeout).toBeGreaterThan(0);
+    expect(geolocationCalls[0].options?.timeout).toBeLessThanOrEqual(20000);
     const paths = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(paths).toHaveLength(1);
     expect(paths[0]).toContain("/api/v1/attendance/identify");
