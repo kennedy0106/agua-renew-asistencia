@@ -146,6 +146,10 @@ test.describe("kiosco UI con API simulada", () => {
 
   test("la cámara espera diez segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
     let evidenceCalls = 0;
+    // Esta prueba registra una entrada nueva. La fecha fija antigua activa
+    // correctamente la confirmación histórica y no representa este escenario.
+    const markedAt = new Date().toISOString();
+    const workDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Lima" }).format(new Date(markedAt));
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") return fulfillApi(route, 204, {});
       const url = route.request().url();
@@ -156,9 +160,9 @@ test.describe("kiosco UI con API simulada", () => {
         return fulfillApi(route, 201, { id: "ev-1", content_type: "image/jpeg" });
       }
       if (url.includes("/check-in")) return fulfillApi(route, 201, {
-        id: "rec-1", employee_id: "11111111-1111-1111-1111-111111111111", work_date: "2026-09-11",
-        check_in_at: "2026-09-11T13:00:00+00:00", check_out_at: null, worked_minutes: null,
-        status: "OPEN", notes: null, created_at: "2026-09-11T13:00:00+00:00", updated_at: "2026-09-11T13:00:00+00:00", event_type: "CHECK_IN",
+        id: "rec-1", employee_id: "11111111-1111-1111-1111-111111111111", work_date: workDate,
+        check_in_at: markedAt, check_out_at: null, worked_minutes: null,
+        status: "OPEN", notes: null, created_at: markedAt, updated_at: markedAt, event_type: "CHECK_IN",
       });
       return fulfillApi(route, 404, {});
     });
