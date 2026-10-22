@@ -3039,3 +3039,8 @@ h4,
   .logout-dialog__heading { gap: 0.7rem; }
   .logout-dialog__icon { width: 2.25rem; height: 2.25rem; }
 }
+
+.kiosk-incident-actions {
+  display: grid;
+  gap: 0.625rem;
+}

@@ -25,6 +25,7 @@ const photoStoreState = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/attendance-photo-store", () => ({
+  purgeExpiredPendingPhotos: vi.fn().mockResolvedValue(undefined),
   PENDING_PHOTO_TTL_MS: 10 * 60_000,
   savePendingPhoto: vi.fn(async (photo: typeof photoStoreState.photo) => {
     if (photoStoreState.saveResult.ok) photoStoreState.photo = photo;

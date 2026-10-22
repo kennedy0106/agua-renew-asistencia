@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * La copia local es fail-closed: sólo vale para el nonce, empleado y acción
@@ -21,6 +21,24 @@ class FakeRequest<T> {
 class FakeObjectStore {
   data = new Map<string, unknown>();
   complete: (() => void) | null = null;
+  openCursor() {
+    const request = new FakeRequest<unknown>();
+    const entries = Array.from(this.data.entries());
+    const complete = this.complete;
+    let index = 0;
+    const next = () => queueMicrotask(() => {
+      const entry = entries[index++];
+      request.result = entry ? {
+        value: entry[1],
+        delete: () => this.data.delete(entry[0]),
+        continue: next,
+      } : null;
+      request.onsuccess?.call(request, new Event("success"));
+      if (!entry) complete?.();
+    });
+    next();
+    return request;
+  }
   get(key: IDBValidKey) {
     const request = new FakeRequest<unknown>();
     queueMicrotask(() => {
@@ -104,6 +122,10 @@ async function photoStore() {
   return import("@/lib/attendance-photo-store");
 }
 
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(5_000);
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
   delete (globalThis as { indexedDB?: unknown }).indexedDB;
@@ -123,6 +145,18 @@ describe("validación de la foto pendiente", () => {
 });
 
 describe("IndexedDB temporal de la foto", () => {
+  it("purga fotos vencidas de pestañas cerradas y conserva las vigentes", async () => {
+    const { database } = installFakeIndexedDb();
+    const store = await photoStore();
+    const expired = { ...PHOTO, nonce: "closed-tab", expiresAt: 4_999 };
+    database.store.data.set(store.pendingPhotoKey(expired), expired);
+    database.store.data.set(store.pendingPhotoKey(PHOTO), PHOTO);
+
+    await store.purgeExpiredPendingPhotos();
+
+    expect(database.store.data.has(store.pendingPhotoKey(expired))).toBe(false);
+    expect(database.store.data.get(store.pendingPhotoKey(PHOTO))).toEqual(PHOTO);
+  });
   it("guarda por intento y no entrega ni borra la foto de otra identidad", async () => {
     installFakeIndexedDb();
     const store = await photoStore();

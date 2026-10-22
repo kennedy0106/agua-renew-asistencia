@@ -123,6 +123,7 @@ function openDatabase(): Promise<IDBDatabase> {
 function runRequest<T>(
   mode: IDBTransactionMode,
   operation: (store: IDBObjectStore) => IDBRequest<T>,
+  onResult?: (result: T) => void,
 ): Promise<T> {
   return openDatabase().then(
     (db) =>
@@ -157,6 +158,12 @@ function runRequest<T>(
           const request = operation(transaction.objectStore(PENDING_PHOTO_STORE_NAME));
           request.onsuccess = () => {
             result = request.result;
+            try {
+              onResult?.(result);
+            } catch (error) {
+              transaction?.abort();
+              fail(error);
+            }
           };
           request.onerror = () => fail(request.error ?? new Error("unavailable"));
         } catch (error) {
@@ -172,10 +179,31 @@ function runRequest<T>(
   );
 }
 
+/**
+ * El navegador cerrado no ejecuta timers. Al volver al kiosco o guardar otra
+ * foto, elimina copias vencidas de pestañas cerradas, nunca las aún vigentes.
+ * La transacción y su plazo son los mismos que para las demás operaciones.
+ */
+export async function purgeExpiredPendingPhotos(nowMs = Date.now()): Promise<void> {
+  try {
+    await runRequest("readwrite", (store) => store.openCursor(), (cursor) => {
+      if (!cursor) return;
+      const expiresAt = (cursor.value as Partial<PendingPhoto> | null)?.expiresAt;
+      if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt <= nowMs) {
+        cursor.delete();
+      }
+      cursor.continue();
+    });
+  } catch {
+    // El mantenimiento local no impide marcar ni altera la referencia durable.
+  }
+}
+
 /** Persiste la foto pendiente de UN intento, sin tocar la de otro. */
 export async function savePendingPhoto(photo: PendingPhoto): Promise<PhotoStoreOutcome> {
   try {
     await runRequest("readwrite", (store) => store.put(photo, pendingPhotoKey(photo)));
+    void purgeExpiredPendingPhotos();
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

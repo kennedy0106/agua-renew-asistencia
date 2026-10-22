@@ -20,6 +20,7 @@ import {
   PENDING_PHOTO_TTL_MS,
   clearPendingPhoto,
   loadPendingPhoto,
+  purgeExpiredPendingPhotos,
   savePendingPhoto,
   type PendingPhotoExpectation,
 } from "@/lib/attendance-photo-store";
@@ -379,6 +380,7 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     let active = true;
+    void purgeExpiredPendingPhotos();
     const stored = readStoredAttempt();
     // Sin referencia durable no se toca ninguna copia: otra pestaña puede
     // tener su propio intento pendiente en el mismo navegador.
@@ -1961,11 +1963,9 @@ export default function AsistenciaPage() {
                     </button>
                   ) : (
                     <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
-                      {lastPhoto
-                        ? "Descartar foto y reintentar"
-                        : attemptSubmitted
-                          ? "Resolver y tomar otra foto"
-                          : "Tomar otra foto"}
+                      {lastPhoto || attemptSubmitted
+                        ? "Resolver y tomar otra foto"
+                        : "Tomar otra foto"}
                     </button>
                   )}
                 </>
