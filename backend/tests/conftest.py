@@ -61,9 +61,14 @@ def _object_store(request, monkeypatch):
 def _reset_rate_limiters():
     """Resetea los limiters globales entre tests (evita que se agote el límite)."""
     import app.modules.attendance.router as attendance_router
+    import app.modules.attendance.recovery_router as recovery_router
 
     attendance_router._public_limiter.reset()
     attendance_router._marking_limiter.reset()
+    recovery_router._verify_limiter.reset()
+    recovery_router._recovery_limiter.reset()
+    recovery_router._recovery_device_limiter.reset()
+    recovery_router._recovery_nonce_limiter.reset()
     yield
 
 

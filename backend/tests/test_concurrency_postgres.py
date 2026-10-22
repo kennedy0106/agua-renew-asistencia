@@ -1629,3 +1629,258 @@ def test_purge_vs_marcacion_no_borra_confirmada(pg_engine):
         _cleanup_attempt(check, employee_id, device_id)
     finally:
         check.close()
+
+def test_recovery_authorization_and_late_marking_share_employee_lock(pg_engine):
+    """A5: el cierre del jefe y la escritura tardía se serializan por empleado."""
+    if "attendance_recovery_requests" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de recuperación incompleto")
+    from app.modules.attendance.models import (
+        AttendanceAttemptResolution,
+        AttendanceRecord,
+        AttendanceRecoveryRequest,
+    )
+    from app.modules.attendance.recovery_service import RecoveryService
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+        actor_id = _manual_actor(session)
+        token = create_attendance_token(
+            str(employee_id), action="CHECK_IN", device_id=str(device_id)
+        )
+        request, _created = RecoveryService(session).create_request(
+            marking_token=token,
+            decoded=decode_attendance_token(token),
+            requester_device_id=device_id,
+        )
+        request_id = request.id
+    finally:
+        session.close()
+
+    nonce = str(decode_attendance_token(token)["nonce"])
+    _seed_preparation(factory, token, device_id=device_id)
+    holding = threading.Event()
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def authorizer():
+        db = factory()
+        try:
+            service = RecoveryService(db)
+            service.repo.lock_employee_for_attempt(employee_id)
+            holding.set()
+            results["resolve"] = service.resolve(
+                request_id,
+                decision="AUTHORIZE_REIDENTIFY",
+                reason="Cierre autorizado bajo lock",
+                user_id=actor_id,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    def marker():
+        db = factory()
+        try:
+            holding.wait(timeout=5)
+            results["mark"] = AttendanceService(db).check_in(
+                employee_id,
+                nonce=nonce,
+                require_evidence=False,
+                device_id=device_id,
+                token_device_id=str(device_id),
+                marking_token=token,
+            )
+        except HTTPException as exc:
+            db.rollback()
+            results["mark"] = exc.status_code
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=authorizer, name="recovery-authorizer"),
+        threading.Thread(target=marker, name="late-marker"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not errors
+    assert results.get("mark") == 409
+    assert isinstance(results.get("resolve"), object)
+
+    check = factory()
+    try:
+        assert list(check.scalars(select(AttendanceRecord).where(AttendanceRecord.employee_id == employee_id))) == []
+        rows = list(
+            check.scalars(
+                select(AttendanceAttemptResolution).where(AttendanceAttemptResolution.nonce == nonce)
+            )
+        )
+        assert len(rows) == 1
+        assert rows[0].resolution == "CANCELLED_UNCONFIRMED"
+        persisted = check.get(AttendanceRecoveryRequest, request_id)
+        assert persisted is not None and persisted.status == "AUTHORIZED"
+        check.execute(text("DELETE FROM attendance_recovery_requests WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM audit_logs WHERE entity_id = :id"), {"id": request_id})
+        check.commit()
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()
+
+def test_two_recovery_requests_same_nonce_and_different_browsers_no_double_close(pg_engine):
+    if "attendance_recovery_requests" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de recuperación incompleto")
+    from app.modules.attendance.models import (
+        AttendanceAttemptResolution,
+        AttendanceDevice,
+        AttendanceRecoveryRequest,
+    )
+    from app.modules.attendance.recovery_service import RecoveryService
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, original_device = _seed_employee_device(session)
+        requester_device = AttendanceDevice(
+            name=f"Solicitante {uuid.uuid4().hex[:6]}",
+            device_code=uuid.uuid4().hex,
+            active=True,
+        )
+        session.add(requester_device)
+        session.commit()
+        actor_id = _manual_actor(session)
+        token = create_attendance_token(
+            str(employee_id), action="CHECK_IN", device_id=str(original_device)
+        )
+        decoded = decode_attendance_token(token)
+        service = RecoveryService(session)
+        first, _ = service.create_request(
+            marking_token=token, decoded=decoded, requester_device_id=original_device
+        )
+        second, _ = service.create_request(
+            marking_token=token, decoded=decoded, requester_device_id=requester_device.id
+        )
+        first_id, second_id = first.id, second.id
+        requester_id = requester_device.id
+    finally:
+        session.close()
+
+    nonce = str(decode_attendance_token(token)["nonce"])
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def resolve(request_id, key: str):
+        db = factory()
+        try:
+            results[key] = RecoveryService(db).resolve(
+                request_id,
+                decision="AUTHORIZE_REIDENTIFY",
+                reason="Cierre concurrente único",
+                user_id=actor_id,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            db.close()
+
+    threads = [
+        threading.Thread(target=resolve, args=(first_id, "first"), name="resolve-first"),
+        threading.Thread(target=resolve, args=(second_id, "second"), name="resolve-second"),
+    ]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not errors
+    assert set(results) == {"first", "second"}
+
+    check = factory()
+    try:
+        rows = list(
+            check.scalars(
+                select(AttendanceAttemptResolution).where(AttendanceAttemptResolution.nonce == nonce)
+            )
+        )
+        assert len(rows) == 1
+        stored = list(
+            check.scalars(
+                select(AttendanceRecoveryRequest).where(AttendanceRecoveryRequest.nonce == nonce)
+            )
+        )
+        assert {row.status for row in stored} == {"AUTHORIZED"}
+        check.execute(text("DELETE FROM attendance_recovery_requests WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM audit_logs WHERE entity_id IN (:a, :b)"), {"a": first_id, "b": second_id})
+        check.commit()
+        _cleanup_attempt(check, employee_id, original_device)
+        check.execute(text("DELETE FROM attendance_devices WHERE id = :id"), {"id": requester_id})
+        check.commit()
+    finally:
+        check.close()
+
+
+def test_late_evidence_after_recovery_authorization_is_rejected(pg_engine):
+    if "attendance_recovery_requests" not in inspect(pg_engine).get_table_names():
+        pytest.skip("esquema de recuperación incompleto")
+    from tests.image_helpers import valid_jpeg_b64
+    from app.modules.attendance.models import AttendanceAttemptResolution, AttendanceRecoveryRequest
+    from app.modules.attendance.recovery_service import RecoveryService
+
+    factory = _two_factory(pg_engine)
+    session = factory()
+    try:
+        employee_id, device_id = _seed_employee_device(session)
+        actor_id = _manual_actor(session)
+        token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+        _seed_preparation(factory, token, device_id=device_id)
+        request, _ = RecoveryService(session).create_request(
+            marking_token=token,
+            decoded=decode_attendance_token(token),
+            requester_device_id=device_id,
+        )
+        RecoveryService(session).resolve(
+            request.id,
+            decision="AUTHORIZE_REIDENTIFY",
+            reason="Cierre antes de evidencia tardía",
+            user_id=actor_id,
+        )
+        request_id = request.id
+    finally:
+        session.close()
+
+    late = factory()
+    try:
+        with pytest.raises(HTTPException) as error:
+            AttendanceService(late).store_evidence(
+                marking_token=token,
+                image_base64=valid_jpeg_b64(),
+                content_type="image/jpeg",
+                device_id=device_id,
+            )
+        assert error.value.status_code == 409
+    finally:
+        late.rollback()
+        late.close()
+
+    check = factory()
+    try:
+        rows = list(
+            check.scalars(
+                select(AttendanceAttemptResolution).where(
+                    AttendanceAttemptResolution.employee_id == employee_id
+                )
+            )
+        )
+        assert len(rows) == 1
+        assert check.get(AttendanceRecoveryRequest, request_id).status == "AUTHORIZED"
+        check.execute(text("DELETE FROM attendance_recovery_requests WHERE employee_id = :id"), {"id": employee_id})
+        check.execute(text("DELETE FROM audit_logs WHERE entity_id = :id"), {"id": request_id})
+        check.commit()
+        _cleanup_attempt(check, employee_id, device_id)
+    finally:
+        check.close()

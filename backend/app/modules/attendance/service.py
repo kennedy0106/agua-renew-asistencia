@@ -867,6 +867,7 @@ class AttendanceService:
 
     def inspect_attempt_admin(self, nonce: str) -> dict:
         resolution, consumed, evidence = self._fresh_attempt_rows(nonce)
+        preparation = self._get_preparation(nonce)
         employee_id = None
         action = None
         device_id = None
@@ -881,6 +882,13 @@ class AttendanceService:
         elif evidence is not None:
             employee_id = evidence.employee_id
             device_id = evidence.device_id
+        elif preparation is not None:
+            # Un nonce firmado que sólo alcanzó a preparar ubicación también
+            # debe poder inspeccionarse: antes se respondía 404 y el panel no
+            # podía distinguir "sin filas" de "no existe".
+            employee_id = preparation.employee_id
+            action = preparation.action
+            device_id = preparation.device_id
         if employee_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Intento no encontrado")
         employee = EmployeeRepository(self.db).get_by_id(employee_id)
@@ -904,6 +912,12 @@ class AttendanceService:
             automatable = False
         elif evidence is not None:
             state = "EVIDENCE_ONLY"
+        elif preparation is not None:
+            state = (
+                "PREPARATION_ONLY"
+                if self._preparation_is_open(preparation)
+                else "EXPIRED_UNCONFIRMED"
+            )
         return {
             "nonce": nonce,
             "employee_id": str(employee_id),
@@ -916,6 +930,9 @@ class AttendanceService:
             "record": record,
             "evidence_ready": evidence is not None,
             "resolution": resolution.resolution if resolution is not None else None,
+            "preparation": (
+                self._preparation_snapshot(preparation) if preparation is not None else None
+            ),
         }
 
     def review_attempt(self, nonce: str, *, reason: str, user_id: uuid.UUID) -> dict:

@@ -37,6 +37,21 @@ ATTENDANCE_COMPLETE = "COMPLETE"
 STORAGE_DATABASE = "DATABASE"
 STORAGE_S3 = "S3"
 
+# Estados de una solicitud de recuperación supervisada. La solicitud nunca es
+# una autorización de marcación: sólo un jefe puede cerrar el nonce bloqueado
+# (AUTHORIZED) o rechazar la petición (REJECTED). CONFIRMED_EXISTING registra
+# que el intento ya tenía una confirmación verificable y no se editó nada.
+RECOVERY_PENDING = "PENDING"
+RECOVERY_AUTHORIZED = "AUTHORIZED"
+RECOVERY_REJECTED = "REJECTED"
+RECOVERY_CONFIRMED_EXISTING = "CONFIRMED_EXISTING"
+RECOVERY_STATUSES = (
+    RECOVERY_PENDING,
+    RECOVERY_AUTHORIZED,
+    RECOVERY_REJECTED,
+    RECOVERY_CONFIRMED_EXISTING,
+)
+
 
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
@@ -272,3 +287,62 @@ class AttendancePreparation(Base):
     employee_name: Mapped[str] = mapped_column(String(200), nullable=False)
     employee_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class AttendanceRecoveryRequest(Base):
+    """Solicitud durable de recuperación de un intento que quedó bloqueado.
+
+    La crea el navegador del trabajador con el token firmado del intento (aunque
+    su ``exp`` ya haya vencido, sólo para identificar el caso). Nunca guarda el
+    token completo ni autoriza una marcación. El cierre del nonce lo decide un
+    jefe/administrador bajo el mismo lock de empleado que check-in/check-out.
+
+    ``original_device_id`` procede del ``did`` firmado del intento; puede ser
+    nulo en tokens históricos. ``requester_device_id`` es el navegador que envía
+    la solicitud y delimita la idempotencia y la lectura pública posterior.
+    """
+
+    __tablename__ = "attendance_recovery_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "nonce", "requester_device_id", name="uq_attendance_recovery_request_nonce_requester"
+        ),
+        CheckConstraint("action IN ('CHECK_IN', 'CHECK_OUT')", name="ck_recovery_request_action"),
+        CheckConstraint(
+            "status IN ('PENDING', 'AUTHORIZED', 'REJECTED', 'CONFIRMED_EXISTING')",
+            name="ck_recovery_request_status",
+        ),
+        Index("ix_attendance_recovery_requests_status_requested", "status", "requested_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    nonce: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id"), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    original_device_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("attendance_devices.id"), nullable=True, index=True
+    )
+    requester_device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("attendance_devices.id"), nullable=False, index=True
+    )
+    # Huella del token para soporte/duplicados; el JWT completo nunca se guarda.
+    token_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    token_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default=RECOVERY_PENDING, server_default=RECOVERY_PENDING
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True, index=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    employee = relationship("Employee")
+    original_device = relationship("AttendanceDevice", foreign_keys=[original_device_id])
+    requester_device = relationship("AttendanceDevice", foreign_keys=[requester_device_id])
+    resolved_by_user = relationship("User")
