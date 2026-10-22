@@ -51,6 +51,21 @@ const identifyBody = {
   marking_action: "CHECK_IN",
 };
 
+/** Mock de UI de la comprobación previa a cámara: devuelve el mismo token. */
+async function fulfillTerminalVerify(route: Route) {
+  const body = route.request().postDataJSON() as { marking_token?: string };
+  return fulfillApi(route, 200, {
+    verified: true,
+    employee_id: identifyBody.employee.id,
+    employee_name: "María López",
+    action: "CHECK_IN",
+    device_id: "22222222-2222-2222-2222-222222222222",
+    expires_at: "2026-10-02T13:05:00Z",
+    server_time: "2026-10-02T13:00:01Z",
+    marking_token: String(body.marking_token ?? ""),
+  });
+}
+
 const confirmedBody = {
   id: "rec-1",
   employee_id: "11111111-1111-1111-1111-111111111111",
@@ -202,6 +217,7 @@ test.describe("kiosco /asistencia — layout sin scroll", () => {
       // Identificación
       await page.route("**/api/v1/attendance/**", (route) => {
         const url = route.request().url();
+        if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
         return url.includes("/identify") ? fulfillApi(route, 200, identifyBody) : fulfillApi(route, 404, {});
       });
       await freshGoto(page);
@@ -220,6 +236,7 @@ test.describe("kiosco /asistencia — layout sin scroll", () => {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await page.route("**/api/v1/attendance/**", async (route) => {
         const url = route.request().url();
+        if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
         if (url.includes("/identify")) return fulfillApi(route, 200, identifyBody);
         if (url.includes("/evidence")) {
           await hang.promise;
@@ -246,6 +263,7 @@ test.describe("kiosco /asistencia — layout sin scroll", () => {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await page.route("**/api/v1/attendance/**", async (route) => {
         const url = route.request().url();
+        if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
         if (url.includes("/identify")) return fulfillApi(route, 200, identifyBody);
         if (url.includes("/evidence")) return fulfillApi(route, 201, { id: "ev-1", content_type: "image/jpeg" });
         if (url.includes("/check-in")) return fulfillApi(route, 201, confirmedBody);
@@ -260,6 +278,7 @@ test.describe("kiosco /asistencia — layout sin scroll", () => {
       await page.unrouteAll({ behavior: "ignoreErrors" });
       await page.route("**/api/v1/attendance/**", async (route) => {
         const url = route.request().url();
+        if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
         if (url.includes("/identify")) return fulfillApi(route, 200, identifyBody);
         if (url.includes("/evidence")) return fulfillApi(route, 500, { detail: "red" });
         if (url.includes("/attempt/status")) return fulfillApi(route, 500, { detail: "red" });

@@ -10,6 +10,7 @@ import {
   AttendanceRecordsTable,
 } from "@/components/AttendanceTables";
 import AttendanceToolbar from "@/components/AttendanceToolbar";
+import AttendanceRecoveryPanel from "@/components/AttendanceRecoveryPanel";
 import { useNotifications } from "@/components/Notifications";
 import { useAdminUser } from "@/components/AdminSession";
 import DateField from "@/components/DateField";
@@ -710,6 +711,13 @@ export default function AdminAttendancePage() {
           onSubmit: reviewKioskAttempt,
         }}
       />
+
+      {canManage && (
+        <AttendanceRecoveryPanel
+          employees={employees}
+          onResolved={() => success("Solicitud de recuperación resuelta y auditada.")}
+        />
+      )}
 
       {photosFor && (
         <AppDialog

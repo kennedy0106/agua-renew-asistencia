@@ -72,6 +72,20 @@ function identifyResponse(token: string) {
   };
 }
 
+/** La verificación previa a cámara devuelve el MISMO token, sin renovarlo. */
+function verifyResponse(token: string, action: "CHECK_IN" | "CHECK_OUT" = "CHECK_IN") {
+  return {
+    verified: true,
+    employee_id: "emp-1",
+    employee_name: "Ana Prueba",
+    action,
+    device_id: "dev-1",
+    expires_at: EXPIRES_AT,
+    server_time: "2026-10-16T12:00:01+00:00",
+    marking_token: token,
+  };
+}
+
 function base64url(value: string): string {
   return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -327,7 +341,12 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
   it("pide una lectura reciente de alta precisión y avanza a la identificación", async () => {
     installMediaDouble();
     const geolocation = installGeolocation((success) => success(successPosition()));
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
+      if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
+      return jsonResponse({ detail: "inesperado" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<AsistenciaPage />);
@@ -342,8 +361,9 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
     expect(geolocationCalls[0].options?.timeout).toBeGreaterThan(0);
     expect(geolocationCalls[0].options?.timeout).toBeLessThanOrEqual(20000);
     const paths = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(paths).toHaveLength(1);
+    expect(paths).toHaveLength(2);
     expect(paths[0]).toContain("/api/v1/attendance/identify");
+    expect(paths[1]).toContain("/api/v1/attendance/terminal/verify");
   });
 
   it("una ubicación denegada abre una alerta accesible, no llama al API y preserva el DNI", async () => {
@@ -388,7 +408,12 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
       if (attempt === 1) error({ code: 1, message: "denied" });
       else success(successPosition());
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
+      if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
+      return jsonResponse({ detail: "inesperado" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<AsistenciaPage />);
@@ -565,7 +590,12 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
       if (attempt === 1) error({ code: 1, message: "denied" });
       else success(successPosition());
     });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
+      if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
+      return jsonResponse({ detail: "inesperado" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<AsistenciaPage />);
@@ -625,7 +655,12 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
     installMediaDouble();
     let accuracy = 51;
     installGeolocation((success) => success(successPosition(-12.0464, -77.0428, accuracy)));
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(identifyResponse("tok-ana")));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
+      if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
+      return jsonResponse({ detail: "inesperado" }, 404);
+    });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<AsistenciaPage />);
@@ -652,7 +687,9 @@ describe("kiosco ubicación obligatoria antes de identificar", () => {
     await user.click(screen.getByTestId("kiosk-location-retry"));
     expect(await screen.findByTestId("kiosk-employee-name")).toHaveTextContent("Ana Prueba");
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const paths = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(paths.filter((path) => path.includes("/identify"))).toHaveLength(1);
+    expect(paths.filter((path) => path.includes("/terminal/verify"))).toHaveLength(1);
   });
 
   it("ignora una lectura de ubicación que llega después de desmontar", async () => {
@@ -692,6 +729,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ id: "ev-1", content_type: "image/jpeg" }, 201);
       if (url.includes("/check-in")) return jsonResponse(CONFIRMED_RECORD, 201);
@@ -751,6 +789,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ id: "ev-1" }, 201);
       if (url.includes("/check-in")) return jsonResponse(CONFIRMED_RECORD, 201);
@@ -789,6 +828,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ id: "ev-1" }, 201);
       if (url.includes("/check-in")) return jsonResponse(CONFIRMED_RECORD, 201);
@@ -814,6 +854,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
     const media = installMediaDouble();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       return jsonResponse({ detail: "inesperado" }, 404);
     });
@@ -848,6 +889,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ detail: "red" }, 500);
       if (url.includes("/attempt/status")) {
@@ -897,6 +939,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ detail: "red" }, 500);
       if (url.includes("/attempt/status")) {
@@ -937,6 +980,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ id: "ev-1" }, 201);
       if (url.includes("/check-in")) return jsonResponse(CONFIRMED_RECORD, 201);
@@ -976,6 +1020,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("tok-ana"));
       if (url.includes("/evidence")) return jsonResponse({ id: "ev-1" }, 201);
       if (url.includes("/check-in")) return jsonResponse(CONFIRMED_RECORD, 201);
@@ -1010,6 +1055,7 @@ describe("kiosco prepara la marcación con ubicación y foto", () => {
           location: PREPARED_LOCATION,
         });
       }
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse("legacy-plain"));
       if (url.includes("/identify")) return jsonResponse(identifyResponse("legacy-plain"));
       if (url.includes("/evidence")) return jsonResponse({ detail: "red" }, 500);
       if (url.includes("/attempt/status")) {
@@ -1051,6 +1097,7 @@ describe("kiosco alerta de ubicación al escanear QR", () => {
     });
     const identifyBodies: unknown[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
       if (String(input).includes("/identify")) {
         identifyBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
         return jsonResponse(identifyResponse("tok-ana"));
@@ -1119,6 +1166,7 @@ describe("kiosco escaneo QR con el reloj en marcha", () => {
       const identifyBodies: unknown[] = [];
       const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
+        if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(jwt("tok-ana")));
         if (url.includes("/identify")) {
           identifyBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
           return jsonResponse(identifyResponse("tok-ana"));

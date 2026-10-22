@@ -293,7 +293,7 @@ export type DniLookup = {
 };
 
 function toQueryString(
-  params: Record<string, string | boolean | undefined>,
+  params: Record<string, string | number | boolean | undefined>,
 ): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -526,17 +526,145 @@ export type AttemptStatusResponse = {
 };
 
 /**
+ * Respuesta de `POST /terminal/verify`: comprueba la sesión del equipo antes
+ * de la cámara y reemite EXACTAMENTE el mismo token, sin prolongar su plazo.
+ */
+export type TerminalVerifyResponse = {
+  verified: boolean;
+  employee_id: string;
+  employee_name: string;
+  action: "CHECK_IN" | "CHECK_OUT";
+  device_id: string;
+  expires_at: string;
+  server_time: string;
+  marking_token: string;
+};
+
+/** Estados públicos de una solicitud de recuperación supervisada. */
+export type RecoveryRequestStatusValue =
+  | "PENDING"
+  | "AUTHORIZED"
+  | "REJECTED"
+  | "CONFIRMED_EXISTING";
+
+export type RecoveryDecision =
+  | "AUTHORIZE_REIDENTIFY"
+  | "REJECT"
+  | "CONFIRM_EXISTING";
+
+/** Confirmación mínima ya existente; mostrarla nunca la edita ni la reasigna. */
+export type RecoveryConfirmation = {
+  id: string;
+  employee_id: string;
+  work_date: string;
+  check_in_at: string;
+  check_out_at: string | null;
+  worked_minutes: number | null;
+  status: string;
+  event_type: string | null;
+};
+
+export type RecoveryRequestStatus = {
+  id: string;
+  status: RecoveryRequestStatusValue;
+  requested_at: string;
+  resolved_at: string | null;
+  reason: string | null;
+  can_reidentify: boolean;
+  confirmation: RecoveryConfirmation | null;
+};
+
+export type RecoveryDeviceRef = { id: string; name: string };
+
+export type RecoveryEmployeeRef = {
+  id: string;
+  dni: string;
+  employee_code: string;
+  first_name: string;
+  last_name: string;
+  active: boolean;
+};
+
+export type RecoveryRequestAdminItem = {
+  id: string;
+  nonce: string;
+  employee_id: string;
+  employee_name: string | null;
+  employee_dni: string | null;
+  action: string;
+  status: RecoveryRequestStatusValue;
+  requested_at: string;
+  resolved_at: string | null;
+  resolved_by_username: string | null;
+  reason: string | null;
+  original_device_id: string | null;
+  requester_device_id: string | null;
+};
+
+export type RecoveryEvidenceInspection = {
+  ready: boolean;
+  evidence_id: string | null;
+  captured_at: string | null;
+  content_type: string | null;
+  record_id: string | null;
+};
+
+export type RecoveryConsumedInspection = {
+  present: boolean;
+  confirmed: boolean;
+  record_id: string | null;
+  record: RecoveryConfirmation | null;
+  created_at: string | null;
+  device_id: string | null;
+};
+
+export type RecoveryResolutionInspection = {
+  present: boolean;
+  resolution: string | null;
+  reason: string | null;
+  resolved_by_user_id: string | null;
+  resolved_at: string | null;
+  record_id: string | null;
+};
+
+export type RecoveryAttemptInspection = {
+  state: string;
+  inconsistent: boolean;
+  browser_unverifiable: boolean;
+  can_authorize: boolean;
+  token_expired: boolean;
+  preparation: PreparationSnapshot | null;
+  evidence: RecoveryEvidenceInspection;
+  consumed: RecoveryConsumedInspection;
+  resolution: RecoveryResolutionInspection;
+  record: RecoveryConfirmation | null;
+  available_actions: string[];
+};
+
+export type RecoveryRequestAdminDetail = {
+  request: RecoveryRequestAdminItem;
+  employee: RecoveryEmployeeRef | null;
+  original_device: RecoveryDeviceRef | null;
+  requester_device: RecoveryDeviceRef | null;
+  attempt: RecoveryAttemptInspection;
+};
+
+/**
  * Plazos explícitos del flujo público. Son deliberadamente mayores que una
  * respuesta normal pero acotados: un timeout nunca prueba que la escritura no
  * se aplicó, así que la recuperación posterior es sólo de lectura.
  */
 export const ATTENDANCE_TIMEOUT_MS = {
   identify: 15_000,
+  /** Comprobación de cookie + token antes de abrir la cámara (R2/A1). */
+  verify: 10_000,
   prepare: 15_000,
   evidence: 30_000,
   marking: 20_000,
   status: 10_000,
   resolve: 10_000,
+  recovery: 15_000,
+  recoveryStatus: 10_000,
 } as const;
 
 export type AttendanceRequestOptions = {
@@ -619,6 +747,41 @@ export const attendanceApi = {
         reason_code: reasonCode,
       }),
     }),
+  /**
+   * Comprueba cookie + token vigente del mismo navegador ANTES de la cámara.
+   * No crea asistencia ni preparación y no renueva el vencimiento del token.
+   */
+  verifyTerminal: (
+    markingToken: string,
+    options?: AttendanceRequestOptions,
+  ) =>
+    apiFetch<TerminalVerifyResponse>("/api/v1/attendance/terminal/verify", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.verify, options),
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken }),
+    }),
+  /**
+   * Registra una solicitud durable de recuperación. Acepta un token firmado
+   * aunque haya vencido: sólo identifica el caso, nunca autoriza una marcación.
+   */
+  createRecoveryRequest: (
+    markingToken: string,
+    options?: AttendanceRequestOptions,
+  ) =>
+    apiFetch<RecoveryRequestStatus>("/api/v1/attendance/recovery-requests", {
+      ...publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.recovery, options),
+      method: "POST",
+      body: JSON.stringify({ marking_token: markingToken }),
+    }),
+  /** Consulta explícita del navegador solicitante; nunca hay polling. */
+  recoveryRequestStatus: (
+    requestId: string,
+    options?: AttendanceRequestOptions,
+  ) =>
+    apiFetch<RecoveryRequestStatus>(
+      `/api/v1/attendance/recovery-requests/${encodeURIComponent(requestId)}`,
+      publicAttendanceRequest(ATTENDANCE_TIMEOUT_MS.recoveryStatus, options),
+    ),
 };
 
 // --- Panel de asistencia (autenticado) ---
@@ -781,6 +944,40 @@ export const attendanceAdminApi = {
       {
         method: "POST",
         body: JSON.stringify({ reason }),
+      },
+    ),
+};
+
+export type RecoveryRequestListParams = {
+  status?: RecoveryRequestStatusValue | "";
+  employee_id?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+};
+
+/** Panel ADMIN/BOSS: listado, inspección y resolución auditada. */
+export const attendanceRecoveryAdminApi = {
+  list: (params: RecoveryRequestListParams = {}) =>
+    apiFetch<RecoveryRequestAdminItem[]>(
+      `/api/v1/attendance/recovery-requests/admin${toQueryString({
+        status: params.status || undefined,
+        employee_id: params.employee_id || undefined,
+        q: params.q?.trim() || undefined,
+        limit: params.limit,
+        offset: params.offset,
+      })}`,
+    ),
+  detail: (requestId: string) =>
+    apiFetch<RecoveryRequestAdminDetail>(
+      `/api/v1/attendance/recovery-requests/admin/${encodeURIComponent(requestId)}`,
+    ),
+  resolve: (requestId: string, decision: RecoveryDecision, reason: string) =>
+    apiFetch<RecoveryRequestAdminDetail>(
+      `/api/v1/attendance/recovery-requests/admin/${encodeURIComponent(requestId)}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision, reason }),
       },
     ),
 };

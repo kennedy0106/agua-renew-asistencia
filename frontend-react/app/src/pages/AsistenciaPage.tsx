@@ -1,12 +1,15 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
+  API_URL,
   ApiError,
   ApiTimeoutError,
   attendanceApi,
   AttendanceRecordOut,
   IdentifyResponse,
   PreparationSnapshot,
+  RecoveryConfirmation,
+  RecoveryRequestStatus,
 } from "@/lib/api";
 import {
   LOCATION_MAX_AGE_MS,
@@ -24,6 +27,15 @@ import {
   savePendingPhoto,
   type PendingPhotoExpectation,
 } from "@/lib/attendance-photo-store";
+import {
+  clearStoredAttempt,
+  persistAttempt,
+  readStoredAttempt,
+  rememberRecoveryRequestId,
+  stageHasEvidence,
+  type StoredAttempt,
+} from "@/lib/attendance-attempt-store";
+import { formatOperationalDate } from "@/lib/dates";
 import AttendanceLocationDialog from "@/components/AttendanceLocationDialog";
 import { Collapse } from "@/components/Collapse";
 import { ArrowLeft, Camera, Check, ClipboardCheck, Clock, Droplet, Info } from "@/components/Icons";
@@ -54,8 +66,10 @@ function phaseStage(phase: Phase): string {
   }
 }
 
+type ConfirmedAttendanceRecord = AttendanceRecordOut | RecoveryConfirmation;
+
 type RecoverOutcome =
-  | { kind: "confirmed"; record: AttendanceRecordOut }
+  | { kind: "confirmed"; record: ConfirmedAttendanceRecord }
   | {
       kind: "pending";
       evidenceReady: boolean;
@@ -88,8 +102,6 @@ type PrepareOutcome =
   | { ok: true; token: string }
   | { ok: false; reason: "location" | "untrusted_token" };
 
-/** Referencia mínima del intento enviado. No guarda cookie del terminal ni fotografías. */
-const KIOSK_ATTEMPT_KEY = "agua_renew_kiosk_open_attempt";
 const CAMERA_COUNTDOWN_SECONDS = 10;
 const CAMERA_OPEN_TIMEOUT_MS = 10_000;
 const CAMERA_PLAY_TIMEOUT_MS = 5_000;
@@ -151,16 +163,6 @@ function cameraFailureMessage(error: unknown): string {
   return "No se pudo abrir la cámara. Revise el permiso de cámara y vuelva a intentar.";
 }
 
-type DeliveryStage = "EVIDENCE_REQUESTED" | "PREPARED" | "EVIDENCE_STORED" | "MARKING_REQUESTED" | "UNKNOWN";
-
-type StoredAttempt = {
-  v: 1 | 2;
-  marking_token: string;
-  marking_action: IdentifyResponse["marking_action"];
-  employee: IdentifyResponse["employee"];
-  stage: DeliveryStage;
-};
-
 function nonceFromMarkingToken(token: string): string | null {
   try {
     const parts = token.split(".");
@@ -204,59 +206,134 @@ function trustRefreshedToken(candidate: unknown, currentToken: string): string |
   return hasSameNonce(candidate, currentToken) ? candidate : null;
 }
 
-function readStoredAttempt(): StoredAttempt | null {
-  try {
-    const raw = sessionStorage.getItem(KIOSK_ATTEMPT_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredAttempt> & { v?: number };
-    if (!parsed?.marking_token || !parsed?.employee?.id) return null;
-    if (parsed.marking_action !== "CHECK_IN" && parsed.marking_action !== "CHECK_OUT") return null;
-    const version = parsed.v === 2 ? 2 : 1;
-    const stage: DeliveryStage =
-      parsed.stage === "EVIDENCE_REQUESTED" || parsed.stage === "PREPARED" || parsed.stage === "EVIDENCE_STORED" || parsed.stage === "MARKING_REQUESTED"
-        ? parsed.stage
-        : "UNKNOWN";
-    return {
-      v: version,
-      marking_token: parsed.marking_token,
-      marking_action: parsed.marking_action,
-      employee: parsed.employee,
-      stage: version === 2 ? stage : "UNKNOWN",
-    };
-  } catch {
-    return null;
+/**
+ * Mensaje exacto del fallo de comprobación de sesión. Nunca afirma que la
+ * marcación no se registró: en este punto todavía no existe ningún envío.
+ */
+function verificationFailureMessage(error: unknown): string {
+  if (error instanceof ApiTimeoutError) {
+    return "La comprobación de la sesión de este equipo superó 10 segundos y no se completó. No se abrió la cámara ni se registró nada; puede reintentar.";
+  }
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case "TERMINAL_COOKIE_MISSING":
+        return "El navegador no envió la cookie de sesión de este equipo. No se abrió la cámara ni se registró nada. Conserve la referencia y pida autorización a un jefe.";
+      case "TERMINAL_SESSION_REVOKED":
+        return "La sesión de este equipo fue revocada. No se abrió la cámara ni se registró nada. Conserve la referencia y pida autorización a un jefe.";
+      case "TERMINAL_SESSION_INVALID":
+        return "La sesión de este equipo no es válida. No se abrió la cámara ni se registró nada. Conserve la referencia y pida autorización a un jefe.";
+      case "MARKING_TOKEN_EXPIRED":
+        return "La identificación venció antes de abrir la cámara. No se abrió la cámara ni se registró nada. Vuelva a identificar o solicite recuperación.";
+      case "MARKING_TOKEN_NOT_BOUND":
+      case "MARKING_TOKEN_INVALID":
+        return "La identificación no es verificable por este navegador. Conserve la referencia y pida revisión manual a soporte; no se desbloquea sin autorización.";
+      case "MARKING_TOKEN_FOREIGN_DEVICE":
+        return "La identificación pertenece a otro equipo o navegador. No se abrió la cámara ni se registró nada. Vuelva a identificar en este equipo o solicite recuperación.";
+      case "EMPLOYEE_INACTIVE":
+        return "El trabajador está inactivo y no puede marcar asistencia.";
+      case "RECOVERY_RATE_LIMITED":
+        return "Demasiados intentos desde este equipo. Espere antes de reintentar.";
+      default:
+        return error.message
+          ? `No se pudo comprobar la sesión del equipo: ${error.message} No se abrió la cámara ni se registró nada.`
+          : "No se pudo comprobar la sesión del equipo. No se abrió la cámara ni se registró nada.";
+    }
+  }
+  return "No se pudo comprobar la sesión del equipo. No se abrió la cámara ni se registró nada; revise la conexión y reintente.";
+}
+
+/** Fallo al crear o consultar la solicitud; nunca afirma que la marcación no exista. */
+function recoveryFailureMessage(error: unknown, phase: "create" | "status"): string {
+  if (error instanceof ApiTimeoutError) {
+    return phase === "create"
+      ? "La solicitud de recuperación superó el tiempo de espera. No se puede afirmar que se haya registrado; consulte antes de reintentar."
+      : "La consulta de la solicitud superó el tiempo de espera. No se puede afirmar que el jefe no la haya resuelto.";
+  }
+  if (error instanceof ApiError) {
+    if (error.code === "RECOVERY_TOKEN_UNREADABLE") {
+      return "La referencia no es una marcación firmada verificable. Consérvela y pida revisión manual a soporte; no se creó ninguna solicitud.";
+    }
+    if (error.code === "RECOVERY_RATE_LIMITED") {
+      return "Demasiadas solicitudes de recuperación desde este equipo. Espere antes de reintentar.";
+    }
+    if (error.status === 404) {
+      return "La solicitud no es legible desde este navegador. Conserve la referencia y pida revisión manual; no se afirma que no exista.";
+    }
+    if (error.status === 401) {
+      return "La sesión de este equipo no permite consultar la solicitud. Conserve la referencia y pida revisión manual.";
+    }
+    return error.message
+      ? `No se pudo completar la solicitud: ${error.message}`
+      : "No se pudo completar la solicitud de recuperación.";
+  }
+  return phase === "create"
+    ? "No se pudo conectar con el servidor para registrar la solicitud. Conserva la referencia; no se afirma que la marcación no se haya registrado."
+    : "No se pudo consultar la solicitud. Conserva la referencia; no se afirma que el jefe no la haya resuelto.";
+}
+
+function limaDateKey(value: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Lima",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(value));
+}
+
+function recoveryStatusLabel(status: RecoveryRequestStatus["status"]): string {
+  switch (status) {
+    case "PENDING":
+      return "Pendiente de revisión";
+    case "AUTHORIZED":
+      return "Autorizada por el jefe";
+    case "REJECTED":
+      return "Rechazada por el jefe";
+    case "CONFIRMED_EXISTING":
+      return "Confirmación ya registrada";
   }
 }
 
-function persistAttempt(info: IdentifyResponse, stage: DeliveryStage): boolean {
-  try {
-    const payload: StoredAttempt = {
-      v: 2,
-      marking_token: info.marking_token,
-      marking_action: info.marking_action,
-      employee: info.employee,
-      stage,
-    };
-    sessionStorage.setItem(KIOSK_ATTEMPT_KEY, JSON.stringify(payload));
-    return true;
-  } catch {
-    return false;
-  }
+function formatLimaDateTime(value: string | null): string {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("es-PE", {
+    timeZone: "America/Lima",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
-function clearStoredAttempt() {
-  try {
-    sessionStorage.removeItem(KIOSK_ATTEMPT_KEY);
-  } catch {
-    // El storage no es autoritativo; el servidor conserva el intento.
+/**
+ * Contexto honesto de una referencia restaurada: fecha conocida o desconocida
+ * (nunca inventada) y origen del API que la emitió.
+ */
+function restoreNoticeFor(stored: StoredAttempt): string | null {
+  const parts: string[] = [];
+  if (stored.known_at) {
+    parts.push(`Referencia guardada en este navegador el ${formatLimaDateTime(stored.known_at)}.`);
+  } else {
+    parts.push("No está disponible la fecha en que se guardó esta referencia.");
   }
+  if (stored.api_origin && stored.api_origin !== API_URL) {
+    parts.push("Esta referencia pertenece a otra configuración del servicio; consérvela y pida revisión manual.");
+  }
+  return parts.join(" ");
+}
+
+/** Clave del intento para compartir una única lectura entre montajes válidos. */
+function restoreReadKey(stored: StoredAttempt): string {
+  const nonce = nonceFromMarkingToken(stored.marking_token);
+  return nonce ? `${nonce}|${stored.employee.id}|${stored.marking_action}` : stored.marking_token;
 }
 
 export default function AsistenciaPage() {
   const [phase, setPhase] = useState<Phase>("identificando");
   const [identifier, setIdentifier] = useState("");
   const [info, setInfo] = useState<IdentifyResponse | null>(null);
-  const [record, setRecord] = useState<AttendanceRecordOut | null>(null);
+  const [record, setRecord] = useState<ConfirmedAttendanceRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(CAMERA_COUNTDOWN_SECONDS);
   const [countdownPaused, setCountdownPaused] = useState(false);
@@ -279,6 +356,18 @@ export default function AsistenciaPage() {
   const [requestingLocation, setRequestingLocation] = useState(false);
   const [locationFailure, setLocationFailure] = useState<LocationFailure | null>(null);
   const [locationDialogOpen, setLocationDialogOpen] = useState(false);
+  // Comprobación de cookie + token antes de la cámara (R2).
+  const [verifying, setVerifying] = useState(false);
+  const [verificationFailed, setVerificationFailed] = useState(false);
+  // Restauración única de la referencia anterior: una consulta acotada, sin writes.
+  const [restoring, setRestoring] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
+  // Recuperación supervisada explícita: sin polling ni reenvíos automáticos.
+  const [recoveryRequestId, setRecoveryRequestId] = useState<string | null>(null);
+  const [recoveryStatus, setRecoveryStatus] = useState<RecoveryRequestStatus | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [releasedNonce, setReleasedNonce] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -305,6 +394,10 @@ export default function AsistenciaPage() {
   // Valor leído del QR que no pudo identificarse por falta de ubicación. Vive
   // sólo en memoria para Reintentar y se limpia al cancelar o editar el campo.
   const pendingIdentifierRef = useRef<string | null>(null);
+  // Una sola promesa de lectura por intento; cada montaje/generación válida se
+  // suscribe a ella. En StrictMode el segundo efecto no duplica la consulta.
+  const restoreReadRef = useRef<{ key: string; promise: Promise<RecoverOutcome> } | null>(null);
+  const recoveryBusyRef = useRef(false);
 
   function reportLocationFailure(reason: LocationFailure) {
     locationErrorMessage.current = locationFailureMessage(reason);
@@ -378,6 +471,7 @@ export default function AsistenciaPage() {
     return () => clearInterval(timer);
   }, []);
 
+  // Restauración de una sola vez al montar; los helpers se declaran más abajo.
   useEffect(() => {
     let active = true;
     void purgeExpiredPendingPhotos();
@@ -401,30 +495,61 @@ export default function AsistenciaPage() {
     submittedRef.current = true;
     setAttemptSubmitted(true);
     setInfo(restored);
-    setLastAttemptStatus({ kind: "pending", evidenceReady: stored.stage === "EVIDENCE_STORED" || stored.stage === "MARKING_REQUESTED" || stored.stage === "UNKNOWN", writeTokenValid: false });
-    setError(
-      "Hay una marcación enviada sin confirmar. Consulte este mismo intento o pida a un jefe que la revise en el panel. No se afirma que no se haya marcado.",
-    );
+    setRecoveryRequestId(stored.recovery_request_id);
+    setRestoreNotice(restoreNoticeFor(stored));
+    setLastAttemptStatus({
+      kind: "pending",
+      evidenceReady: stageHasEvidence(stored.stage),
+      writeTokenValid: false,
+    });
     setPhase("incidencia");
+    setRestoring(true);
 
     // La referencia es la autoridad; la foto sólo se restaura si coincide con
-    // su nonce, empleado, acción y sigue dentro del TTL local.
+    // su nonce, empleado, acción y sigue dentro del TTL local. La referencia no
+    // se borra por antigüedad: sólo una resolución autoritativa la limpia.
     const nonce = nonceFromMarkingToken(stored.marking_token);
-    if (!nonce) return;
-    void loadPendingPhoto(
-      { nonce, employeeId: stored.employee.id, action: stored.marking_action },
-      Date.now(),
-    ).then((photo) => {
-      if (!active || !photo) return;
-      setLastPhoto(photo.imageBase64);
-      photoExpiresAtRef.current = photo.expiresAt;
-      setPhotoNotice("Se recuperó la foto de este intento. No se envió nada automáticamente.");
-      setAnnouncement("Se recuperó la foto de este intento. No se envió nada automáticamente.");
+    if (nonce) {
+      void loadPendingPhoto(
+        { nonce, employeeId: stored.employee.id, action: stored.marking_action },
+        Date.now(),
+      ).then((photo) => {
+        if (!active || !photo) return;
+        setLastPhoto(photo.imageBase64);
+        photoExpiresAtRef.current = photo.expiresAt;
+        setPhotoNotice("Se recuperó la foto de este intento. No se envió nada automáticamente.");
+        setAnnouncement("Se recuperó la foto de este intento. No se envió nada automáticamente.");
+      });
+    }
+
+    // Restauración de sólo lectura: UNA consulta acotada al servidor por
+    // intento, compartida entre montajes (StrictMode). No hay polling, no se
+    // reenvía nada y no se crea un intento nuevo. La respuesta puede confirmar,
+    // dejar pendiente, vencer, cerrar o resultar no verificable.
+    const key = restoreReadKey(stored);
+    if (!restoreReadRef.current || restoreReadRef.current.key !== key) {
+      restoreReadRef.current = {
+        key,
+        // `null` desactiva el filtro de generación dentro de la lectura: la
+        // comparten todos los montajes y cada suscriptor valida la suya.
+        promise: recoverAttempt(stored.marking_token, null),
+      };
+    }
+    const subscriptionGeneration = generationRef.current;
+    void restoreReadRef.current.promise.then((outcome) => {
+      if (!active || subscriptionGeneration !== generationRef.current || outcome.kind === "stale") return;
+      setRestoring(false);
+      if (outcome.kind === "confirmed") {
+        showConfirmed(outcome.record);
+        return;
+      }
+      setError(null);
+      applyReadOnlyAttemptOutcome(outcome);
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- restauración única al montar
 
   useEffect(() => {
     if (phase === "enviando") {
@@ -743,6 +868,29 @@ export default function AsistenciaPage() {
 
   const serverNow = new Date(now.getTime() + serverOffset);
 
+  /**
+   * Comprueba cookie + token del mismo navegador antes de abrir la cámara.
+   * Un fallo no crea preparación, evidencia, marcación ni intento enviado: sólo
+   * conserva la identificación en memoria para reintentar o pedir autorización.
+   */
+  async function verifyTerminalSession(result: IdentifyResponse, gen: number): Promise<boolean> {
+    setVerifying(true);
+    setVerificationFailed(false);
+    try {
+      await attendanceApi.verifyTerminal(result.marking_token, { timeoutMs: 10_000 });
+      if (gen !== generationRef.current) return false;
+      return true;
+    } catch (err) {
+      if (gen !== generationRef.current) return false;
+      setVerificationFailed(true);
+      setError(verificationFailureMessage(err));
+      setPhase("incidencia");
+      return false;
+    } finally {
+      if (gen === generationRef.current) setVerifying(false);
+    }
+  }
+
   async function identifyValue(value: string, gen: number) {
     if (!value || identifyingRef.current) return;
     // Un intento ya enviado no se reemplaza por otra identidad: primero debe
@@ -776,18 +924,26 @@ export default function AsistenciaPage() {
       setServerOffset(new Date(result.server_time).getTime() - Date.now());
       setLocationFailure(null);
       setLocationDialogOpen(false);
-      pendingIdentifierRef.current = null;
-      setIdentifier("");
+      // La identificación se conserva hasta que la sesión del equipo quede
+      // comprobada; un fallo aquí no borra el DNI ni crea un envío pendiente.
+      setVerificationFailed(false);
       // Un intento nuevo nunca hereda la foto del anterior.
       setLastPhoto(null);
       setPhotoNotice(null);
       photoExpiresAtRef.current = null;
       lastSendCauseRef.current = null;
       autoConsultedNonceRef.current = null;
+      setRecoveryStatus(null);
+      setRecoveryError(null);
       clearPhotoForAttempt(previousInfo);
       setLastAttemptStatus(null);
       setCountdownPaused(false);
       captureLock.current = false;
+
+      const verified = await verifyTerminalSession(result, gen);
+      if (!verified || gen !== generationRef.current) return;
+      pendingIdentifierRef.current = null;
+      setIdentifier("");
       setPhase("abriendo_camara");
     } catch (err) {
       if (gen !== generationRef.current) return;
@@ -928,10 +1084,10 @@ export default function AsistenciaPage() {
     return dataUrl.split(",")[1] ?? null;
   }
 
-  async function recoverAttempt(markingToken: string, gen: number): Promise<RecoverOutcome> {
+  async function recoverAttempt(markingToken: string, gen: number | null): Promise<RecoverOutcome> {
     try {
       const frozen = await attendanceApi.attemptStatus(markingToken);
-      if (gen !== generationRef.current) return { kind: "stale" };
+      if (gen !== null && gen !== generationRef.current) return { kind: "stale" };
       if (frozen.state === "CONFIRMED" && frozen.record) {
         return { kind: "confirmed", record: frozen.record };
       }
@@ -955,14 +1111,14 @@ export default function AsistenciaPage() {
       }
       return { kind: "unknown" };
     } catch (err) {
-      if (gen !== generationRef.current) return { kind: "stale" };
+      if (gen !== null && gen !== generationRef.current) return { kind: "stale" };
       if (err instanceof ApiError && err.status === 401) return { kind: "unauthorized" };
       if (err instanceof ApiError && err.status === 410) return { kind: "gone" };
       return { kind: "error", timeout: err instanceof ApiTimeoutError };
     }
   }
 
-  function showConfirmed(result: AttendanceRecordOut) {
+  function showConfirmed(result: ConfirmedAttendanceRecord) {
     releaseAllCameras();
     submittedRef.current = false;
     setAttemptSubmitted(false);
@@ -974,6 +1130,11 @@ export default function AsistenciaPage() {
     setPhotoNotice(null);
     lastSendCauseRef.current = null;
     autoConsultedNonceRef.current = null;
+    setRestoring(false);
+    setVerificationFailed(false);
+    setRecoveryStatus(null);
+    setRecoveryRequestId(null);
+    setRecoveryError(null);
     if (expected) {
       void clearPendingPhoto(expected);
       // Si la escritura local terminó justo después de confirmar, una segunda
@@ -1423,6 +1584,12 @@ export default function AsistenciaPage() {
     autoConsultedNonceRef.current = null;
     setLastAttemptStatus(null);
     setServerOffset(0);
+    setRestoring(false);
+    setRestoreNotice(null);
+    setVerificationFailed(false);
+    setRecoveryStatus(null);
+    setRecoveryRequestId(null);
+    setRecoveryError(null);
     setPhase("identificando");
   }
 
@@ -1470,6 +1637,146 @@ export default function AsistenciaPage() {
     clearLocationState();
     setError(null);
     setLastAttemptStatus(null);
+    setVerificationFailed(false);
+    setRestoreNotice(null);
+    setRestoring(false);
+    setRecoveryStatus(null);
+    setRecoveryRequestId(null);
+    setRecoveryError(null);
+    infoRef.current = null;
+    setInfo(null);
+    setPhase("identificando");
+    window.setTimeout(() => idInputRef.current?.focus(), 0);
+  }
+
+  /** Reintenta la comprobación de sesión con la MISMA identificación, sin reinstruirla. */
+  async function retryVerification() {
+    const current = infoRef.current;
+    if (!current || verifying || identifyingRef.current) return;
+    setError(null);
+    setRecoveryError(null);
+    const gen = generationRef.current;
+    identifyingRef.current = true;
+    setIdentifying(true);
+    try {
+      const verified = await verifyTerminalSession(current, gen);
+      if (!verified || gen !== generationRef.current) return;
+      pendingIdentifierRef.current = null;
+      setIdentifier("");
+      setPhase("abriendo_camara");
+    } finally {
+      if (gen === generationRef.current) {
+        identifyingRef.current = false;
+        setIdentifying(false);
+        setRequestingLocation(false);
+      }
+    }
+  }
+
+  /**
+   * Recuperación explícita: POST del token firmado viejo y GET posterior para
+   * probar que este navegador puede leer su propia solicitud. Nunca marca ni
+   * reutiliza el token para una escritura; no hay sondeo automático.
+   */
+  async function requestRecovery() {
+    const current = infoRef.current;
+    if (!current || recoveryBusyRef.current) return;
+    const nonce = nonceFromMarkingToken(current.marking_token);
+    if (!nonce) {
+      setRecoveryError(
+        "La referencia no permite identificar el caso de forma verificable. Consérvela y pida revisión manual a soporte.",
+      );
+      return;
+    }
+    recoveryBusyRef.current = true;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    let created: RecoveryRequestStatus | null = null;
+    try {
+      created = await attendanceApi.createRecoveryRequest(current.marking_token);
+      setRecoveryRequestId(created.id);
+      // El GET posterior es la prueba de aceptación desde ESTE navegador
+      // (incluida una cookie emitida durante el POST). Si falla, no se afirma.
+      const proved = await attendanceApi.recoveryRequestStatus(created.id);
+      setRecoveryStatus(proved);
+      rememberRecoveryRequestId(proved.id);
+      setAnnouncement(
+        "Solicitud de recuperación registrada. Un jefe debe resolverla desde su panel; esta solicitud no registra asistencia.",
+      );
+      if (proved.status === "CONFIRMED_EXISTING" && proved.confirmation) {
+        showConfirmed(proved.confirmation);
+      }
+    } catch (error) {
+      setRecoveryError(recoveryFailureMessage(error, created ? "status" : "create"));
+    } finally {
+      recoveryBusyRef.current = false;
+      setRecoveryBusy(false);
+    }
+  }
+
+  /** Consulta explícita del estado; nunca hay polling ni reenvío de escrituras. */
+  async function consultRecovery() {
+    const requestId = recoveryRequestId;
+    if (!requestId || recoveryBusyRef.current) return;
+    recoveryBusyRef.current = true;
+    setRecoveryBusy(true);
+    setRecoveryError(null);
+    try {
+      const status = await attendanceApi.recoveryRequestStatus(requestId);
+      setRecoveryStatus(status);
+      if (status.status === "CONFIRMED_EXISTING" && status.confirmation) {
+        showConfirmed(status.confirmation);
+        return;
+      }
+      if (status.status === "AUTHORIZED" && !status.can_reidentify) {
+        setRecoveryError(
+          "El jefe autorizó la revisión, pero el servidor no habilitó una nueva identificación para este intento. Pida revisión manual.",
+        );
+      }
+      if (status.status === "REJECTED") {
+        setAnnouncement("El jefe rechazó la recuperación. No se habilitó una nueva identificación.");
+      }
+    } catch (error) {
+      setRecoveryError(recoveryFailureMessage(error, "status"));
+    } finally {
+      recoveryBusyRef.current = false;
+      setRecoveryBusy(false);
+    }
+  }
+
+  /**
+   * Sólo un resultado AUTHORIZED con `can_reidentify` del servidor libera la
+   * identificación nueva. Se conserva una referencia resumida (nonce) visible.
+   */
+  function startAuthorizedReidentify() {
+    if (!recoveryStatus || recoveryStatus.status !== "AUTHORIZED" || !recoveryStatus.can_reidentify) return;
+    const current = infoRef.current;
+    const nonce = current ? nonceFromMarkingToken(current.marking_token) : null;
+    bumpGeneration();
+    releaseAllCameras();
+    releaseInFlightLocks();
+    clearLocationState();
+    setReleasedNonce(nonce);
+    submittedRef.current = false;
+    setAttemptSubmitted(false);
+    clearStoredAttempt();
+    if (current) clearPhotoForAttempt(current);
+    infoRef.current = null;
+    setInfo(null);
+    setRecord(null);
+    setError(null);
+    setLastPhoto(null);
+    photoExpiresAtRef.current = null;
+    setPhotoNotice(null);
+    lastSendCauseRef.current = null;
+    autoConsultedNonceRef.current = null;
+    setLastAttemptStatus(null);
+    setRestoreNotice(null);
+    setRestoring(false);
+    setVerificationFailed(false);
+    setRecoveryStatus(null);
+    setRecoveryRequestId(null);
+    setRecoveryError(null);
     setPhase("identificando");
     window.setTimeout(() => idInputRef.current?.focus(), 0);
   }
@@ -1515,6 +1822,13 @@ export default function AsistenciaPage() {
     autoConsultedNonceRef.current = null;
     setServerOffset(0);
     setCopiedNonce(false);
+    setRestoring(false);
+    setRestoreNotice(null);
+    setVerificationFailed(false);
+    setRecoveryStatus(null);
+    setRecoveryRequestId(null);
+    setRecoveryError(null);
+    setReleasedNonce(null);
   }
 
   async function copyNonceToClipboard() {
@@ -1598,11 +1912,17 @@ export default function AsistenciaPage() {
   const initials = firstName.charAt(0).toUpperCase() || "?";
   const cameraOpen = phase === "abriendo_camara" || phase === "video_listo" || phase === "cuenta_regresiva" || phase === "capturando";
   const attemptNonce = info ? nonceFromMarkingToken(info.marking_token) : null;
+  const recordIsHistorical = Boolean(record && record.work_date !== limaDateKey(serverNow.toISOString()));
   const canComplete =
     lastAttemptStatus?.kind === "pending" && lastAttemptStatus.evidenceReady && lastAttemptStatus.writeTokenValid;
   const canResolveExpired = lastAttemptStatus?.kind === "expired_unconfirmed";
   const canRestartResolved = lastAttemptStatus?.kind === "cancelled" || lastAttemptStatus?.kind === "reviewed";
   const canRetryIdentify = Boolean(pendingIdentifierRef.current ?? identifier.trim());
+  // Con una solicitud de recuperación activa, sólo el resultado AUTHORIZED del
+  // servidor habilita una nueva identificación o el cierre del intento.
+  const recoveryLocked =
+    Boolean(recoveryRequestId) &&
+    !(recoveryStatus?.status === "AUTHORIZED" && recoveryStatus.can_reidentify);
 
   return (
     <div className="kiosk">
@@ -1625,6 +1945,15 @@ export default function AsistenciaPage() {
             <div className="kiosk-date" suppressHydrationWarning>
               {dateLabel}
             </div>
+            {releasedNonce && (
+              <p className="alert alert-notice" role="status" data-testid="kiosk-released-reference">
+                <Info size={15} />
+                <span>
+                  Un jefe autorizó una nueva identificación. Referencia resumida conservada:{" "}
+                  <code className="kiosk-nonce-code">{releasedNonce}</code>.
+                </span>
+              </p>
+            )}
             <form onSubmit={handleIdentify} className="kiosk-form" data-testid="kiosk-identify-form">
               <div className="kiosk-id-mode-group" role="group" aria-label="Modo de ingreso">
                 <button
@@ -1851,6 +2180,17 @@ export default function AsistenciaPage() {
                 <span>{error}</span>
               </p>
             )}
+            {restoring && (
+              <p className="alert alert-notice" role="status" data-testid="kiosk-restoring-status">
+                <Spinner size={16} />
+                <span>Comprobando la marcación anterior guardada en este navegador…</span>
+              </p>
+            )}
+            {!restoring && restoreNotice && (
+              <p className="muted kiosk-restore-notice" data-testid="kiosk-restore-notice">
+                {restoreNotice}
+              </p>
+            )}
             {attemptSubmitted && (
               <p className="muted" data-testid="kiosk-review-hint">
                 Conserve este intento. Un fallo de consulta no demuestra que la marcación no se haya registrado.
@@ -1862,7 +2202,7 @@ export default function AsistenciaPage() {
                 <span>{photoNotice}</span>
               </p>
             )}
-            {attemptNonce && (
+            {attemptSubmitted && attemptNonce && (
               <div className="kiosk-nonce-row">
                 <p className="muted kiosk-nonce-text" data-testid="kiosk-attempt-nonce">
                   Referencia para revisión: <code className="kiosk-nonce-code">{attemptNonce}</code>
@@ -1879,6 +2219,113 @@ export default function AsistenciaPage() {
                 </button>
               </div>
             )}
+            {!restoring && attemptSubmitted && attemptNonce && (
+              <section className="kiosk-recovery" aria-labelledby="kiosk-recovery-title" data-testid="kiosk-recovery">
+                <h3 id="kiosk-recovery-title" className="kiosk-recovery-title">
+                  Recuperación con autorización del jefe
+                </h3>
+                {!recoveryRequestId ? (
+                  <>
+                    <p className="muted">
+                      Esta solicitud no registra asistencia ni reutiliza el permiso para marcar. Un jefe debe revisarla
+                      desde su propio panel y, si corresponde, autorizar una nueva identificación.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-outline kiosk-btn"
+                      onClick={() => void requestRecovery()}
+                      disabled={recoveryBusy}
+                      data-testid="kiosk-request-recovery"
+                    >
+                      {recoveryBusy ? <Spinner size={16} /> : <ClipboardCheck size={16} />}
+                      {recoveryBusy ? "Registrando solicitud…" : "Solicitar autorización al jefe"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {recoveryStatus ? (
+                      <div className="kiosk-recovery-status" data-testid="kiosk-recovery-status">
+                        <p>
+                          <strong>Estado:</strong> {recoveryStatusLabel(recoveryStatus.status)}
+                        </p>
+                        <p className="muted">
+                          Solicitada: {formatLimaDateTime(recoveryStatus.requested_at)}
+                          {recoveryStatus.resolved_at
+                            ? ` · Resuelta: ${formatLimaDateTime(recoveryStatus.resolved_at)}`
+                            : ""}
+                        </p>
+                        {recoveryStatus.reason && (
+                          <p className="muted">Motivo del jefe: {recoveryStatus.reason}</p>
+                        )}
+                        {recoveryStatus.status === "PENDING" && (
+                          <p className="muted">
+                            El jefe aún no resolvió esta solicitud. Consulte el estado cuando el jefe lo indique.
+                          </p>
+                        )}
+                        {recoveryStatus.status === "AUTHORIZED" && recoveryStatus.can_reidentify && (
+                          <>
+                            <p className="muted">
+                              El servidor autorizó una nueva identificación. La autorización no registra ni cambia
+                              ninguna hora.
+                            </p>
+                            <button
+                              type="button"
+                              className="btn btn-primary kiosk-btn"
+                              onClick={startAuthorizedReidentify}
+                              data-testid="kiosk-reidentify-authorized"
+                            >
+                              <ClipboardCheck size={16} />
+                              Iniciar nueva identificación
+                            </button>
+                          </>
+                        )}
+                        {recoveryStatus.status === "AUTHORIZED" && !recoveryStatus.can_reidentify && (
+                          <p className="muted" role="status">
+                            El jefe autorizó la revisión, pero el servidor no habilitó una nueva identificación para
+                            este intento. Pida revisión manual.
+                          </p>
+                        )}
+                        {recoveryStatus.status === "REJECTED" && (
+                          <p className="muted" role="status">
+                            El jefe rechazó la recuperación. No se habilitó una nueva identificación desde aquí.
+                          </p>
+                        )}
+                        {recoveryStatus.status === "CONFIRMED_EXISTING" && recoveryStatus.confirmation && (
+                          <div data-testid="kiosk-recovery-confirmation">
+                            <p className="muted">
+                              Ya existe una marcación confirmada para este intento:{" "}
+                              {formatOperationalDate(recoveryStatus.confirmation.work_date)}. Se conserva sin editar y
+                              esa es su fecha real.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="muted">
+                        La solicitud quedó registrada, pero este navegador todavía no pudo leer su estado.
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-outline kiosk-btn"
+                      onClick={() => void consultRecovery()}
+                      disabled={recoveryBusy}
+                      data-testid="kiosk-consult-recovery"
+                    >
+                      {recoveryBusy ? <Spinner size={16} /> : <Info size={16} />}
+                      {recoveryBusy ? "Consultando…" : "Consultar estado de la solicitud"}
+                    </button>
+                  </>
+                )}
+                {recoveryError && (
+                  <p className="alert alert-error" role="alert" data-testid="kiosk-recovery-error">
+                    <Droplet size={15} />
+                    <span>{recoveryError}</span>
+                  </p>
+                )}
+              </section>
+            )}
+            {!restoring && (
             <div className="kiosk-incident-actions">
               {!info && (
                 <>
@@ -1904,7 +2351,36 @@ export default function AsistenciaPage() {
                   </button>
                 </>
               )}
-              {info && (
+              {info && verificationFailed && !attemptSubmitted && !recoveryRequestId && (
+                <>
+                  <button
+                    className="btn btn-primary kiosk-btn"
+                    type="button"
+                    onClick={() => void retryVerification()}
+                    disabled={verifying || identifying}
+                    data-testid="kiosk-retry-verification"
+                  >
+                    {verifying ? <Spinner size={16} /> : <ClipboardCheck size={16} />}
+                    {verifying ? "Comprobando…" : "Reintentar comprobación de sesión"}
+                  </button>
+                  <button
+                    className="btn btn-outline kiosk-btn"
+                    type="button"
+                    onClick={backToIdentify}
+                    disabled={verifying || identifying}
+                    data-testid="kiosk-back-identify"
+                  >
+                    Volver a identificar
+                  </button>
+                </>
+              )}
+              {info && verificationFailed && !attemptSubmitted && recoveryLocked && (
+                <p className="muted" role="status" data-testid="kiosk-recovery-locked">
+                  Hay una solicitud de recuperación activa. La nueva identificación sólo se habilita cuando el
+                  servidor confirme la autorización del jefe.
+                </p>
+              )}
+              {info && !verificationFailed && (
                 <>
                   {canComplete ? (
                     <button
@@ -1948,7 +2424,7 @@ export default function AsistenciaPage() {
                       {consulting ? "Consultando…" : "Consultar este intento"}
                     </button>
                   )}
-                  {canResolveExpired && (
+                  {canResolveExpired && !recoveryLocked && (
                     <button
                       className="btn btn-outline kiosk-btn"
                       type="button"
@@ -1959,7 +2435,7 @@ export default function AsistenciaPage() {
                       Cerrar intento vencido
                     </button>
                   )}
-                  {attemptSubmitted && !canRestartResolved && (
+                  {attemptSubmitted && !canRestartResolved && !recoveryLocked && (
                     <button
                       className="btn btn-outline kiosk-btn"
                       type="button"
@@ -1970,20 +2446,21 @@ export default function AsistenciaPage() {
                       Cerrar este intento
                     </button>
                   )}
-                  {canRestartResolved ? (
+                  {canRestartResolved && !recoveryLocked ? (
                     <button className="btn btn-outline kiosk-btn" type="button" onClick={restartResolvedAttempt} data-testid="kiosk-restart-resolved">
                       Volver al inicio
                     </button>
-                  ) : (
+                  ) : !recoveryLocked ? (
                     <button className="btn btn-outline kiosk-btn" type="button" onClick={() => void takeAnotherPhoto()} data-testid="kiosk-take-another">
                       {lastPhoto || attemptSubmitted
                         ? "Resolver y tomar otra foto"
                         : "Tomar otra foto"}
                     </button>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>
+            )}
           </div>
         )}
 
@@ -1993,16 +2470,30 @@ export default function AsistenciaPage() {
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN" ? <Droplet size={26} /> : <Check size={26} />}
             </div>
             <h2 ref={confirmedTitleRef} tabIndex={-1} data-testid="kiosk-confirmed-title">
-              {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
-                ? "Entrada registrada"
-                : "Salida registrada"}
+              {recordIsHistorical
+                ? "Marcación ya registrada"
+                : (record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
+                  ? "Entrada registrada"
+                  : "Salida registrada"}
             </h2>
             {info && <p className="kiosk-confirmed-employee" data-testid="kiosk-confirmed-employee">{info.employee.first_name} {info.employee.last_name}</p>}
+            <p className="muted" data-testid="kiosk-confirmed-date">
+              Fecha de la marcación: {formatOperationalDate(record.work_date)}
+            </p>
             <p className="detail">
               {(record.event_type ?? record.status) === "CHECK_IN" || record.status === "OPEN"
                 ? `Ingresaste a las ${formatTime(record.check_in_at)}.`
                 : `Saliste a las ${formatTime(record.check_out_at)} · ${fmtMin(record.worked_minutes)} trabajadas.`}
             </p>
+            {recordIsHistorical && (
+              <p className="alert alert-notice" role="status" data-testid="kiosk-confirmed-historical">
+                <Info size={15} />
+                <span>
+                  Esta confirmación corresponde a una fecha anterior. No es una marcación de hoy ni se registró una
+                  nueva.
+                </span>
+              </p>
+            )}
             <button className="btn btn-outline kiosk-btn" onClick={reset} data-testid="kiosk-new-marking">
               <Clock size={17} />
               Nueva marcación

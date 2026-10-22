@@ -50,6 +50,24 @@ function identifyPayload(firstName: string, token: string): IdentifyBody {
   };
 }
 
+/**
+ * La comprobación de sesión previa a la cámara devuelve el MISMO token. Es un
+ * mock de UI: la integración real usa el backend y no simula esta ruta.
+ */
+async function fulfillTerminalVerify(route: Route) {
+  const body = JSON.parse(route.request().postData() || "{}") as { marking_token?: string };
+  return fulfillApi(route, 200, {
+    verified: true,
+    employee_id: "11111111-1111-1111-1111-111111111111",
+    employee_name: "Ana López",
+    action: "CHECK_IN",
+    device_id: "22222222-2222-2222-2222-222222222222",
+    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    server_time: new Date().toISOString(),
+    marking_token: String(body.marking_token ?? ""),
+  });
+}
+
 const CORS = {
   "Access-Control-Allow-Origin": "http://127.0.0.1:3000",
   "Access-Control-Allow-Credentials": "true",
@@ -131,6 +149,7 @@ test.describe("kiosco UI con API simulada", () => {
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") return fulfillApi(route, 204, {});
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) return fulfillApi(route, 200, identifyPayload("María", "tok-maria"));
       if (url.includes("/evidence")) {
         evidenceCalls += 1;
@@ -170,6 +189,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -221,6 +241,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (route.request().url().includes("/identify")) {
         const body = JSON.parse(route.request().postData() || "{}") as { identifier?: string };
         identified.push(String(body.identifier));
@@ -262,6 +283,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (route.request().url().includes("/identify")) {
         identifyCalls += 1;
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-a"));
@@ -296,6 +318,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (!route.request().url().includes("/identify")) {
         await fulfillApi(route, 404, {});
         return;
@@ -341,6 +364,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -386,6 +410,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -444,6 +469,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -517,6 +543,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -548,6 +575,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
