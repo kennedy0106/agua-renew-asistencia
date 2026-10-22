@@ -6,6 +6,7 @@ import { AdminSessionContext } from "@/components/AdminSession";
 import { Notifications } from "@/components/Notifications";
 import {
   attendanceAdminApi,
+  attendanceRecoveryAdminApi,
   employeesApi,
   ApiError,
   type AttendanceDailyItem,
@@ -115,6 +116,7 @@ beforeEach(() => {
   URL.revokeObjectURL = vi.fn();
   vi.spyOn(attendanceAdminApi, "list").mockResolvedValue([record]);
   vi.spyOn(attendanceAdminApi, "daily").mockResolvedValue([daily]);
+  vi.spyOn(attendanceRecoveryAdminApi, "list").mockResolvedValue([]);
   vi.spyOn(employeesApi, "list").mockResolvedValue([employee]);
 });
 

@@ -370,16 +370,14 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect(before).toHaveLength(1);
     const original = before[0];
 
-    await page.reload();
-    reloaded = true;
-    await expect(page.getByTestId("kiosk-consult-attempt")).toBeVisible();
-    // La foto pendiente se restaura con la misma referencia, pero la recarga
-    // no dispara ninguna escritura ni reenvío automático.
+    // La foto sigue disponible mientras no hay confirmación. Al recargar, la
+    // consulta única recupera la marcación sin requerir otro clic ni reenviar.
     await expect(page.getByTestId("kiosk-resend")).toBeVisible();
+    reloaded = true;
+    await page.reload();
     await wrapGetUserMediaCounter(page);
-    await page.getByTestId("kiosk-consult-attempt").click();
     await waitConfirmed(page, /Entrada registrada/);
-    expect(statusAfterReload).toBeGreaterThan(0);
+    expect(statusAfterReload).toBe(1);
     expect(evidenceAfterReload).toBe(0);
     expect(checkInAfterReload).toBe(0);
     expect(await gumCount(page)).toBe(0);
@@ -396,6 +394,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     const employee = await createEmployee(api, "T02");
     let checkOutAfterReload = 0;
     let evidenceAfterReload = 0;
+    let statusAfterReload = 0;
     let reloaded = false;
 
     await page.route("**/api/v1/attendance/check-out", async (route) => {
@@ -424,6 +423,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
         await route.abort("failed");
         return;
       }
+      statusAfterReload += 1;
       await route.continue();
     });
 
@@ -438,11 +438,11 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     const original = before.find((row) => row.status === "COMPLETE");
     expect(original).toBeTruthy();
 
-    await page.reload();
     reloaded = true;
+    await page.reload();
     await wrapGetUserMediaCounter(page);
-    await page.getByTestId("kiosk-consult-attempt").click();
     await waitConfirmed(page, /Salida registrada/);
+    expect(statusAfterReload).toBe(1);
     expect(checkOutAfterReload).toBe(0);
     expect(evidenceAfterReload).toBe(0);
     expect(await gumCount(page)).toBe(0);
@@ -457,6 +457,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T03");
     let allowStatus = false;
+    const restoredTokens: string[] = [];
     await page.route("**/api/v1/attendance/check-in", async (route) => {
       if (route.request().method() === "OPTIONS") {
         await route.continue();
@@ -474,24 +475,24 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
         await route.abort("failed");
         return;
       }
+      restoredTokens.push((route.request().postDataJSON() as { marking_token: string }).marking_token);
       await route.continue();
     });
     await page.goto("/asistencia");
     const token = await identifyAndCaptureToken(page, employee.employee_code);
     await expect(page.locator("[data-phase='incidencia']")).toBeVisible({ timeout: 45_000 });
     const expired = expireAttendanceToken(token, SECRET);
-    allowStatus = true;
-    await page.reload();
     await page.evaluate((expiredToken) => {
       const raw = sessionStorage.getItem("agua_renew_kiosk_open_attempt");
-      if (!raw) return;
+      if (!raw) throw new Error("El intento pendiente debe existir antes de recargar");
       const parsed = JSON.parse(raw) as { marking_token: string };
       parsed.marking_token = expiredToken;
       sessionStorage.setItem("agua_renew_kiosk_open_attempt", JSON.stringify(parsed));
     }, expired);
+    allowStatus = true;
     await page.reload();
-    await page.getByTestId("kiosk-consult-attempt").click();
     await waitConfirmed(page, /Entrada registrada/);
+    expect(restoredTokens).toEqual([expired]);
     await page.unroute("**/api/v1/attendance/check-in");
     expect((await fetchJson(page, "/api/v1/attendance/check-in", { marking_token: expired })).status).toBe(401);
     const after = await countAttendance(api, employee.id);
@@ -731,6 +732,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     const employee = await createEmployee(api, "A06");
     let checkOutAfterReload = 0;
     let evidenceAfterReload = 0;
+    let statusAfterReload = 0;
     let reloaded = false;
 
     await page.route("**/api/v1/attendance/check-out", async (route) => {
@@ -759,6 +761,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
         await route.abort("failed");
         return;
       }
+      statusAfterReload += 1;
       await route.continue();
     });
 
@@ -775,11 +778,11 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
 
     const deactivated = await api.post(`${API}/api/v1/employees/${employee.id}/deactivate`);
     expect(deactivated.ok(), await deactivated.text()).toBeTruthy();
-    await page.reload();
     reloaded = true;
+    await page.reload();
     await wrapGetUserMediaCounter(page);
-    await page.getByTestId("kiosk-consult-attempt").click();
     await waitConfirmed(page, /Salida registrada/);
+    expect(statusAfterReload).toBe(1);
     expect(checkOutAfterReload).toBe(0);
     expect(evidenceAfterReload).toBe(0);
     expect(await gumCount(page)).toBe(0);

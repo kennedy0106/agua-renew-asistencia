@@ -129,6 +129,20 @@ function identifyResponse(token: string) {
   };
 }
 
+/** La comprobación previa a cámara no renueva el token ni crea asistencia. */
+function verifyResponse(token: string) {
+  return {
+    verified: true,
+    employee_id: "emp-1",
+    employee_name: "Ana Prueba",
+    action: "CHECK_IN",
+    device_id: "dev-1",
+    expires_at: "2026-10-16T12:05:00+00:00",
+    server_time: "2026-10-16T12:00:01+00:00",
+    marking_token: token,
+  };
+}
+
 const PREPARED = {
   marking_token: markingToken("nonce-a", "refreshed"),
   marked_at: "2026-10-16T12:00:05+00:00",
@@ -214,6 +228,7 @@ describe("foto y referencia del intento", () => {
     const checkIns: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/attempt/prepare")) return jsonResponse(PREPARED);
       if (url.includes("/evidence")) return jsonResponse({ detail: "red" }, 500);
@@ -266,6 +281,7 @@ describe("foto y referencia del intento", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const body = init?.body ? (JSON.parse(String(init.body)) as { marking_token?: string }) : null;
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/attempt/prepare")) {
         prepareTokens.push(String(body?.marking_token ?? ""));
@@ -310,7 +326,7 @@ describe("foto y referencia del intento", () => {
     expect(storedAttemptToken()).toBeNull();
   });
 
-  it("una recarga restaura la foto sólo con la misma referencia y no escribe", async () => {
+  it("una recarga restaura la foto y hace UNA consulta de lectura acotada", async () => {
     seedStoredAttempt(markingToken("nonce-a", "stored"));
     seedPhoto();
     const fetchMock = vi.fn();
@@ -321,7 +337,11 @@ describe("foto y referencia del intento", () => {
     expect(screen.getByTestId("kiosk-photo-notice")).toHaveTextContent(/Se recuperó la foto/i);
     expect(screen.getByTestId("kiosk-photo-notice")).toHaveTextContent(/No se envió nada automáticamente/i);
     expect(photoStoreState.loadCalls).toBe(1);
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const calls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(calls[0]).toContain("/api/v1/attendance/attempt/status");
+    // Sin writes: no prepare, evidence, check-in ni recuperación automática.
+    expect(calls.some((url) => /prepare|evidence|check-in|recovery-requests/.test(url))).toBe(false);
   });
 
   it("no restaura una foto de otro empleado ni una copia vencida", async () => {
@@ -346,6 +366,7 @@ describe("foto y referencia del intento", () => {
     const evidenceCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/attempt/prepare")) return jsonResponse(PREPARED);
       if (url.includes("/evidence")) {
@@ -394,6 +415,7 @@ describe("cuenta regresiva y anuncios", () => {
     const writes: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/attempt/prepare")) return jsonResponse(PREPARED);
       if (url.includes("/evidence")) {
@@ -439,6 +461,7 @@ describe("cuenta regresiva y anuncios", () => {
     const evidenceCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/attempt/prepare")) return jsonResponse(PREPARED);
       if (url.includes("/evidence")) {
@@ -499,6 +522,7 @@ describe("GPS con reintento acotado", () => {
     const identifyCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url.includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (url.includes("/identify")) {
         identifyCalls.push(url);
         return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
@@ -523,6 +547,7 @@ describe("cámara: causas distintas y cancelación", () => {
     const getUserMedia = vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError"));
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (String(input).includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       return jsonResponse({ detail: "inesperado" }, 404);
     }));
@@ -549,6 +574,7 @@ describe("cámara: causas distintas y cancelación", () => {
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (String(input).includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       return jsonResponse({ detail: "inesperado" }, 404);
     }));
@@ -573,6 +599,7 @@ describe("cámara con cuadro lento", () => {
     const media = installMediaDouble();
     media.setFrame(0, 0);
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/terminal/verify")) return jsonResponse(verifyResponse(markingToken("nonce-a", "identify")));
       if (String(input).includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
       return jsonResponse({ detail: "inesperado" }, 404);
     }));

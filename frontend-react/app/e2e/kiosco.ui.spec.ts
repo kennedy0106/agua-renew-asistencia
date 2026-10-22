@@ -50,6 +50,24 @@ function identifyPayload(firstName: string, token: string): IdentifyBody {
   };
 }
 
+/**
+ * La comprobación de sesión previa a la cámara devuelve el MISMO token. Es un
+ * mock de UI: la integración real usa el backend y no simula esta ruta.
+ */
+async function fulfillTerminalVerify(route: Route) {
+  const body = JSON.parse(route.request().postData() || "{}") as { marking_token?: string };
+  return fulfillApi(route, 200, {
+    verified: true,
+    employee_id: "11111111-1111-1111-1111-111111111111",
+    employee_name: "Ana López",
+    action: "CHECK_IN",
+    device_id: "22222222-2222-2222-2222-222222222222",
+    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    server_time: new Date().toISOString(),
+    marking_token: String(body.marking_token ?? ""),
+  });
+}
+
 const CORS = {
   "Access-Control-Allow-Origin": "http://127.0.0.1:3000",
   "Access-Control-Allow-Credentials": "true",
@@ -128,18 +146,23 @@ test.describe("kiosco UI con API simulada", () => {
 
   test("la cámara espera diez segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
     let evidenceCalls = 0;
+    // Esta prueba registra una entrada nueva. La fecha fija antigua activa
+    // correctamente la confirmación histórica y no representa este escenario.
+    const markedAt = new Date().toISOString();
+    const workDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Lima" }).format(new Date(markedAt));
     await page.route("**/api/v1/attendance/**", async (route: Route) => {
       if (route.request().method() === "OPTIONS") return fulfillApi(route, 204, {});
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) return fulfillApi(route, 200, identifyPayload("María", "tok-maria"));
       if (url.includes("/evidence")) {
         evidenceCalls += 1;
         return fulfillApi(route, 201, { id: "ev-1", content_type: "image/jpeg" });
       }
       if (url.includes("/check-in")) return fulfillApi(route, 201, {
-        id: "rec-1", employee_id: "11111111-1111-1111-1111-111111111111", work_date: "2026-09-11",
-        check_in_at: "2026-09-11T13:00:00+00:00", check_out_at: null, worked_minutes: null,
-        status: "OPEN", notes: null, created_at: "2026-09-11T13:00:00+00:00", updated_at: "2026-09-11T13:00:00+00:00", event_type: "CHECK_IN",
+        id: "rec-1", employee_id: "11111111-1111-1111-1111-111111111111", work_date: workDate,
+        check_in_at: markedAt, check_out_at: null, worked_minutes: null,
+        status: "OPEN", notes: null, created_at: markedAt, updated_at: markedAt, event_type: "CHECK_IN",
       });
       return fulfillApi(route, 404, {});
     });
@@ -170,6 +193,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -221,6 +245,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (route.request().url().includes("/identify")) {
         const body = JSON.parse(route.request().postData() || "{}") as { identifier?: string };
         identified.push(String(body.identifier));
@@ -262,6 +287,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (route.request().url().includes("/identify")) {
         identifyCalls += 1;
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-a"));
@@ -296,6 +322,7 @@ test.describe("kiosco UI con API simulada", () => {
         await fulfillApi(route, 204, {});
         return;
       }
+      if (route.request().url().includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (!route.request().url().includes("/identify")) {
         await fulfillApi(route, 404, {});
         return;
@@ -341,6 +368,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -386,6 +414,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -444,6 +473,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -517,6 +547,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;
@@ -548,6 +579,7 @@ test.describe("kiosco UI con API simulada", () => {
         return;
       }
       const url = route.request().url();
+      if (url.includes("/terminal/verify")) return fulfillTerminalVerify(route);
       if (url.includes("/identify")) {
         await fulfillApi(route, 200, identifyPayload("Ana", "tok-ana"));
         return;

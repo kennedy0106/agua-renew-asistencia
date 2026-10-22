@@ -105,7 +105,7 @@ jobs:
       # URL pública HTTPS documentada del API de producción (README/CUTOVER).
       # Es pública y no secreta: fija el bundle candidato de CI de forma
       # determinista y evita publicar un artefacto que apunte a loopback.
-      VITE_API_URL: https://backend-api-production-3eb3.up.railway.app
+      VITE_API_URL: https://api.aguarenew.com
     steps:
       - uses: actions/checkout@v4
       - name: "Gate de reemplazo: frontend-react/app versionado"
