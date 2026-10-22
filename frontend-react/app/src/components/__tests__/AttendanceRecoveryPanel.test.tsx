@@ -129,6 +129,24 @@ afterEach(() => {
 });
 
 describe("panel de solicitudes de recuperación", () => {
+  it.each([
+    ["PREPARATION_ONLY", "preparado, sin marcación confirmada"],
+    ["EXPIRED_UNCONFIRMED", "preparación vencida, sin marcación confirmada"],
+    ["EMPTY", "sin preparación, foto ni marcación asociadas"],
+    ["UNVERIFIABLE_BROWSER", "no se pudo verificar el navegador del intento"],
+  ])("explica el estado real %s sin confundirlo con una confirmación", async (state, label) => {
+    vi.spyOn(attendanceRecoveryAdminApi, "list").mockResolvedValue([request]);
+    vi.spyOn(attendanceRecoveryAdminApi, "detail").mockResolvedValue(detail({ state }));
+    renderPanel();
+    expect(screen.getByRole("combobox", { name: "Filtrar solicitudes por empleado" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filtrar solicitudes por estado" })).toBeInTheDocument();
+    await screen.findByTestId("recovery-row");
+    await userEvent.setup().click(screen.getByTestId("recovery-open"));
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText(label, { exact: false })).toBeInTheDocument();
+    expect(within(dialog).queryByText("estado no reconocido", { exact: false })).toBeNull();
+  });
+
   it("lista, inspecciona preparación/evidencia/consumo/resolución y resuelve con motivo", async () => {
     vi.spyOn(attendanceRecoveryAdminApi, "list").mockResolvedValue([request]);
     const detailSpy = vi.spyOn(attendanceRecoveryAdminApi, "detail").mockResolvedValue(detail());

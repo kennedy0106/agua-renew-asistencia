@@ -38,6 +38,10 @@ const STATUS_BADGE: Record<RecoveryRequestStatusValue, string> = {
 };
 
 const ATTEMPT_STATE_LABEL: Record<string, string> = {
+  PREPARATION_ONLY: "preparado, sin marcación confirmada",
+  EXPIRED_UNCONFIRMED: "preparación vencida, sin marcación confirmada",
+  EMPTY: "sin preparación, foto ni marcación asociadas",
+  UNVERIFIABLE_BROWSER: "no se pudo verificar el navegador del intento",
   UNKNOWN: "sin datos suficientes",
   CANCELLED: "cancelado sin crear marcación",
   REVIEWED: "revisado y confirmado",
@@ -239,7 +243,7 @@ export default function AttendanceRecoveryPanel({
             value={statusFilter || "__all"}
             onValueChange={(value) => setStatusFilter(value === "__all" ? "" : value)}
           >
-            <SelectTrigger id="recovery-status-filter" aria-label="Estado de la solicitud">
+            <SelectTrigger id="recovery-status-filter" aria-label="Filtrar solicitudes por estado">
               <SelectValue placeholder="Todos los estados" />
             </SelectTrigger>
             <SelectContent>
@@ -259,7 +263,7 @@ export default function AttendanceRecoveryPanel({
             value={employeeFilter || "__all"}
             onValueChange={(value) => setEmployeeFilter(value === "__all" ? "" : value)}
           >
-            <SelectTrigger id="recovery-employee-filter" aria-label="Empleado">
+            <SelectTrigger id="recovery-employee-filter" aria-label="Filtrar solicitudes por empleado">
               <SelectValue placeholder="Todos los empleados" />
             </SelectTrigger>
             <SelectContent>
