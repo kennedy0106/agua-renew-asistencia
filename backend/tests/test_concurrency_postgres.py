@@ -1630,6 +1630,63 @@ def test_purge_vs_marcacion_no_borra_confirmada(pg_engine):
     finally:
         check.close()
 
+def test_recovery_request_concurrent_create_returns_one_request(pg_engine, monkeypatch):
+    from app.modules.attendance.models import AttendanceRecoveryRequest
+    from app.modules.attendance.recovery_service import RecoveryService
+    from app.modules.audit.models import AuditLog
+
+    factory = _two_factory(pg_engine)
+    with factory() as seed:
+        employee_id, device_id = _seed_employee_device(seed)
+    token = create_attendance_token(str(employee_id), action="CHECK_IN", device_id=str(device_id))
+    decoded = decode_attendance_token(token)
+    rendezvous = threading.Barrier(2, timeout=10)
+    local = threading.local()
+    original_lookup = RecoveryService._find_by_nonce_and_requester
+
+    def synchronized_lookup(service, nonce, requester_id):
+        found = original_lookup(service, nonce, requester_id)
+        if not getattr(local, "looked_up", False):
+            local.looked_up = True
+            assert found is None
+            rendezvous.wait()
+        return found
+
+    monkeypatch.setattr(RecoveryService, "_find_by_nonce_and_requester", synchronized_lookup)
+    results, errors = [], []
+
+    def create():
+        with factory() as session:
+            try:
+                request, created = RecoveryService(session).create_request(
+                    marking_token=token, decoded=decoded, requester_device_id=device_id,
+                )
+                results.append((request.id, created))
+            except BaseException as exc:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    _join_finished(threads)
+    assert not errors
+    assert len(results) == 2
+    assert results[0][0] == results[1][0]
+    assert sorted(created for _, created in results) == [False, True]
+    with factory() as check:
+        requests = list(check.scalars(select(AttendanceRecoveryRequest).where(
+            AttendanceRecoveryRequest.nonce == decoded["nonce"],
+        )))
+        assert len(requests) == 1
+        assert check.scalar(select(func.count()).select_from(AuditLog).where(
+            AuditLog.entity_id == requests[0].id,
+            AuditLog.action == "RECOVERY_REQUEST_CREATED",
+        )) == 1
+        assert check.scalar(select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.employee_id == employee_id,
+        )) == 0
+
+
 def test_recovery_authorization_and_late_marking_share_employee_lock(pg_engine):
     """A5: el cierre del jefe y la escritura tardía se serializan por empleado."""
     if "attendance_recovery_requests" not in inspect(pg_engine).get_table_names():

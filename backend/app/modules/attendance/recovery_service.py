@@ -218,10 +218,13 @@ class RecoveryService:
     def _confirmation_for_nonce(
         self, request: AttendanceRecoveryRequest
     ) -> RecoveryConfirmationOut | None:
-        consumed = self.repo.get_consumed_nonce(request.nonce)
-        if consumed is None:
+        # El panel también puede verificar una resolución histórica respaldada
+        # por su registro real, aunque ya no exista la fila consumed. Ambas
+        # vistas deben aplicar la misma inspección y las mismas restricciones.
+        inspection = self._inspect(request)
+        if inspection.inconsistent or inspection.browser_unverifiable:
             return None
-        return self._confirmation_from_consumed(consumed, request)
+        return inspection.record
 
     # --- panel ADMIN/BOSS ---
 

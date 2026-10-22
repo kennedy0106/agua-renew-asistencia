@@ -28,6 +28,57 @@ from app.modules.audit.models import AuditLog
 from tests.image_helpers import valid_jpeg_b64
 
 
+def test_public_recovery_returns_historical_review_without_consumed(client, db_session):
+    from app.modules.users.models import User
+
+    _login(client)
+    employee_id = _employee(client, db_session)
+    token = _identify(client)["marking_token"]
+    nonce = decode_attendance_token(token)["nonce"]
+    actor = db_session.scalar(select(User).where(User.username == "admin"))
+    old_time = datetime(2026, 10, 21, 14, 0, tzinfo=timezone.utc)
+    record = AttendanceRecord(
+        employee_id=uuid.UUID(employee_id),
+        work_date=old_time.date(),
+        check_in_at=old_time,
+        status="OPEN",
+    )
+    db_session.add(record)
+    db_session.flush()
+    record_id = record.id
+    db_session.add(AttendanceAttemptResolution(
+        nonce=nonce,
+        employee_id=record.employee_id,
+        device_id=uuid.UUID(_device_id(client)),
+        action="CHECK_IN",
+        resolution="REVIEWED_CONFIRMED",
+        attendance_record_id=record_id,
+        reason="Confirmación histórica verificada",
+        resolved_by_user_id=actor.id,
+    ))
+    db_session.commit()
+    request = _create_recovery_request(client, _expire_marking_token(token))
+    resolved = client.post(
+        f"/api/v1/attendance/recovery-requests/admin/{request['id']}/resolve",
+        json={"decision": "CONFIRM_EXISTING", "reason": "Devolver el registro revisado"},
+    )
+    assert resolved.status_code == 200, resolved.text
+    public = client.get(f"/api/v1/attendance/recovery-requests/{request['id']}")
+    assert public.status_code == 200
+    confirmation = public.json()["confirmation"]
+    assert confirmation is not None
+    assert confirmation["id"] == str(record_id)
+    assert confirmation["work_date"] == "2026-10-21"
+    # SQLite drops tzinfo on roundtrip; production PostgreSQL retains UTC.
+    returned_time = datetime.fromisoformat(confirmation["check_in_at"])
+    if returned_time.tzinfo is None:
+        returned_time = returned_time.replace(tzinfo=timezone.utc)
+    assert returned_time == old_time
+    assert public.json()["can_reidentify"] is False
+    assert _count(db_session, AttendanceConsumedNonce) == 0
+    assert _count(db_session, AttendanceRecord) == 1
+
+
 def _login(client, username: str = "admin", password: str = "Admin123!") -> None:
     assert client.post(
         "/api/v1/auth/login", json={"username": username, "password": password}
