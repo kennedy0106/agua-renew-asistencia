@@ -46,12 +46,13 @@ test("DNI keypad suppresses the native keyboard hint without blocking text or ph
   await page.getByRole("button", { name: "Limpiar DNI" }).tap();
   await expect(input).toHaveValue("");
 
-  await page.getByRole("tab", { name: "Código / AR: (texto)" }).tap();
+  await page.getByRole("button", { name: "Código / AR: (texto)" }).tap();
+  await expect(page.getByRole("button", { name: "Código / AR: (texto)" })).toHaveAttribute("aria-pressed", "true");
   await expect(input).toHaveAttribute("inputmode", "text");
   await expect(keypad).toHaveCount(0);
   await input.pressSequentially("EMP-002");
   await expect(input).toHaveValue("EMP-002");
-  await page.getByRole("tab", { name: "DNI (números)" }).tap();
+  await page.getByRole("button", { name: "DNI (números)" }).tap();
   await expect(input).toHaveAttribute("inputmode", "none");
   await expect(keypad).toBeVisible();
   expect(mutations).toEqual([]);

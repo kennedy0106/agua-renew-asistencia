@@ -109,14 +109,15 @@ for (const mobile of [false, true]) {
       await input.fill("71112233");
       await page.evaluate(() => document.fonts.ready);
       const card = page.locator(".kiosk-card");
-      const toCode = await sampleOnClick(card, page.getByRole("tab").nth(1));
+      const modes = page.getByRole("group", { name: "Modo de ingreso" }).getByRole("button");
+      const toCode = await sampleOnClick(card, modes.nth(1));
       expectSpatialTransition(toCode);
       await expect(input).toHaveValue("71112233");
       await expect(input).toBeFocused();
       await expect(input).toHaveAttribute("inputmode", "text");
       await expect(page.getByRole("group", { name: "Teclado numérico" })).toHaveCount(0);
       await page.screenshot({ path: testInfo.outputPath("kiosk-code.png") });
-      const toDni = await sampleOnClick(card, page.getByRole("tab").first());
+      const toDni = await sampleOnClick(card, modes.first());
       expectSpatialTransition(toDni);
       expect(Math.abs(toDni.after - toCode.before)).toBeLessThan(2);
       await expect(input).toHaveValue("71112233");
@@ -152,7 +153,7 @@ for (const mobile of [false, true]) {
         await expect(trigger).toHaveAttribute("aria-expanded", "false");
       }
       await page.goto("/asistencia");
-      const tabs = page.getByRole("tab");
+      const tabs = page.getByRole("group", { name: "Modo de ingreso" }).getByRole("button");
       for (const index of [1, 0, 1, 0, 1, 0]) {
         await tabs.nth(index).dispatchEvent("click", { detail: 1 });
         await page.waitForTimeout(35);
@@ -182,7 +183,7 @@ for (const mobile of [false, true]) {
           await expect(trigger).toHaveAttribute("aria-expanded", "false");
         }
         await page.goto("/asistencia");
-        const code = page.getByRole("tab").nth(1);
+        const code = page.getByRole("group", { name: "Modo de ingreso" }).getByRole("button").nth(1);
         if (interaction === "keyboard") { await code.focus(); await code.press("Enter"); }
         else await code.click();
         await expect(page.getByTestId("kiosk-identifier")).toHaveAttribute("inputmode", "text");

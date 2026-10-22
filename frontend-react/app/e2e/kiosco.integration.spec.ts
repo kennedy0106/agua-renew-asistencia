@@ -325,7 +325,7 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     expect(records.some((row) => row.status === "COMPLETE")).toBeFalsy();
   });
 
-  test("EDB-T01 recarga y consulta entrada sin fotografía", async ({ page, request }) => {
+  test("EDB-T01 recarga conserva la foto y consulta sin reenviarla", async ({ page, request }) => {
     const api = await adminApi(request);
     const employee = await createEmployee(api, "T01");
     let evidenceAfterReload = 0;
@@ -373,7 +373,9 @@ test.describe("kiosco integración Next+FastAPI+Postgres", () => {
     await page.reload();
     reloaded = true;
     await expect(page.getByTestId("kiosk-consult-attempt")).toBeVisible();
-    await expect(page.getByTestId("kiosk-resend")).toHaveCount(0);
+    // La foto pendiente se restaura con la misma referencia, pero la recarga
+    // no dispara ninguna escritura ni reenvío automático.
+    await expect(page.getByTestId("kiosk-resend")).toBeVisible();
     await wrapGetUserMediaCounter(page);
     await page.getByTestId("kiosk-consult-attempt").click();
     await waitConfirmed(page, /Entrada registrada/);

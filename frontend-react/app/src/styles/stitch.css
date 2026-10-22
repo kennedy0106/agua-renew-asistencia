@@ -1883,6 +1883,36 @@ h4,
   padding-top: 0.7rem;
 }
 
+/* Cuenta regresiva con pausa explícita: la fila no empuja la cámara fuera de
+   la tarjeta y el control conserva el objetivo táctil de 44 px. */
+.kiosk-countdown-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.7rem;
+  margin-bottom: 0.6rem;
+}
+.kiosk-countdown-row .kiosk-countdown {
+  margin: 0;
+}
+.kiosk-countdown-toggle {
+  width: auto;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.82rem;
+}
+.kiosk-camera-actions {
+  display: grid;
+  gap: 0.5rem;
+}
+.kiosk-sending-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
 /* El campo real se conserva en ambos modos; el display segmentado sólo se
    desvanece y la altura del campo no cambia. */
 .kiosk-id-field {

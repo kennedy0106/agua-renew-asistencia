@@ -83,12 +83,30 @@ describe("lectura puntual de ubicación", () => {
       expect(accepted.position.accuracyM).toBe(50);
       expect(accepted.position.observedMonotonicMs).toBe(500);
     }
-    expect(calls[0]).toMatchObject({ enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
-
-    const over = requestBrowserPosition(() => 500);
-    respond!(50.0001);
-    expect(await over).toEqual({ ok: false, reason: "accuracy" });
+    expect(calls[0]).toMatchObject({ enableHighAccuracy: true, maximumAge: 0 });
+    expect(calls[0].timeout).toBeGreaterThan(0);
+    expect(calls[0].timeout).toBeLessThanOrEqual(20000);
     expect(watchPosition).not.toHaveBeenCalled();
+  });
+
+  it("reintenta una lectura imprecisa dentro del presupuesto y acepta la precisa", async () => {
+    const accuracies = [51, 49.5];
+    const getCurrentPosition = vi.fn((success: PositionCallback) => {
+      const accuracy = accuracies.shift() ?? 10;
+      success({
+        coords: { latitude: -12.0464, longitude: -77.0428, accuracy, altitude: null, altitudeAccuracy: null, heading: null, speed: null } as GeolocationCoordinates,
+        timestamp: 0,
+      } as GeolocationPosition);
+    });
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: { getCurrentPosition, watchPosition: vi.fn(), clearWatch: vi.fn() },
+    });
+
+    const outcome = await requestBrowserPosition(() => 0);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.position.accuracyM).toBe(49.5);
+    expect(getCurrentPosition).toHaveBeenCalledTimes(2);
   });
 
   it("resuelve con un plazo propio si el callback nunca responde", async () => {
@@ -106,17 +124,16 @@ describe("lectura puntual de ubicación", () => {
     }
   });
 
-  it("clasifica la denegación de permiso sin diagnosticar un GPS apagado", async () => {
+  it("clasifica la denegación de permiso sin diagnosticar un GPS apagado ni reintentar", async () => {
+    const getCurrentPosition = vi.fn((_success: PositionCallback, error: PositionErrorCallback) =>
+      error({ code: 1, message: "denied" } as GeolocationPositionError),
+    );
     Object.defineProperty(navigator, "geolocation", {
       configurable: true,
-      value: {
-        getCurrentPosition: (_success: PositionCallback, error: PositionErrorCallback) =>
-          error({ code: 1, message: "denied" } as GeolocationPositionError),
-        watchPosition: vi.fn(),
-        clearWatch: vi.fn(),
-      },
+      value: { getCurrentPosition, watchPosition: vi.fn(), clearWatch: vi.fn() },
     });
     expect(await requestBrowserPosition()).toEqual({ ok: false, reason: "denied" });
+    expect(getCurrentPosition).toHaveBeenCalledTimes(1);
   });
 });
 
