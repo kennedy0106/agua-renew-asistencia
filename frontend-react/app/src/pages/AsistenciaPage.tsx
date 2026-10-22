@@ -612,13 +612,19 @@ export default function AsistenciaPage() {
 
   useEffect(() => {
     if (phase !== "cuenta_regresiva") return;
+    // La visibilidad debe comprobarse también en cero: el evento del navegador
+    // puede seguir en cola cuando vence el último temporizador.
+    if (document.visibilityState === "hidden") {
+      setCountdownPaused(true);
+      return;
+    }
+    if (countdownPaused) return;
     if (countdown <= 0) {
-      if (!countdownPaused) setPhase("capturando");
+      setPhase("capturando");
       return;
     }
     // Pausa explícita y pestaña oculta detienen el avance: el tiempo restante
     // se conserva y no se dispara una captura que el usuario no vio.
-    if (countdownPaused || document.visibilityState === "hidden") return;
     const timer = window.setTimeout(() => setCountdown((value) => value - 1), 1000);
     return () => window.clearTimeout(timer);
   }, [phase, countdown, countdownPaused]);
@@ -1181,6 +1187,13 @@ export default function AsistenciaPage() {
   async function captureAndMark() {
     const current = infoRef.current;
     if (!current || captureLock.current) return;
+    // Cubre además el cambio de visibilidad entre la transición de fase y
+    // este efecto. Reanudar o capturar sigue requiriendo una acción visible.
+    if (document.visibilityState === "hidden") {
+      setCountdownPaused(true);
+      setPhase("cuenta_regresiva");
+      return;
+    }
     const gen = generationRef.current;
     captureLock.current = true;
     setPhase("capturando");

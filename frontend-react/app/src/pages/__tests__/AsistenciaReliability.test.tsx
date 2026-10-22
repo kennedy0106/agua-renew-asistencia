@@ -389,6 +389,51 @@ describe("mensajes de identificación", () => {
 });
 
 describe("cuenta regresiva y anuncios", () => {
+  it("no captura al llegar a cero si visibilitychange sigue pendiente y permite reanudar", async () => {
+    installMediaDouble();
+    const writes: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/identify")) return jsonResponse(identifyResponse(markingToken("nonce-a", "identify")));
+      if (url.includes("/attempt/prepare")) return jsonResponse(PREPARED);
+      if (url.includes("/evidence")) {
+        writes.push("photo");
+        return jsonResponse({ id: "ev-1", content_type: "image/jpeg" }, 201);
+      }
+      if (url.includes("/check-in")) {
+        writes.push("mark");
+        return jsonResponse(CONFIRMED, 201);
+      }
+      return jsonResponse({ detail: "inesperado" }, 404);
+    }));
+    const user = userEvent.setup();
+    render(<AsistenciaPage />);
+    await user.type(screen.getByTestId("kiosk-identifier"), "71112233");
+    await user.click(screen.getByTestId("kiosk-identify"));
+    await screen.findByTestId("kiosk-countdown-toggle");
+    // Instala el reloj antes de programar un nuevo tick, tras pausar/reanudar.
+    fireEvent.click(screen.getByTestId("kiosk-countdown-toggle"));
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByTestId("kiosk-countdown-toggle"));
+    for (let tick = 0; tick < 9; tick += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    }
+    expect(document.querySelector(".kiosk-countdown")).toHaveTextContent("1 segundos");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(document.querySelector(".kiosk-card")).toHaveAttribute("data-phase", "cuenta_regresiva");
+    expect(writes).toEqual([]);
+    expect(screen.getByTestId("kiosk-countdown-toggle")).toHaveAttribute("aria-pressed", "true");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    fireEvent(document, new Event("visibilitychange"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(writes).toEqual([]);
+    vi.useRealTimers();
+    await user.click(screen.getByTestId("kiosk-capture-now"));
+    expect(await screen.findByTestId("kiosk-confirmed-title")).toBeInTheDocument();
+    expect(writes).toEqual(["photo", "mark"]);
+  });
+
   it("pausa, pestaña oculta y reanudación conservan el tiempo; la captura manual funciona una vez", async () => {
     const media = installMediaDouble();
     const evidenceCalls: string[] = [];
