@@ -298,6 +298,8 @@ def test_geocodifica_sin_sesion_abierta_y_tras_enviar_la_respuesta(
 
     def reverse_address(latitude, longitude, *, api_key=""):
         events.append(f"geocode open_sessions={counting.open}")
+        # La transacción de la petición también se cerró antes de geocodificar.
+        assert not db_session.in_transaction()
         return {"formatted": ADDRESS}
 
     monkeypatch.setattr(evidence_media, "reverse_address", reverse_address)
