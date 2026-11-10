@@ -144,7 +144,7 @@ test.describe("kiosco UI con API simulada", () => {
     await grantKioskGeolocation(context);
   });
 
-  test("la cámara espera diez segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
+  test("la cámara espera cinco segundos o permite capturar manualmente y confirma al empleado", async ({ page }) => {
     let evidenceCalls = 0;
     // Esta prueba registra una entrada nueva. La fecha fija antigua activa
     // correctamente la confirmación histórica y no representa este escenario.

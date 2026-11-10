@@ -102,7 +102,7 @@ type PrepareOutcome =
   | { ok: true; token: string }
   | { ok: false; reason: "location" | "untrusted_token" };
 
-const CAMERA_COUNTDOWN_SECONDS = 10;
+const CAMERA_COUNTDOWN_SECONDS = 5;
 const CAMERA_OPEN_TIMEOUT_MS = 10_000;
 const CAMERA_PLAY_TIMEOUT_MS = 5_000;
 const CAMERA_FRAME_TIMEOUT_MS = 8_000;

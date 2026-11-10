@@ -437,7 +437,7 @@ describe("cuenta regresiva y anuncios", () => {
     fireEvent.click(screen.getByTestId("kiosk-countdown-toggle"));
     vi.useFakeTimers();
     fireEvent.click(screen.getByTestId("kiosk-countdown-toggle"));
-    for (let tick = 0; tick < 9; tick += 1) {
+    for (let tick = 0; tick < 4; tick += 1) {
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
     }
     expect(document.querySelector(".kiosk-countdown")).toHaveTextContent("1 segundos");
@@ -484,7 +484,7 @@ describe("cuenta regresiva y anuncios", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1_150));
     });
-    expect(countdown()).toContain("10");
+    expect(countdown()).toContain("5");
     expect(evidenceCalls).toHaveLength(0);
 
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
@@ -492,7 +492,7 @@ describe("cuenta regresiva y anuncios", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1_150));
     });
-    expect(countdown()).toContain("10");
+    expect(countdown()).toContain("5");
 
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
     fireEvent(document, new Event("visibilitychange"));
@@ -500,7 +500,7 @@ describe("cuenta regresiva y anuncios", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1_150));
     });
-    expect(countdown()).toContain("9");
+    expect(countdown()).toContain("4");
 
     await user.click(screen.getByTestId("kiosk-capture-now"));
     expect(await screen.findByTestId("kiosk-confirmed-title")).toHaveTextContent("Entrada registrada");

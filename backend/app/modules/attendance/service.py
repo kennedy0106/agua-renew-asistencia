@@ -10,6 +10,7 @@
 
 import base64
 import hashlib
+import logging
 import uuid
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
@@ -55,6 +56,8 @@ from app.modules.schedules.service import ScheduleService
 
 _MISSING = object()  # sentinela: distingue "no enviado" de "enviado como null"
 
+logger = logging.getLogger(__name__)
+
 # Plazo fijo del permiso de escritura preparado (S10/S11): los reintentos de
 # subida/marcación no reinician la ventana de cinco minutos.
 PREPARATION_WINDOW = timedelta(minutes=5)
@@ -65,6 +68,75 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def resolve_preparation_address(preparation: AttendancePreparation) -> bool:
+    """Enriquecimiento opcional: ausencia, cuota o caída nunca fallan la marcación.
+
+    Escribe la dirección en la preparación recibida, sin confirmar la sesión.
+    Devuelve ``True`` sólo si guardó una dirección nueva.
+    """
+    if preparation.address is not None:
+        return False
+    try:
+        from importlib import import_module
+
+        module = import_module("app.modules.attendance.evidence_media")
+        result = module.reverse_address(
+            preparation.latitude,
+            preparation.longitude,
+            api_key=get_settings().geoapify_api_key,
+        )
+    except Exception:
+        return False
+    formatted = None
+    if isinstance(result, dict):
+        formatted = result.get("formatted") or result.get("address")
+    if not formatted:
+        return False
+    preparation.address = str(formatted)[:500]
+    return True
+
+
+def _task_session_factory():
+    """Fábrica de la sesión propia de la tarea de fondo (aislada en pruebas)."""
+    from app.db.session import SessionLocal
+
+    return SessionLocal
+
+
+def enrich_preparation_address(nonce: str) -> None:
+    """Guarda la dirección de una preparación fuera del camino crítico.
+
+    Corre después de la respuesta, con sesión propia: nunca reutiliza la sesión
+    de la petición ni toca la marcación, el evento, el nonce o la evidencia.
+    Sin clave, con error o con la dirección ya presente no hace nada; un fallo
+    aquí deja la marcación igual y la dirección en null.
+    """
+    if not nonce:
+        return
+    factory = _task_session_factory()
+    if factory is None:
+        return
+    db = factory()
+    try:
+        preparation = db.scalar(
+            select(AttendancePreparation).where(AttendancePreparation.nonce == nonce)
+        )
+        if preparation is None or not resolve_preparation_address(preparation):
+            return
+        db.add(preparation)
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.warning(
+            "No se pudo guardar la dirección de una preparación; la marcación permanece igual"
+        )
+    finally:
+        db.close()
 
 
 def compute_worked_minutes(check_in_at: datetime, check_out_at: datetime, break_minutes: int) -> int:
@@ -199,28 +271,6 @@ class AttendanceService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Ya tiene una entrada abierta; marque su salida primero",
             )
-
-    def _resolve_address(self, preparation: AttendancePreparation | None) -> None:
-        """Enriquecimiento opcional: ausencia, cuota o caída nunca fallan la marcación."""
-        if preparation is None or preparation.address is not None:
-            return
-        try:
-            from importlib import import_module
-
-            module = import_module("app.modules.attendance.evidence_media")
-            result = module.reverse_address(
-                preparation.latitude,
-                preparation.longitude,
-                api_key=get_settings().geoapify_api_key,
-            )
-        except Exception:
-            return
-        formatted = None
-        if isinstance(result, dict):
-            formatted = result.get("formatted") or result.get("address")
-        if formatted:
-            preparation.address = str(formatted)[:500]
-            self.db.add(preparation)
 
     def prepare_attempt(
         self, marking_token: str, *, location: dict, device_id: uuid.UUID | None = None
@@ -1084,7 +1134,6 @@ class AttendanceService:
                 detail="La jornada tiene una carga histórica; no se mezclan fuentes",
             )
         try:
-            self._resolve_address(preparation)
             record = AttendanceRecord(
                 employee_id=employee_id,
                 work_date=work_date,
@@ -1175,7 +1224,6 @@ class AttendanceService:
                 detail="La hora preparada de salida es anterior a la entrada; identifique de nuevo",
             )
         try:
-            self._resolve_address(preparation)
             record.check_out_at = now
             record.worked_minutes = compute_worked_minutes(record.check_in_at, now, 0)
             record.status = "COMPLETE"
@@ -1332,7 +1380,10 @@ class AttendanceService:
                 detail="El sello de evidencia no está disponible; la marcación permanece confirmada",
             ) from exc
         try:
-            store.put_bytes(key, rendered, "image/jpeg", bucket=bucket)
+            # Sin dirección el sello es transitorio: no se persiste para que el
+            # siguiente acceso lo regenere cuando la tarea de fondo la guarde.
+            if preparation.address is not None:
+                store.put_bytes(key, rendered, "image/jpeg", bucket=bucket)
         except ObjectAlreadyExistsError:
             pass
         except ObjectStoreError:

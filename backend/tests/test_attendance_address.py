@@ -43,7 +43,7 @@ def address_transport(monkeypatch):
     evidence_media._reset_state()
 
 
-def _mark_and_read_snapshot(client, action, expected_status, expected_address, opener):
+def _mark_and_read_snapshot(client, action, expected_status, expected_address, opener, db_session):
     prior_requests = len(opener.requests)
     token = _identify(client)
     reserved = _prepare_ok(client, token)
@@ -71,6 +71,9 @@ def _mark_and_read_snapshot(client, action, expected_status, expected_address, o
     )
 
     # Observe persistence through the existing owned-nonce HTTP snapshot, not SQL.
+    # La dirección la guarda la tarea de fondo en su propia sesión: hay que
+    # descartar la copia en el identity map de la sesión de la petición.
+    db_session.expire_all()
     before_records = _records(client)
     before_summary = _summary(client)
     stored = _prepare_ok(client, prepared_token)
@@ -90,12 +93,12 @@ def _complete_shift(client, db_session, expected_address, opener):
     _employee(client, db_session)
     assert _records(client) == []
     entry, opened = _mark_and_read_snapshot(
-        client, "check-in", 201, expected_address, opener
+        client, "check-in", 201, expected_address, opener, db_session
     )
     assert opened["status"] == "OPEN"
     assert len(_records(client)) == 1
     leave, closed = _mark_and_read_snapshot(
-        client, "check-out", 200, expected_address, opener
+        client, "check-out", 200, expected_address, opener, db_session
     )
     assert closed["id"] == opened["id"]
     assert closed["status"] == "COMPLETE"
