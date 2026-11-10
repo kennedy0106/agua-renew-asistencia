@@ -273,6 +273,23 @@ def review_attempt(
     return AttendanceService(db).review_attempt(nonce, reason=payload.reason, user_id=user.id)
 
 
+def _finish_marking(db: Session, result, nonce: str | None, background_tasks: BackgroundTasks):
+    """Cierra la petición de marcación y programa la dirección fuera del camino crítico.
+
+    Sólo una marcación nueva con preparación se enriquece; un replay idempotente
+    (``dict``) no reprograma. La respuesta se serializa antes de terminar la
+    transacción de lectura abierta por ``refresh`` para devolver la conexión al
+    pool: así la tarea de fondo no compite con la conexión de su propia petición.
+    """
+    if isinstance(result, dict):
+        return result
+    out = AttendanceRecordOut.model_validate(result)
+    db.commit()
+    if nonce:
+        background_tasks.add_task(enrich_preparation_address, nonce)
+    return out
+
+
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
 def check_in(
     payload: CheckInRequest,
@@ -291,11 +308,7 @@ def check_in(
         token_device_id=token_did,
         marking_token=payload.marking_token,
     )
-    # Sólo una marcación nueva con preparación se enriquece; un replay
-    # idempotente (dict) ya tiene su dirección o no debe consultarse de nuevo.
-    if nonce and not isinstance(result, dict):
-        background_tasks.add_task(enrich_preparation_address, nonce)
-    return result
+    return _finish_marking(db, result, nonce, background_tasks)
 
 
 @router.post("/check-out", response_model=AttendanceRecordOut)
@@ -317,9 +330,7 @@ def check_out(
         record_id=record_id,
         marking_token=payload.marking_token,
     )
-    if nonce and not isinstance(result, dict):
-        background_tasks.add_task(enrich_preparation_address, nonce)
-    return result
+    return _finish_marking(db, result, nonce, background_tasks)
 
 
 @router.get("", response_model=list[AttendanceListItem])

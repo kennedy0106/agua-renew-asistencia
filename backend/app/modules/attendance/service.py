@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -70,32 +70,28 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def resolve_preparation_address(preparation: AttendancePreparation) -> bool:
-    """Enriquecimiento opcional: ausencia, cuota o caída nunca fallan la marcación.
+def geocode_formatted_address(latitude: float, longitude: float) -> str | None:
+    """Dirección legible opcional: ausencia de clave, cuota o caída devuelven None.
 
-    Escribe la dirección en la preparación recibida, sin confirmar la sesión.
-    Devuelve ``True`` sólo si guardó una dirección nueva.
+    No usa la base de datos: se llama sin ninguna conexión ocupada.
     """
-    if preparation.address is not None:
-        return False
     try:
         from importlib import import_module
 
         module = import_module("app.modules.attendance.evidence_media")
         result = module.reverse_address(
-            preparation.latitude,
-            preparation.longitude,
+            latitude,
+            longitude,
             api_key=get_settings().geoapify_api_key,
         )
     except Exception:
-        return False
+        return None
     formatted = None
     if isinstance(result, dict):
         formatted = result.get("formatted") or result.get("address")
     if not formatted:
-        return False
-    preparation.address = str(formatted)[:500]
-    return True
+        return None
+    return str(formatted)[:500]
 
 
 def _task_session_factory():
@@ -108,35 +104,46 @@ def _task_session_factory():
 def enrich_preparation_address(nonce: str) -> None:
     """Guarda la dirección de una preparación fuera del camino crítico.
 
-    Corre después de la respuesta, con sesión propia: nunca reutiliza la sesión
-    de la petición ni toca la marcación, el evento, el nonce o la evidencia.
-    Sin clave, con error o con la dirección ya presente no hace nada; un fallo
-    aquí deja la marcación igual y la dirección en null.
+    Corre después de la respuesta y nunca reutiliza la sesión de la petición
+    ni toca la marcación, el evento, el nonce o la evidencia. Para no retener
+    conexiones del pool durante la llamada externa (hasta 4 s) usa dos
+    transacciones breves: leer coordenadas y cerrar; geocodificar sin conexión;
+    escribir con ``UPDATE ... WHERE address IS NULL`` (nunca pisa una dirección
+    ya guardada). Sin clave, con error o con dirección presente no hace nada.
     """
     if not nonce:
         return
     factory = _task_session_factory()
     if factory is None:
         return
-    db = factory()
     try:
-        preparation = db.scalar(
-            select(AttendancePreparation).where(AttendancePreparation.nonce == nonce)
-        )
-        if preparation is None or not resolve_preparation_address(preparation):
+        with factory() as db:
+            row = db.execute(
+                select(
+                    AttendancePreparation.latitude,
+                    AttendancePreparation.longitude,
+                    AttendancePreparation.address,
+                ).where(AttendancePreparation.nonce == nonce)
+            ).first()
+        if row is None or row.address is not None:
             return
-        db.add(preparation)
-        db.commit()
+        formatted = geocode_formatted_address(row.latitude, row.longitude)
+        if formatted is None:
+            return
+        with factory() as db:
+            db.execute(
+                update(AttendancePreparation)
+                .where(
+                    AttendancePreparation.nonce == nonce,
+                    AttendancePreparation.address.is_(None),
+                )
+                .values(address=formatted)
+            )
+            db.commit()
     except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            pass
         logger.warning(
             "No se pudo guardar la dirección de una preparación; la marcación permanece igual"
         )
-    finally:
-        db.close()
 
 
 def compute_worked_minutes(check_in_at: datetime, check_out_at: datetime, break_minutes: int) -> int:

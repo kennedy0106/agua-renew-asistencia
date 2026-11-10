@@ -165,8 +165,8 @@ def test_fallo_de_direccion_no_cambia_la_marcacion(
         # El fallo de la propia tarea (p. ej. BD) tampoco se propaga.
         monkeypatch.setattr(
             attendance_service,
-            "resolve_preparation_address",
-            lambda preparation: (_ for _ in ()).throw(RuntimeError("synthetic task failure")),
+            "geocode_formatted_address",
+            lambda latitude, longitude: (_ for _ in ()).throw(RuntimeError("synthetic task failure")),
         )
 
     response = client.post(
@@ -242,3 +242,149 @@ def test_sello_sin_direccion_no_se_persiste_y_con_direccion_si(
     assert cached.content == with_address.content
     assert len(store.writes) == 1
     assert len(calls) == 3  # el segundo acceso lee el derivado persistido
+
+
+# --- Regresiones de la revisión (aislamiento, conexiones, orden, replays) ---
+
+
+def test_sin_fixture_client_la_tarea_nunca_abre_sessionlocal(monkeypatch):
+    """Hallazgo Alto: clientes propios no deben alcanzar la BD configurada."""
+    import app.db.session as db_session_module
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("una prueba abrió SessionLocal desde una tarea de fondo")
+
+    monkeypatch.setattr(db_session_module, "SessionLocal", _forbidden)
+    assert attendance_service._task_session_factory() is None
+    enrich_preparation_address("nonce-sintetico")  # no lanza ni abre nada
+
+
+class _CountingFactory:
+    """Fábrica de sesiones de la tarea que cuenta las sesiones abiertas."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.open = 0
+
+    def __call__(self):
+        session = self._inner()
+        factory = self
+        factory.open += 1
+        state = {"closed": False}
+        original_close = session.close
+
+        def close():
+            if not state["closed"]:
+                state["closed"] = True
+                factory.open -= 1
+            original_close()
+
+        session.close = close
+        return session
+
+
+def test_geocodifica_sin_sesion_abierta_y_tras_enviar_la_respuesta(
+    client, db_session, monkeypatch
+):
+    """Hallazgos Medio y Bajo: sin conexión retenida y después del cuerpo HTTP."""
+    from sqlalchemy.orm import sessionmaker
+
+    _employee_id, _token, prepared = _check_in_ready(client, db_session)
+    counting = _CountingFactory(
+        sessionmaker(bind=db_session.get_bind(), autoflush=False, autocommit=False)
+    )
+    monkeypatch.setattr(attendance_service, "_task_session_factory", lambda: counting)
+    events: list[str] = []
+
+    def reverse_address(latitude, longitude, *, api_key=""):
+        events.append(f"geocode open_sessions={counting.open}")
+        return {"formatted": ADDRESS}
+
+    monkeypatch.setattr(evidence_media, "reverse_address", reverse_address)
+    monkeypatch.setattr(get_settings(), "geoapify_api_key", API_KEY)
+
+    inner_app = client._transport.app
+
+    async def recording_app(scope, receive, send):
+        async def recording_send(message):
+            if message["type"] == "http.response.body" and not message.get("more_body"):
+                events.append("body")
+            await send(message)
+
+        await inner_app(scope, receive, recording_send)
+
+    monkeypatch.setattr(client._transport, "app", recording_app)
+    response = client.post(
+        "/api/v1/attendance/check-in", json={"marking_token": prepared["marking_token"]}
+    )
+
+    assert response.status_code == 201, response.text
+    assert events == ["body", "geocode open_sessions=0"]
+    assert counting.open == 0
+    assert _preparation(db_session, _nonce_of(prepared["marking_token"])).address == ADDRESS
+
+
+def test_update_condicional_no_pisa_direccion_escrita_durante_la_consulta(
+    client, db_session, monkeypatch
+):
+    """Si otra escritura guarda una dirección mientras se geocodifica, se respeta."""
+    from sqlalchemy.orm import sessionmaker
+
+    _employee_id, _token, prepared = _check_in_ready(client, db_session)
+    nonce = _nonce_of(prepared["marking_token"])
+    monkeypatch.setattr(attendance_service, "_task_session_factory", lambda: None)
+    body = {"marking_token": prepared["marking_token"]}
+    assert client.post("/api/v1/attendance/check-in", json=body).status_code == 201
+
+    factory = sessionmaker(bind=db_session.get_bind(), autoflush=False, autocommit=False)
+    monkeypatch.setattr(attendance_service, "_task_session_factory", lambda: factory)
+
+    def reverse_address(latitude, longitude, *, api_key=""):
+        with factory() as other:
+            other.execute(
+                attendance_service.update(AttendancePreparation)
+                .where(AttendancePreparation.nonce == nonce)
+                .values(address="Escrita en paralelo")
+            )
+            other.commit()
+        return {"formatted": ADDRESS}
+
+    monkeypatch.setattr(evidence_media, "reverse_address", reverse_address)
+    monkeypatch.setattr(get_settings(), "geoapify_api_key", API_KEY)
+    enrich_preparation_address(nonce)
+    assert _preparation(db_session, nonce).address == "Escrita en paralelo"
+
+
+def test_replay_de_salida_no_reprograma(client, db_session, monkeypatch):
+    _employee_id, _token, prepared = _check_in_ready(client, db_session)
+    calls = _spy(monkeypatch)
+    body_in = {"marking_token": prepared["marking_token"]}
+    assert client.post("/api/v1/attendance/check-in", json=body_in).status_code == 201
+    out_token = _identify(client)
+    prepared_out = _prepare_ok(client, out_token)
+    assert _evidence(client, prepared_out["marking_token"]).status_code == 201
+    body = {"marking_token": prepared_out["marking_token"]}
+    first = client.post("/api/v1/attendance/check-out", json=body)
+    assert first.status_code == 200, first.text
+    assert len(calls) == 2
+
+    replay = client.post("/api/v1/attendance/check-out", json=body)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+    assert len(calls) == 2  # el replay no vuelve a consultar al proveedor
+
+
+def test_replay_con_direccion_nula_no_reprograma(client, db_session, monkeypatch):
+    """Comportamiento aceptado: si la primera tarea no pudo, el replay no reintenta."""
+    _employee_id, _token, prepared = _check_in_ready(client, db_session)
+    calls = _spy(monkeypatch, error=RuntimeError("synthetic provider failure"))
+    body = {"marking_token": prepared["marking_token"]}
+    assert client.post("/api/v1/attendance/check-in", json=body).status_code == 201
+    assert len(calls) == 1
+    nonce = _nonce_of(prepared["marking_token"])
+    assert _preparation(db_session, nonce).address is None
+
+    replay = client.post("/api/v1/attendance/check-in", json=body)
+    assert replay.status_code == 201, replay.text
+    assert len(calls) == 1
+    assert _preparation(db_session, nonce).address is None
