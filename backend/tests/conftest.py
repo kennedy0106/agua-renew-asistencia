@@ -126,10 +126,32 @@ def db_session():
     Base.metadata.drop_all(engine)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_background_sessions(monkeypatch):
+    """Ninguna prueba alcanza ``SessionLocal`` desde tareas de fondo.
+
+    Por defecto la tarea de dirección queda desactivada (fábrica ``None``);
+    el fixture ``client`` la reactiva contra la BD de prueba. Clientes propios
+    (``TestClient(app)``) que no usan ``client`` nunca abren la BD configurada.
+    """
+    import app.modules.attendance.service as attendance_service
+
+    monkeypatch.setattr(attendance_service, "_task_session_factory", lambda: None)
+
+
 @pytest.fixture()
-def client(db_session):
+def client(db_session, monkeypatch):
     def override_get_db():
         yield db_session
+
+    # Las tareas de fondo abren su PROPIA sesión: en tests, contra la misma BD
+    # de prueba (nunca contra ``SessionLocal``, que apunta al entorno real).
+    from sqlalchemy.orm import sessionmaker
+
+    import app.modules.attendance.service as attendance_service
+
+    task_factory = sessionmaker(bind=db_session.get_bind(), autoflush=False, autocommit=False)
+    monkeypatch.setattr(attendance_service, "_task_session_factory", lambda: task_factory)
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:

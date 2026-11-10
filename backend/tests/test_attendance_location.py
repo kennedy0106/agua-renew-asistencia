@@ -777,6 +777,14 @@ def test_stamped_image_usa_bucket_original_y_no_escribe_en_default(client, db_se
     record = client.post("/api/v1/attendance/check-in", json={"marking_token": token}).json()
     evidence_id = client.get(f"/api/v1/attendance/{record['id']}/evidence").json()["check_in"]["id"]
 
+    # Con dirección el sello se persiste: fija una para este escenario de bucket.
+    db_session.expire_all()
+    preparation = db_session.scalar(
+        select(_prep_model()).where(_prep_model().nonce == _nonce_of(token))
+    )
+    preparation.address = "Referencia sintética de Lima"
+    db_session.commit()
+
     db_session.expire_all()
     evidence = db_session.get(AttendanceEvidence, __import__("uuid").UUID(evidence_id))
     original_key = evidence.object_key

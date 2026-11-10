@@ -15,7 +15,7 @@ import math
 import uuid
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import Response as RawResponse
 from sqlalchemy.orm import Session
 
@@ -45,7 +45,7 @@ from app.modules.attendance.schemas import (
     AttemptStatusRequest,
     AttemptStatusResponse,
 )
-from app.modules.attendance.service import AttendanceService, _MISSING
+from app.modules.attendance.service import AttendanceService, _MISSING, enrich_preparation_address
 from app.modules.devices.service import DeviceService
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
@@ -273,16 +273,34 @@ def review_attempt(
     return AttendanceService(db).review_attempt(nonce, reason=payload.reason, user_id=user.id)
 
 
+def _finish_marking(db: Session, result, nonce: str | None, background_tasks: BackgroundTasks):
+    """Cierra la petición de marcación y programa la dirección fuera del camino crítico.
+
+    Sólo una marcación nueva con preparación se enriquece; un replay idempotente
+    (``dict``) no reprograma. La respuesta se serializa antes de terminar la
+    transacción de lectura abierta por ``refresh`` para devolver la conexión al
+    pool: así la tarea de fondo no compite con la conexión de su propia petición.
+    """
+    if isinstance(result, dict):
+        return result
+    out = AttendanceRecordOut.model_validate(result)
+    db.commit()
+    if nonce:
+        background_tasks.add_task(enrich_preparation_address, nonce)
+    return out
+
+
 @router.post("/check-in", response_model=AttendanceRecordOut, status_code=status.HTTP_201_CREATED)
 def check_in(
     payload: CheckInRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     device=Depends(require_terminal),
 ) -> AttendanceRecordOut:
     employee_id, nonce, require_evidence, token_did, _record_id = _employee_from_marking_payload(payload, "CHECK_IN")
     if not _marking_limiter.allow(f"mark:{employee_id}"):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
-    return AttendanceService(db).check_in(
+    result = AttendanceService(db).check_in(
         employee_id,
         nonce=nonce,
         require_evidence=require_evidence,
@@ -290,18 +308,20 @@ def check_in(
         token_device_id=token_did,
         marking_token=payload.marking_token,
     )
+    return _finish_marking(db, result, nonce, background_tasks)
 
 
 @router.post("/check-out", response_model=AttendanceRecordOut)
 def check_out(
     payload: CheckOutRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     device=Depends(require_terminal),
 ) -> AttendanceRecordOut:
     employee_id, nonce, require_evidence, token_did, record_id = _employee_from_marking_payload(payload, "CHECK_OUT")
     if not _marking_limiter.allow(f"mark:{employee_id}"):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas marcaciones. Intente de nuevo en un minuto.")
-    return AttendanceService(db).check_out(
+    result = AttendanceService(db).check_out(
         employee_id,
         nonce=nonce,
         require_evidence=require_evidence,
@@ -310,6 +330,7 @@ def check_out(
         record_id=record_id,
         marking_token=payload.marking_token,
     )
+    return _finish_marking(db, result, nonce, background_tasks)
 
 
 @router.get("", response_model=list[AttendanceListItem])
